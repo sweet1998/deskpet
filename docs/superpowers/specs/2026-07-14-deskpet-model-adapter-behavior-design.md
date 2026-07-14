@@ -80,7 +80,7 @@ Electron Renderer
 ├── Live2DRenderer
 ├── ModelCapabilityScanner
 ├── ModelMotionPlayer
-├── ModelHitTester
+├── ModelBoundsHitTester
 ├── Settings UI
 └── Diagnostics UI
 ```
@@ -396,13 +396,17 @@ interface ActionPlan {
 
 ### 9.4 命中、拖拽与右键
 
-- Renderer 根据 Live2D hit area 判断鼠标是否位于角色可交互区域。
-- 没有 hit area 的外部模型使用经过校准的模型可见边界。
-- 鼠标位于透明区域时启用 `setIgnoreMouseEvents(true, { forward: true })`。
-- 进入模型命中区域时恢复鼠标接收。
-- 左键按下发布 `interaction.drag.start`，拖动真实 BrowserWindow，而不是只移动窗口内模型。
-- 右键发布 `interaction.contextMenu`，由主进程显示 Electron 原生菜单。
-- 菜单包含可用表情和动作；选择后发布 `command.emotion` 或 `command.action`。
+- 移除 `.deskpet-stage::after` 的悬停阴影；鼠标进入窗口时不再出现矩形暗边。
+- 用户主动启用的“悬停淡化模型”保留，它与悬停阴影是独立功能。
+- Renderer 使用 Pixi Live2D 模型的渲染边界判断鼠标是否位于人物区域，不使用整个透明窗口，也不要求模型提供 Cubism hit area。
+- `ModelBoundsHitTester` 将 `model.getBounds()` 的渲染坐标转换为 canvas CSS 坐标；缩放、偏移和窗口尺寸变化后必须立即反映到命中结果。
+- 窗口的可交互区域是“模型边界 + 当前可见 UI 控件”的并集；设置面板、聊天、输入框和按钮始终保持可操作。
+- 鼠标位于上述并集之外的透明区域时启用 `setIgnoreMouseEvents(true, { forward: true })`；进入任一可交互区域时恢复鼠标接收。
+- 只有在模型边界内左键按下才发布 `interaction.drag.start`；拖拽真实 BrowserWindow，不再修改模型在窗口内的 offset。
+- 只有在模型边界内右键才阻止浏览器默认菜单并发布 `interaction.contextMenu`。
+- 主进程显示 Electron 原生菜单，固定包含“设置”，并根据当前 adapter 动态生成“表情”和“动作”子菜单。
+- 选择“设置”打开现有设置面板；选择表情发布 `command.emotion`；选择动作发布 `command.action`。
+- 现有齿轮、聊天、语音按钮和底部拖动短横条在本次调整中保留，后续再单独决定是否移除。
 
 手动表情采用独立覆盖通道：选择非中性表情后保持 10 秒，重复选择刷新时限，选择 `neutral` 立即清除覆盖。覆盖期间自主行为不能替换该表情，但拖拽和模型安全恢复仍可清理不兼容参数。表情来源优先级为 `manual > integration > reaction > mood > neutral`。
 
