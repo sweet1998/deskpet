@@ -1,5 +1,11 @@
-export function useWindowDrag() {
-  function onNavMouseDown(e: MouseEvent) {
+export type DragWindow = (dx: number, dy: number) => void
+
+const dragWindowWithIpc: DragWindow = (dx, dy) => {
+  void window.electronAPI?.dragWindow(dx, dy)
+}
+
+export function useWindowDrag(dragWindow: DragWindow = dragWindowWithIpc) {
+  function onWindowMouseDown(e: MouseEvent) {
     let lastX = e.screenX
     let lastY = e.screenY
     let moved = false
@@ -9,7 +15,7 @@ export function useWindowDrag() {
       const dy = ev.screenY - lastY
       if (!moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return
       moved = true
-      window.electronAPI?.dragWindow(dx, dy)
+      dragWindow(dx, dy)
       lastX = ev.screenX
       lastY = ev.screenY
     }
@@ -23,5 +29,5 @@ export function useWindowDrag() {
     document.addEventListener('mouseup', onUp)
   }
 
-  return { onNavMouseDown }
+  return { onWindowMouseDown, onNavMouseDown: onWindowMouseDown }
 }

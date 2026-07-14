@@ -11,6 +11,7 @@ interface GlobalCursorPosition {
 
 contextBridge.exposeInMainWorld('electronAPI', {
   dragWindow: (dx: number, dy: number) => ipcRenderer.invoke('drag-window', { dx, dy }),
+  setPetHitTestInteractive: (interactive: boolean): Promise<void> => ipcRenderer.invoke('set-pet-hit-test-interactive', interactive),
   setAlwaysOnTop: (flag: boolean) => ipcRenderer.invoke('set-always-on-top', flag),
   setClickThroughLocked: (flag: boolean) => ipcRenderer.invoke('set-click-through-locked', flag),
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),

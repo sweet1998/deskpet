@@ -2,6 +2,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalSho
 import path from 'path'
 import fs from 'fs'
 import http from 'http'
+import { shouldIgnoreMouseEvents } from './mouse-event-policy'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('in-process-gpu')
@@ -138,6 +139,7 @@ let lastCursorX: number | null = null
 let lastCursorY: number | null = null
 let alwaysOnTop = true
 let clickThroughLocked = false
+let pointerInteractive = true
 let hoverFadeEnabled = false
 let lastSavedBounds: WindowBoundsState = { width: 600, height: 800, x: 100, y: 100 }
 
@@ -148,9 +150,14 @@ function setAlwaysOnTopState(flag: boolean): void {
   createTray()
 }
 
+function applyMouseEventPolicy(): void {
+  const ignore = shouldIgnoreMouseEvents({ clickThroughLocked, pointerInteractive })
+  mainWindow?.setIgnoreMouseEvents(ignore, { forward: true })
+}
+
 function setClickThroughLocked(flag: boolean): void {
   clickThroughLocked = flag
-  mainWindow?.setIgnoreMouseEvents(flag, { forward: true })
+  applyMouseEventPolicy()
   saveWindowState()
   createTray()
 }
@@ -205,6 +212,7 @@ function createWindow(): void {
   lastSavedBounds = bounds
   alwaysOnTop = state.alwaysOnTop
   clickThroughLocked = state.clickThroughLocked
+  pointerInteractive = true
   hoverFadeEnabled = state.hoverFadeEnabled
   mainWindow = new BrowserWindow({
     width: bounds.width,
@@ -229,7 +237,7 @@ function createWindow(): void {
   })
 
   mainWindow.setAlwaysOnTop(alwaysOnTop, 'floating')
-  mainWindow.setIgnoreMouseEvents(clickThroughLocked, { forward: true })
+  applyMouseEventPolicy()
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -355,6 +363,17 @@ app.whenReady().then(() => {
 
   ipcMain.handle('set-click-through-locked', (_event, flag: boolean) => {
     setClickThroughLocked(flag)
+  })
+
+  ipcMain.handle('set-pet-hit-test-interactive', (event, interactive: unknown) => {
+    if (
+      !mainWindow ||
+      BrowserWindow.fromWebContents(event.sender) !== mainWindow ||
+      typeof interactive !== 'boolean'
+    ) return
+
+    pointerInteractive = interactive
+    applyMouseEventPolicy()
   })
 
   ipcMain.handle('minimize-window', () => {

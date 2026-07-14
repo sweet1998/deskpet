@@ -17,6 +17,7 @@ interface GlobalCursorPosition {
 
 interface ElectronAPI {
   dragWindow: (dx: number, dy: number) => Promise<void>
+  setPetHitTestInteractive: (interactive: boolean) => Promise<void>
   setAlwaysOnTop: (flag: boolean) => Promise<void>
   setClickThroughLocked: (flag: boolean) => Promise<void>
   minimizeWindow: () => Promise<void>
