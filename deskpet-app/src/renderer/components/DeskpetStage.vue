@@ -1,10 +1,10 @@
 <template>
-  <div class="deskpet-stage" :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }" @dblclick="onDoubleClick" @mousedown.left="onModelMouseDown" @mouseenter="isHovered = true" @mouseleave="isHovered = false">
+  <div ref="deskpetStageRef" class="deskpet-stage" :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }" @dblclick="onDoubleClick" @mousedown.left="onPetMouseDown" @contextmenu="onPetContextMenu" @mouseenter="isHovered = true" @mouseleave="isHovered = false">
     <div ref="stageRef" class="live2d-stage" />
-    <div class="nav-bar" title="拖动窗口，双击重置模型位置和缩放" @mousedown.stop="onNavMouseDown" @dblclick.stop="resetModelView" />
+    <div class="nav-bar" data-pet-ui title="拖动窗口，双击重置模型位置和缩放" @mousedown.left.stop="onWindowMouseDown" @dblclick.stop="resetModelView" />
 
     <!-- bottom-right button bar -->
-    <div class="btn-bar" :class="{ shifted: chatPanelOpen }">
+    <div class="btn-bar" data-pet-ui :class="{ shifted: chatPanelOpen }">
       <div class="btn-bar-item" @mousedown.stop @click.stop="showSettings = true" title="设置">⚙</div>
       <div class="btn-bar-item" @mousedown.stop @click.stop="chatPanelOpen = !chatPanelOpen" :title="chatPanelOpen ? '收起聊天' : '聊天记录'">💬</div>
       <div class="btn-bar-item" :class="{ recording: recordingActive, vad: vadActive }" @mousedown.stop @click.stop="toggleRecording" :title="vadActive ? 'VAD 监听中，点击关闭' : (recordingActive ? '停止录音' : '语音输入')">🎤</div>
@@ -12,7 +12,7 @@
 
     <SettingsPanel :open="showSettings" @close="showSettings = false" />
 
-    <div v-if="modelError" class="model-error">
+    <div v-if="modelError" class="model-error" data-pet-ui>
       <div class="error-icon">!</div>
       <p>{{ modelError }}</p>
       <p class="error-hint" v-if="modelError.includes('Cubism')">
@@ -51,22 +51,28 @@ import { useChimeraTransport } from '@/services/transport/chimera'
 import { useLive2DAnimation } from '@/composables/useLive2DAnimation'
 import { useWindowDrag } from '@/composables/useWindowDrag'
 import { useModelZoom } from '@/composables/useModelZoom'
-import { useModelDrag } from '@/composables/useModelDrag'
 import { useExpressionState } from '@/composables/useExpressionState'
 import { useMotionPriority, MotionLayer } from '@/composables/useMotionPriority'
 import { useIdleScheduler } from '@/composables/useIdleScheduler'
 import { useLipSync } from '@/composables/useLipSync'
 import { useVoiceInput } from '@/composables/useVoiceInput'
-import { createPixiApp, loadLive2DModel, resizeModel, resizeModelFit, modelRefW, modelRefH } from '@/services/live2d/loader'
+import { createPixiApp, loadLive2DModel, resizeModel, resizeModelFit } from '@/services/live2d/loader'
 import { discoverModel } from '@/services/live2d/model-discovery'
 import { getAnimationTarget, getEmotionTarget, loadEmotionAdapter } from '@/services/live2d/emotion-adapter'
+import { isClientPointInsideModel } from '@/services/live2d/model-bounds'
+import { isPointOverVisibleUi as isClientPointOverVisibleUi } from '@/services/interaction/ui-hit-test'
+import type { PetContextMenuCommand } from '../../shared/pet-context-menu'
 
 const store = useDeskpetStore()
 const chatStore = useChatStore()
 const transport = useChimeraTransport()
 const { start: startAnim, stop: stopAnim } = useLive2DAnimation()
-const { onNavMouseDown } = useWindowDrag()
+const { onWindowMouseDown, cleanup: cleanupWindowDrag } = useWindowDrag(
+  undefined,
+  onWindowDragActiveChange,
+)
 
+const deskpetStageRef = ref<HTMLDivElement>()
 const stageRef = ref<HTMLDivElement>()
 const inputText = ref('')
 const showInput = ref(false)
@@ -80,8 +86,28 @@ let unsubscribeGlobalCursor: (() => void) | null = null
 let unsubscribeResetModelView: (() => void) | null = null
 let unsubscribeSetHoverFade: (() => void) | null = null
 let unsubscribeScreenshot: (() => void) | null = null
+let unsubscribePetContextCommand: (() => void) | null = null
+let lastPointerInteractive: boolean | null = null
+let petDragActive = false
+let pointerSyncFrameId = 0
+let stageMutationObserver: MutationObserver | null = null
 
 onMounted(async () => {
+  unsubscribePetContextCommand = window.electronAPI?.onPetContextMenuCommand(
+    handlePetContextCommand,
+  ) ?? null
+  unsubscribeGlobalCursor = window.electronAPI?.onGlobalCursorPosition?.((position) => {
+    mouseX = position.x
+    mouseY = position.y
+    syncPointerInteractive(position.x, position.y)
+  }) ?? null
+
+  const stage = deskpetStageRef.value
+  if (stage) {
+    stageMutationObserver = new MutationObserver(schedulePointerInteractiveSync)
+    stageMutationObserver.observe(stage, { childList: true, subtree: true })
+  }
+
   const container = stageRef.value
   if (!container) return
 
@@ -116,6 +142,7 @@ onMounted(async () => {
     model.position.y += store.modelOffsetY
     store.live2dModel = model
     store.modelLoaded = true
+    schedulePointerInteractiveSync()
     idleScheduler.start()
 
     startAnim(model)
@@ -127,10 +154,6 @@ onMounted(async () => {
     modelError.value = `模型加载失败: ${err}`
   }
 
-  unsubscribeGlobalCursor = window.electronAPI?.onGlobalCursorPosition?.((position) => {
-    mouseX = position.x
-    mouseY = position.y
-  }) ?? null
   unsubscribeResetModelView = window.electronAPI?.onResetModelView?.(() => {
     resetModelView()
   }) ?? null
@@ -159,13 +182,19 @@ let lastZoom = store.modelZoom
 let mouseX = window.innerWidth / 2
 let mouseY = window.innerHeight / 2
 
+watch([showSettings, chatPanelOpen, showInput], () => {
+  schedulePointerInteractiveSync()
+}, { flush: 'post' })
+
 const { onWheel } = useModelZoom(
   store,
   () => ({ x: mouseX, y: mouseY }),
   () => ({ width: window.innerWidth, height: window.innerHeight }),
-  (zoom) => { lastZoom = zoom },
+  (zoom) => {
+    lastZoom = zoom
+    schedulePointerInteractiveSync()
+  },
 )
-const { onModelMouseDown, consumeDragOffsets } = useModelDrag()
 const { cleanup: cleanupExpression } = useExpressionState(store)
 const { playMotionWithPriority } = useMotionPriority(store)
 const idleScheduler = useIdleScheduler(playMotionWithPriority)
@@ -173,6 +202,89 @@ const { getMouthOpen } = useLipSync()
 const { start: startRecord, stop: stopRecord, isRecording, enableVad, disableVad } = useVoiceInput()
 const recordingActive = computed(() => isRecording())
 const vadActive = ref(false)
+
+function isUiTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest('[data-pet-ui]'))
+}
+
+function isPointOverModel(clientX: number, clientY: number): boolean {
+  const model = store.live2dModel
+  const canvas = store.pixiApp?.view as HTMLCanvasElement | undefined
+  if (!model || !canvas) return false
+  return isClientPointInsideModel(model.getBounds(), canvas, clientX, clientY)
+}
+
+function isPointOverVisibleUi(clientX: number, clientY: number): boolean {
+  const stage = deskpetStageRef.value
+  return Boolean(stage && isClientPointOverVisibleUi(stage, clientX, clientY))
+}
+
+function syncPointerInteractive(clientX: number, clientY: number): void {
+  const interactive = petDragActive
+    || isPointOverModel(clientX, clientY)
+    || isPointOverVisibleUi(clientX, clientY)
+  if (interactive === lastPointerInteractive) return
+  lastPointerInteractive = interactive
+  void window.electronAPI?.setPetHitTestInteractive(interactive)
+}
+
+function schedulePointerInteractiveSync(): void {
+  if (pointerSyncFrameId) return
+  pointerSyncFrameId = requestAnimationFrame(() => {
+    pointerSyncFrameId = 0
+    syncPointerInteractive(mouseX, mouseY)
+  })
+}
+
+function onWindowDragActiveChange(active: boolean): void {
+  petDragActive = active
+  if (active) {
+    syncPointerInteractive(mouseX, mouseY)
+    return
+  }
+  schedulePointerInteractiveSync()
+}
+
+function onPetMouseDown(event: MouseEvent): void {
+  if (
+    isUiTarget(event.target)
+    || isPointOverVisibleUi(event.clientX, event.clientY)
+    || !isPointOverModel(event.clientX, event.clientY)
+  ) return
+  event.preventDefault()
+  onWindowMouseDown(event)
+}
+
+function onPetContextMenu(event: MouseEvent): void {
+  if (
+    isUiTarget(event.target)
+    || isPointOverVisibleUi(event.clientX, event.clientY)
+    || !isPointOverModel(event.clientX, event.clientY)
+  ) return
+  event.preventDefault()
+  const adapter = store.emotionAdapter
+  void window.electronAPI?.showPetContextMenu({
+    emotions: Object.keys(adapter?.emotions ?? {}),
+    actions: Object.keys(adapter?.animations ?? {}),
+  })
+}
+
+function handlePetContextCommand(command: PetContextMenuCommand): void {
+  if (command.type === 'settings') {
+    showSettings.value = true
+    return
+  }
+  if (command.type === 'emotion') {
+    if (getEmotionTarget(store.emotionAdapter, command.id)) {
+      store.currentEmotion = command.id
+    }
+    return
+  }
+  if (getAnimationTarget(store.emotionAdapter, command.id)) {
+    store.pendingAnimation = command.id
+    store.pendingAnimationLoop = false
+  }
+}
 
 function toggleRecording() {
   if (vadActive.value) { vadActive.value = false; disableVad(); return }
@@ -203,23 +315,13 @@ function startAnimationPoll() {
         resizeModelFit(store.live2dModel, cw, ch, store.modelZoom)
         store.live2dModel.position.x += store.modelOffsetX
         store.live2dModel.position.y += store.modelOffsetY
+        schedulePointerInteractiveSync()
       }
       if (store.modelZoom !== lastZoom) {
         lastZoom = store.modelZoom
         // zoom focal point is handled in onWheel, not here
         resizeModel(store.live2dModel, cw, ch, store.modelZoom)
-      }
-      const dragOffsets = consumeDragOffsets()
-      if (dragOffsets) {
-        store.live2dModel.position.x += dragOffsets.x
-        store.live2dModel.position.y += dragOffsets.y
-        // clamp: keep at least 20% of model visible
-        const m = store.live2dModel
-        const vw = modelRefW * m.scale.x
-        const vh = modelRefH * m.scale.y
-        m.position.x = Math.max(-vw * 0.8, Math.min(cw + vw * 0.8, m.position.x))
-        m.position.y = Math.max(-vh * 0.8, Math.min(ch + vh * 0.8, m.position.y))
-        store.setModelOffset(m.position.x - cw / 2, m.position.y - ch / 2)
+        schedulePointerInteractiveSync()
       }
       try { store.live2dModel.focus(mouseX, mouseY) } catch { /* focus not supported */ }
       try {
@@ -234,14 +336,23 @@ function startAnimationPoll() {
 function onMouseMove(e: MouseEvent) {
   mouseX = e.clientX
   mouseY = e.clientY
+  syncPointerInteractive(mouseX, mouseY)
 }
 
 window.addEventListener('mousemove', onMouseMove)
+window.addEventListener('resize', schedulePointerInteractiveSync)
 onUnmounted(() => {
   stopAnim()
   if (animFrameId) cancelAnimationFrame(animFrameId)
+  cleanupWindowDrag()
+  if (pointerSyncFrameId) cancelAnimationFrame(pointerSyncFrameId)
+  pointerSyncFrameId = 0
+  stageMutationObserver?.disconnect()
+  stageMutationObserver = null
   unsubscribeGlobalCursor?.()
   unsubscribeGlobalCursor = null
+  unsubscribePetContextCommand?.()
+  unsubscribePetContextCommand = null
   unsubscribeResetModelView?.()
   unsubscribeResetModelView = null
   unsubscribeSetHoverFade?.()
@@ -251,6 +362,8 @@ onUnmounted(() => {
   cleanupExpression()
   idleScheduler.stop()
   window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('resize', schedulePointerInteractiveSync)
+  void window.electronAPI?.setPetHitTestInteractive(true)
   if (store.pixiApp) {
     const canvas = store.pixiApp.view as HTMLCanvasElement
     canvas.removeEventListener('wheel', onWheel as any)
@@ -280,6 +393,7 @@ function resetModelView() {
   if (store.live2dModel) {
     resizeModelFit(store.live2dModel, window.innerWidth, window.innerHeight, store.modelZoom)
     lastZoom = store.modelZoom
+    schedulePointerInteractiveSync()
   }
 }
 
@@ -293,24 +407,6 @@ onUnmounted(() => { /* cleanup in stopAnim + pixiApp.destroy */ })
   position: relative;
   -webkit-app-region: no-drag;
   user-select: none;
-}
-
-.deskpet-stage::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 30;
-  opacity: 0;
-  transition: opacity 0.25s ease;
-  box-shadow:
-    inset 0 0 40px 20px rgba(60, 60, 60, 0.25),
-    inset 0 0 80px 40px rgba(60, 60, 60, 0.15),
-    inset 0 0 140px 70px rgba(60, 60, 60, 0.06);
-}
-
-.deskpet-stage.hovered::after {
-  opacity: 1;
 }
 
 .live2d-stage {

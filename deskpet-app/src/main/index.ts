@@ -2,7 +2,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalSho
 import path from 'path'
 import fs from 'fs'
 import http from 'http'
-import { shouldIgnoreMouseEvents } from './mouse-event-policy'
+import { shouldIgnoreMouseEvents, shouldPublishCursorPosition } from './mouse-event-policy'
 import { buildPetContextMenuTemplate } from './pet-context-menu'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
@@ -10,6 +10,7 @@ app.commandLine.appendSwitch('in-process-gpu')
 
 const MIN_WINDOW_WIDTH = 260
 const MIN_WINDOW_HEIGHT = 360
+const CURSOR_HEARTBEAT_MS = 250
 const SHORTCUTS = {
   toggleVisible: 'CommandOrControl+Alt+H',
   toggleHoverFade: 'CommandOrControl+Alt+F',
@@ -138,6 +139,7 @@ let tray: Tray | null = null
 let cursorPollTimer: ReturnType<typeof setInterval> | null = null
 let lastCursorX: number | null = null
 let lastCursorY: number | null = null
+let lastCursorPublishedAt: number | null = null
 let alwaysOnTop = true
 let clickThroughLocked = false
 let pointerInteractive = true
@@ -184,10 +186,20 @@ function startGlobalCursorPolling(): void {
     if (!mainWindow || mainWindow.isDestroyed()) return
 
     const cursor = screen.getCursorScreenPoint()
-    if (cursor.x === lastCursorX && cursor.y === lastCursorY) return
+    const now = Date.now()
+    if (!shouldPublishCursorPosition({
+      cursorX: cursor.x,
+      cursorY: cursor.y,
+      lastCursorX,
+      lastCursorY,
+      now,
+      lastPublishedAt: lastCursorPublishedAt,
+      heartbeatMs: CURSOR_HEARTBEAT_MS,
+    })) return
 
     lastCursorX = cursor.x
     lastCursorY = cursor.y
+    lastCursorPublishedAt = now
 
     const bounds = mainWindow.getBounds()
     mainWindow.webContents.send('global-cursor-position', {

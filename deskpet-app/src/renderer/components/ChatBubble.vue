@@ -1,6 +1,6 @@
 <template>
   <!-- floating comic bubbles (text + emoji) -->
-  <div class="comic-bubbles">
+  <div class="comic-bubbles" data-pet-ui>
     <TransitionGroup name="comic-pop">
       <div v-for="b in floatingBubbles" :key="b.id" class="comic-bubble" :class="b.role">
         <img v-if="b.type === 'emoji'" :src="'data:image/png;base64,' + b.base64" class="emoji-img" />
@@ -11,7 +11,7 @@
 
   <!-- chat history panel -->
   <Transition name="panel-slide">
-    <div v-if="panelOpen" class="chat-panel" @mousedown.stop>
+    <div v-if="panelOpen" class="chat-panel" data-pet-ui @mousedown.stop>
       <div class="panel-messages" ref="messagesRef">
         <div v-for="msg in messages" :key="msg.id" :class="['msg-row', msg.role]">
           <div class="msg-label">{{ msg.role === 'user' ? '你' : '麦麦' }}</div>

@@ -1,6 +1,6 @@
 <template>
   <Transition name="input-fade">
-    <div v-if="visible" class="quick-input" @mousedown.stop>
+    <div v-if="visible" class="quick-input" data-pet-ui @mousedown.stop>
       <input
         ref="inputRef"
         :value="modelValue"
