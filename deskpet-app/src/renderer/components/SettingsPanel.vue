@@ -1,7 +1,7 @@
 <template>
   <Transition name="settings-slide">
-    <div v-if="open" class="settings-overlay" @mousedown.stop>
-      <div class="settings-panel" data-pet-ui>
+    <div v-if="open" class="settings-overlay">
+      <div class="settings-panel" data-pet-ui @mousedown.stop>
         <div class="settings-header">
           <span>设置</span>
           <button class="settings-close" @click="$emit('close')">&times;</button>
