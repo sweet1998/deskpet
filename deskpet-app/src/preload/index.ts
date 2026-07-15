@@ -1,4 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import {
+  isPetContextMenuCommand,
+  type PetContextMenuCommand,
+  type PetContextMenuRequest,
+} from '../shared/pet-context-menu'
 
 interface GlobalCursorPosition {
   screenX: number
@@ -16,6 +21,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setClickThroughLocked: (flag: boolean) => ipcRenderer.invoke('set-click-through-locked', flag),
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
   closeWindow: () => ipcRenderer.invoke('close-window'),
+  showPetContextMenu: (request: PetContextMenuRequest): Promise<void> =>
+    ipcRenderer.invoke('show-pet-context-menu', request),
+  onPetContextMenuCommand: (callback: (command: PetContextMenuCommand) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, command: unknown) => {
+      if (isPetContextMenuCommand(command)) callback(command)
+    }
+    ipcRenderer.on('pet-context-command', listener)
+    return () => ipcRenderer.removeListener('pet-context-command', listener)
+  },
   onGlobalCursorPosition: (callback: (position: GlobalCursorPosition) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, position: GlobalCursorPosition) => callback(position)
     ipcRenderer.on('global-cursor-position', listener)

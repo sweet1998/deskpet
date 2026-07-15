@@ -22,6 +22,8 @@ interface ElectronAPI {
   setClickThroughLocked: (flag: boolean) => Promise<void>
   minimizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>
+  showPetContextMenu: (request: import('../shared/pet-context-menu').PetContextMenuRequest) => Promise<void>
+  onPetContextMenuCommand: (callback: (command: import('../shared/pet-context-menu').PetContextMenuCommand) => void) => () => void
   onGlobalCursorPosition: (callback: (position: GlobalCursorPosition) => void) => () => void
   onResetModelView: (callback: () => void) => () => void
   onSetHoverFade: (callback: (enabled: boolean) => void) => () => void

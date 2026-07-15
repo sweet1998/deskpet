@@ -3,6 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import http from 'http'
 import { shouldIgnoreMouseEvents } from './mouse-event-policy'
+import { buildPetContextMenuTemplate } from './pet-context-menu'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('in-process-gpu')
@@ -374,6 +375,16 @@ app.whenReady().then(() => {
 
     pointerInteractive = interactive
     applyMouseEventPolicy()
+  })
+
+  ipcMain.handle('show-pet-context-menu', (event, request: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win !== mainWindow) return
+
+    const template = buildPetContextMenuTemplate(request, (command) => {
+      win.webContents.send('pet-context-command', command)
+    })
+    Menu.buildFromTemplate(template).popup({ window: win })
   })
 
   ipcMain.handle('minimize-window', () => {
