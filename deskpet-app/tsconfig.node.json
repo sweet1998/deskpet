@@ -10,5 +10,10 @@
     "noEmit": false,
     "outDir": "./out"
   },
-  "include": ["electron-vite.config.ts", "src/main/**/*.ts", "src/preload/**/*.ts"]
+  "include": [
+    "electron-vite.config.ts",
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts"
+  ]
 }
