@@ -3,20 +3,14 @@ import { ref, shallowRef, watch } from 'vue'
 import type { Live2DModel } from 'pixi-live2d-display/cubism4'
 import type { Application } from '@pixi/app'
 import type { ModelEmotionAdapter } from '@/services/live2d/emotion-adapter'
-
-interface PersistedModelViewState {
-  zoom: number
-  offsetX: number
-  offsetY: number
-}
+import {
+  DEFAULT_MODEL_VIEW_STATE,
+  migratePersistedModelViewState,
+  type PersistedModelViewState,
+} from './model-view-state'
 
 const MODEL_VIEW_STATE_KEY = 'deskpet/model-view'
 const UI_STATE_KEY = 'deskpet/ui-state'
-const DEFAULT_MODEL_VIEW_STATE: PersistedModelViewState = {
-  zoom: 1.0,
-  offsetX: 0,
-  offsetY: 0,
-}
 
 interface PersistedUiState {
   hoverFadeEnabled: boolean
@@ -30,12 +24,9 @@ function loadModelViewState(): PersistedModelViewState {
   try {
     const raw = localStorage.getItem(MODEL_VIEW_STATE_KEY)
     if (!raw) return { ...DEFAULT_MODEL_VIEW_STATE }
-    const parsed = JSON.parse(raw) as Partial<PersistedModelViewState>
-    return {
-      zoom: typeof parsed.zoom === 'number' ? parsed.zoom : DEFAULT_MODEL_VIEW_STATE.zoom,
-      offsetX: typeof parsed.offsetX === 'number' ? parsed.offsetX : DEFAULT_MODEL_VIEW_STATE.offsetX,
-      offsetY: typeof parsed.offsetY === 'number' ? parsed.offsetY : DEFAULT_MODEL_VIEW_STATE.offsetY,
-    }
+    const state = migratePersistedModelViewState(JSON.parse(raw))
+    localStorage.setItem(MODEL_VIEW_STATE_KEY, JSON.stringify(state))
+    return state
   } catch {
     return { ...DEFAULT_MODEL_VIEW_STATE }
   }
