@@ -1,18 +1,10 @@
 <template>
-  <div ref="deskpetStageRef" class="deskpet-stage" :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }" @dblclick="onDoubleClick" @mousedown.left="onPetMouseDown" @contextmenu="onPetContextMenu" @mouseenter="isHovered = true" @mouseleave="isHovered = false">
+  <div ref="deskpetStageRef" class="deskpet-stage" :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }" @mousedown.left="onPetMouseDown" @contextmenu="onPetContextMenu" @mouseenter="isHovered = true" @mouseleave="isHovered = false">
     <div ref="stageRef" class="live2d-stage" />
-    <div class="nav-bar" data-pet-ui title="拖动窗口，双击重置模型位置和缩放" @mousedown.left.stop="onWindowMouseDown" @dblclick.stop="resetModelView" />
-
-    <!-- bottom-right button bar -->
-    <div class="btn-bar" data-pet-ui :class="{ shifted: chatPanelOpen }">
-      <div class="btn-bar-item" @mousedown.stop @click.stop="showSettings = true" title="设置">⚙</div>
-      <div class="btn-bar-item" @mousedown.stop @click.stop="chatPanelOpen = !chatPanelOpen" :title="chatPanelOpen ? '收起聊天' : '聊天记录'">💬</div>
-      <div class="btn-bar-item" :class="{ recording: recordingActive, vad: vadActive }" @mousedown.stop @click.stop="toggleRecording" :title="vadActive ? 'VAD 监听中，点击关闭' : (recordingActive ? '停止录音' : '语音输入')">🎤</div>
-    </div>
 
     <SettingsPanel :open="showSettings" @close="showSettings = false" />
 
-    <div v-if="modelError" class="model-error" data-pet-ui>
+    <div v-if="modelError" class="model-error">
       <div class="error-icon">!</div>
       <p>{{ modelError }}</p>
       <p class="error-hint" v-if="modelError.includes('Cubism')">
@@ -24,29 +16,13 @@
       <p class="error-hint" v-else>将模型放入 <code>src/renderer/public/models/</code> 后重启应用</p>
     </div>
 
-    <ChatBubble
-      :messages="chatStore.messages"
-      :last-bubble="chatStore.chatBubble"
-      :panel-open="chatPanelOpen"
-      @bubbles-cleared="showInput = false; inputText = ''"
-    />
-
-    <QuickInput
-      v-model="inputText"
-      :visible="showInput"
-      @submit="sendText"
-      @blur="showInput = false"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import ChatBubble from './ChatBubble.vue'
-import QuickInput from './QuickInput.vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import SettingsPanel from './SettingsPanel.vue'
 import { useDeskpetStore } from '@/stores/deskpet'
-import { useChatStore } from '@/stores/chat'
 import { useChimeraTransport } from '@/services/transport/chimera'
 import { useLive2DAnimation } from '@/composables/useLive2DAnimation'
 import { useWindowDrag } from '@/composables/useWindowDrag'
@@ -55,16 +31,15 @@ import { useExpressionState } from '@/composables/useExpressionState'
 import { useMotionPriority, MotionLayer } from '@/composables/useMotionPriority'
 import { useIdleScheduler } from '@/composables/useIdleScheduler'
 import { useLipSync } from '@/composables/useLipSync'
-import { useVoiceInput } from '@/composables/useVoiceInput'
 import { createPixiApp, loadLive2DModel, resizeModel, resizeModelFit } from '@/services/live2d/loader'
 import { discoverModel } from '@/services/live2d/model-discovery'
 import { getAnimationTarget, getEmotionTarget, loadEmotionAdapter } from '@/services/live2d/emotion-adapter'
 import { isClientPointInsideModel } from '@/services/live2d/model-bounds'
+import { shouldPetWindowBeInteractive } from '@/services/interaction/pet-window-policy'
 import { isPointOverVisibleUi as isClientPointOverVisibleUi } from '@/services/interaction/ui-hit-test'
 import type { PetContextMenuCommand } from '../../shared/pet-context-menu'
 
 const store = useDeskpetStore()
-const chatStore = useChatStore()
 const transport = useChimeraTransport()
 const { start: startAnim, stop: stopAnim } = useLive2DAnimation()
 const { onWindowMouseDown, cleanup: cleanupWindowDrag } = useWindowDrag(
@@ -74,10 +49,7 @@ const { onWindowMouseDown, cleanup: cleanupWindowDrag } = useWindowDrag(
 
 const deskpetStageRef = ref<HTMLDivElement>()
 const stageRef = ref<HTMLDivElement>()
-const inputText = ref('')
-const showInput = ref(false)
 const isHovered = ref(false)
-const chatPanelOpen = ref(false)
 const showSettings = ref(false)
 const modelError = ref('')
 
@@ -138,8 +110,6 @@ onMounted(async () => {
     const model = await loadLive2DModel(modelUrl, app)
     store.emotionAdapter = await loadEmotionAdapter(modelUrl)
     resizeModel(model, window.innerWidth, window.innerHeight, store.modelZoom)
-    model.position.x += store.modelOffsetX
-    model.position.y += store.modelOffsetY
     store.live2dModel = model
     store.modelLoaded = true
     schedulePointerInteractiveSync()
@@ -182,7 +152,7 @@ let lastZoom = store.modelZoom
 let mouseX = window.innerWidth / 2
 let mouseY = window.innerHeight / 2
 
-watch([showSettings, chatPanelOpen, showInput], () => {
+watch(showSettings, () => {
   schedulePointerInteractiveSync()
 }, { flush: 'post' })
 
@@ -199,9 +169,6 @@ const { cleanup: cleanupExpression } = useExpressionState(store)
 const { playMotionWithPriority } = useMotionPriority(store)
 const idleScheduler = useIdleScheduler(playMotionWithPriority)
 const { getMouthOpen } = useLipSync()
-const { start: startRecord, stop: stopRecord, isRecording, enableVad, disableVad } = useVoiceInput()
-const recordingActive = computed(() => isRecording())
-const vadActive = ref(false)
 
 function isUiTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('[data-pet-ui]'))
@@ -220,9 +187,12 @@ function isPointOverVisibleUi(clientX: number, clientY: number): boolean {
 }
 
 function syncPointerInteractive(clientX: number, clientY: number): void {
-  const interactive = petDragActive
-    || isPointOverModel(clientX, clientY)
-    || isPointOverVisibleUi(clientX, clientY)
+  const interactive = shouldPetWindowBeInteractive({
+    dragActive: petDragActive,
+    pointOverModel: isPointOverModel(clientX, clientY),
+    settingsOpen: showSettings.value,
+    pointOverSettings: isPointOverVisibleUi(clientX, clientY),
+  })
   if (interactive === lastPointerInteractive) return
   lastPointerInteractive = interactive
   void window.electronAPI?.setPetHitTestInteractive(interactive)
@@ -286,12 +256,6 @@ function handlePetContextCommand(command: PetContextMenuCommand): void {
   }
 }
 
-function toggleRecording() {
-  if (vadActive.value) { vadActive.value = false; disableVad(); return }
-  vadActive.value = true
-  enableVad((text) => { chatStore.addUserMessage(text); transport.sendUserText(text) })
-}
-
 function startAnimationPoll() {
   const tick = () => {
     const pending = store.consumePendingAnimation()
@@ -313,8 +277,6 @@ function startAnimationPoll() {
         lastW = cw
         lastH = ch
         resizeModelFit(store.live2dModel, cw, ch, store.modelZoom)
-        store.live2dModel.position.x += store.modelOffsetX
-        store.live2dModel.position.y += store.modelOffsetY
         schedulePointerInteractiveSync()
       }
       if (store.modelZoom !== lastZoom) {
@@ -375,19 +337,6 @@ onUnmounted(() => {
   store.modelLoaded = false
 })
 
-function onDoubleClick() {
-  showInput.value = true
-}
-
-function sendText() {
-  const text = inputText.value.trim()
-  if (!text) return
-  chatStore.addUserMessage(text)
-  transport.sendUserText(text)
-  inputText.value = ''
-  showInput.value = false
-}
-
 function resetModelView() {
   store.resetModelView()
   if (store.live2dModel) {
@@ -418,83 +367,6 @@ onUnmounted(() => { /* cleanup in stopAnim + pixiApp.destroy */ })
 
 .deskpet-stage.hover-fade-enabled.hovered .live2d-stage {
   opacity: 0.15;
-}
-
-.nav-bar {
-  position: absolute;
-  bottom: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 160px;
-  height: 32px;
-  -webkit-app-region: drag;
-  z-index: 50;
-  cursor: move;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.nav-bar::after {
-  content: '';
-  width: 140px;
-  height: 5px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.btn-bar {
-  position: absolute;
-  bottom: 44px;
-  right: 12px;
-  z-index: 65;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.btn-bar-item {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.35);
-  backdrop-filter: blur(4px);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  line-height: 1;
-  transition: background 0.2s;
-  user-select: none;
-}
-.btn-bar-item:hover { background: rgba(255, 255, 255, 0.6); }
-.btn-bar-item.recording { background: rgba(255, 60, 60, 0.6); animation: mic-pulse 1s ease-in-out infinite; }
-.btn-bar-item.vad { background: rgba(60, 200, 120, 0.6); }
-.btn-bar.shifted { right: 216px; }
-@keyframes mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 60, 60, 0.4); }
-  50% { box-shadow: 0 0 0 8px rgba(255, 60, 60, 0); }
-}
-
-.chat-toggle {
-  position: absolute;
-  bottom: 44px;
-  right: 56px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.35);
-  backdrop-filter: blur(4px);
-  cursor: pointer;
-  z-index: 45;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  line-height: 1;
-}
-.chat-toggle:hover {
-  background: rgba(255, 255, 255, 0.6);
 }
 
 .model-error {
