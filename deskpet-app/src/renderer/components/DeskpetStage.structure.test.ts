@@ -45,8 +45,10 @@ describe('DeskpetStage model-only shell', () => {
     const shape = collectTemplateShape(readFileSync(filename, 'utf8'))
 
     expect(shape.tags).toContain('SettingsPanel')
-    expect(shape.tags).not.toEqual(expect.arrayContaining(['ChatBubble', 'QuickInput']))
-    expect(shape.classes).not.toEqual(expect.arrayContaining(['nav-bar', 'btn-bar']))
+    expect(shape.tags).not.toContain('ChatBubble')
+    expect(shape.tags).not.toContain('QuickInput')
+    expect(shape.classes).not.toContain('nav-bar')
+    expect(shape.classes).not.toContain('btn-bar')
     expect(shape.events).not.toContain('dblclick')
     expect(shape.template).not.toContain('⚙')
     expect(shape.template).not.toContain('💬')
