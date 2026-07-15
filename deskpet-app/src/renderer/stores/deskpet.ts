@@ -25,7 +25,11 @@ function loadModelViewState(): PersistedModelViewState {
     const raw = localStorage.getItem(MODEL_VIEW_STATE_KEY)
     if (!raw) return { ...DEFAULT_MODEL_VIEW_STATE }
     const state = migratePersistedModelViewState(JSON.parse(raw))
-    localStorage.setItem(MODEL_VIEW_STATE_KEY, JSON.stringify(state))
+    try {
+      localStorage.setItem(MODEL_VIEW_STATE_KEY, JSON.stringify(state))
+    } catch {
+      // Persisting the migration is best effort; the migrated state remains usable.
+    }
     return state
   } catch {
     return { ...DEFAULT_MODEL_VIEW_STATE }

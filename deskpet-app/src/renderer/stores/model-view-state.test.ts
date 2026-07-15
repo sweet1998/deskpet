@@ -26,6 +26,15 @@ describe('migratePersistedModelViewState', () => {
     )
   })
 
+  it.each([NaN, Infinity, -Infinity])(
+    'uses the default state when zoom is %s',
+    (zoom) => {
+      expect(migratePersistedModelViewState({ zoom })).toEqual(
+        DEFAULT_MODEL_VIEW_STATE
+      )
+    }
+  )
+
   it('returns a fresh default state for null', () => {
     const state = migratePersistedModelViewState(null)
 
