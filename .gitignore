@@ -12,10 +12,14 @@ airi-main/
 *.7z
 .mcp.json
 .claude/
-deskpet-app/src/renderer/public/models/
-!deskpet-app/src/renderer/public/models/README.md
+deskpet-app/src/renderer/public/models/*
 !deskpet-app/src/renderer/public/models/hiyori_pro_zh/
-!deskpet-app/src/renderer/public/models/hiyori_pro_zh/**
+deskpet-app/src/renderer/public/models/hiyori_pro_zh/*
+!deskpet-app/src/renderer/public/models/hiyori_pro_zh/hiyori_pro_zh/
+deskpet-app/src/renderer/public/models/hiyori_pro_zh/hiyori_pro_zh/*
+!deskpet-app/src/renderer/public/models/hiyori_pro_zh/hiyori_pro_zh/runtime/
+deskpet-app/src/renderer/public/models/hiyori_pro_zh/hiyori_pro_zh/runtime/*
+!deskpet-app/src/renderer/public/models/hiyori_pro_zh/hiyori_pro_zh/runtime/deskpet-adapter.json
 hiyori_pro_zh.zip
 deskpet-app/piper/
 *.wav

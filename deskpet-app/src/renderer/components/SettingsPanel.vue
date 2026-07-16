@@ -1,7 +1,17 @@
 <template>
   <Transition name="settings-slide">
     <div v-if="open" class="settings-overlay">
-      <div class="settings-panel" data-pet-ui @mousedown.stop>
+      <div
+        class="settings-panel"
+        data-pet-ui
+        :style="{
+          left: `${left}px`,
+          top: `${top}px`,
+          width: `${width}px`,
+          height: `${height}px`,
+        }"
+        @mousedown.stop
+      >
         <div class="settings-header">
           <span>设置</span>
           <button class="settings-close" @click="$emit('close')">&times;</button>
@@ -21,6 +31,14 @@
           <!-- 显示 -->
           <div class="section">
             <div class="section-title">显示</div>
+            <label class="toggle-row">
+              <input
+                type="checkbox"
+                :checked="desktopOnly"
+                @change="setDesktopOnly($event)"
+              />
+              <span>仅在桌面显示</span>
+            </label>
             <label>模型路径</label>
             <input :value="modelPath" @change="setModelPath($event)" placeholder="models/ariu_vts/ariu.model3.json" />
             <p class="hint">修改后需刷新页面生效</p>
@@ -49,9 +67,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 
-defineProps<{ open: boolean }>()
+defineProps<{
+  open: boolean
+  left: number
+  top: number
+  width: number
+  height: number
+}>()
 defineEmits<{ close: [] }>()
 
 function get(k: string, fallback = '') { try { return localStorage.getItem(k) || fallback } catch { return fallback } }
@@ -64,6 +88,20 @@ const modelPath = ref(get('deskpet/model-path', ''))
 const autoSsInterval = ref(get('deskpet/auto-screenshot-interval', '60'))
 const vadThreshold = ref(get('deskpet/vad-threshold', '0.02'))
 const vadSilence = ref(get('deskpet/vad-silence', '1.5'))
+const desktopOnly = ref(false)
+let unsubscribeDesktopOnly: (() => void) | null = null
+
+onMounted(async () => {
+  desktopOnly.value = await window.electronAPI?.getDesktopOnly() ?? false
+  unsubscribeDesktopOnly = window.electronAPI?.onDesktopOnlyChanged((flag) => {
+    desktopOnly.value = flag
+  }) ?? null
+})
+
+onUnmounted(() => {
+  unsubscribeDesktopOnly?.()
+  unsubscribeDesktopOnly = null
+})
 
 function setWsUrl(e: Event) { const v = (e.target as HTMLInputElement).value; wsUrl.value = v; set('deskpet/ws-url', v) }
 function setWsToken(e: Event) { const v = (e.target as HTMLInputElement).value; wsToken.value = v; set('deskpet/ws-token', v) }
@@ -79,6 +117,11 @@ function setVadThreshold(e: Event) {
 function setVadSilence(e: Event) {
   const v = (e.target as HTMLInputElement).value; vadSilence.value = v; set('deskpet/vad-silence', v)
 }
+function setDesktopOnly(e: Event) {
+  const enabled = (e.target as HTMLInputElement).checked
+  desktopOnly.value = enabled
+  void window.electronAPI?.setDesktopOnly(enabled)
+}
 </script>
 
 <style scoped>
@@ -86,12 +129,9 @@ function setVadSilence(e: Event) {
   position: absolute;
   inset: 0;
   z-index: 70;
-  display: flex;
-  justify-content: flex-end;
 }
 .settings-panel {
-  width: 280px;
-  height: 100%;
+  position: absolute;
   background: rgba(18, 18, 24, 0.96);
   backdrop-filter: blur(16px);
   display: flex;
@@ -107,6 +147,8 @@ function setVadSilence(e: Event) {
 .section { display: flex; flex-direction: column; gap: 6px; }
 .section-title { color: #999; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
 label { color: #bbb; font-size: 12px; }
+.toggle-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.toggle-row input { width: 16px; height: 16px; margin: 0; accent-color: #789dd8; }
 input {
   width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.12);
   background: rgba(255,255,255,0.06); color: #eee; font-size: 12px; outline: none;

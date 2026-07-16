@@ -8,8 +8,8 @@ import { buildPetContextMenuTemplate } from './pet-context-menu'
 app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('in-process-gpu')
 
-const MIN_WINDOW_WIDTH = 260
-const MIN_WINDOW_HEIGHT = 360
+const MIN_WINDOW_WIDTH = 80
+const MIN_WINDOW_HEIGHT = 120
 const CURSOR_HEARTBEAT_MS = 250
 const SHORTCUTS = {
   toggleVisible: 'CommandOrControl+Alt+H',
@@ -31,6 +31,23 @@ interface WindowState {
   hoverFadeEnabled: boolean
 }
 
+interface PetWindowLayoutRequest {
+  mode: 'compact' | 'settings'
+  petWidth: number
+  petHeight: number
+  settingsWidth: number
+  settingsHeight: number
+}
+
+interface PetWindowLayoutResult {
+  petX: number
+  petY: number
+  settingsX: number
+  settingsY: number
+  settingsWidth: number
+  settingsHeight: number
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
@@ -46,7 +63,7 @@ function clampWindowBounds(bounds: WindowBoundsState): WindowBoundsState {
     width,
     height,
     x: clamp(bounds.x, area.x + minVisibleSize - width, area.x + area.width - minVisibleSize),
-    y: clamp(bounds.y, area.y + minVisibleSize - height, area.y + area.height - height),
+    y: clamp(bounds.y, area.y + minVisibleSize - height, area.y + area.height - minVisibleSize),
   }
 }
 
@@ -100,27 +117,12 @@ function loadWindowState(): WindowState {
   }
 }
 
-let enforcingWindowBounds = false
-
-function enforceWindowBounds(): void {
-  if (!mainWindow || mainWindow.isDestroyed() || enforcingWindowBounds) return
-  enforcingWindowBounds = true
-  try {
-    const current = mainWindow.getBounds()
-    const next = clampWindowBounds(current)
-    if (current.x !== next.x || current.y !== next.y || current.width !== next.width || current.height !== next.height) {
-      mainWindow.setBounds(next)
-      lastSavedBounds = next
-    }
-  } finally {
-    enforcingWindowBounds = false
-  }
-}
-
 function saveWindowState(): void {
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      lastSavedBounds = mainWindow.getBounds()
+      lastSavedBounds = petWindowLayoutMode === 'settings' && compactWindowBounds
+        ? compactWindowBounds
+        : mainWindow.getBounds()
     }
     fs.mkdirSync(app.getPath('userData'), { recursive: true })
     fs.writeFileSync(getWindowStatePath(), JSON.stringify({
@@ -145,10 +147,107 @@ let clickThroughLocked = false
 let pointerInteractive = true
 let hoverFadeEnabled = false
 let lastSavedBounds: WindowBoundsState = { width: 600, height: 800, x: 100, y: 100 }
+let petWindowLayoutMode: PetWindowLayoutRequest['mode'] = 'compact'
+let compactWindowBounds: WindowBoundsState | null = null
+let activePetLayoutRequest: PetWindowLayoutRequest | null = null
+let settingsPanelScreenBounds: WindowBoundsState | null = null
+let settingsWindowScreenBounds: WindowBoundsState | null = null
+
+function isValidLayoutDimension(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+function applyPetWindowLayout(request: PetWindowLayoutRequest): PetWindowLayoutResult | null {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  if (
+    (request.mode !== 'compact' && request.mode !== 'settings')
+    || !isValidLayoutDimension(request.petWidth)
+    || !isValidLayoutDimension(request.petHeight)
+    || !isValidLayoutDimension(request.settingsWidth)
+    || !isValidLayoutDimension(request.settingsHeight)
+  ) return null
+
+  const current = mainWindow.getBounds()
+  const petWidth = Math.max(MIN_WINDOW_WIDTH, Math.round(request.petWidth))
+  const petHeight = Math.max(MIN_WINDOW_HEIGHT, Math.round(request.petHeight))
+  activePetLayoutRequest = request
+
+  if (request.mode === 'compact') {
+    const source = compactWindowBounds ?? current
+    const next = {
+      x: Math.round(source.x + (source.width - petWidth) / 2),
+      y: Math.round(source.y + (source.height - petHeight) / 2),
+      width: petWidth,
+      height: petHeight,
+    }
+    petWindowLayoutMode = 'compact'
+    compactWindowBounds = next
+    settingsPanelScreenBounds = null
+    settingsWindowScreenBounds = null
+    mainWindow.setBounds(next)
+    lastSavedBounds = next
+    saveWindowState()
+    return {
+      petX: next.width / 2,
+      petY: next.height / 2,
+      settingsX: 0,
+      settingsY: 0,
+      settingsWidth: 0,
+      settingsHeight: 0,
+    }
+  }
+
+  const compactSource = petWindowLayoutMode === 'compact'
+    ? current
+    : compactWindowBounds ?? current
+  const petBounds = {
+    x: Math.round(compactSource.x + (compactSource.width - petWidth) / 2),
+    y: Math.round(compactSource.y + (compactSource.height - petHeight) / 2),
+    width: petWidth,
+    height: petHeight,
+  }
+  compactWindowBounds = petBounds
+
+  if (!settingsPanelScreenBounds || petWindowLayoutMode === 'compact') {
+    const display = screen.getDisplayMatching(petBounds)
+    const area = display.workArea
+    const settingsWidth = Math.min(Math.round(request.settingsWidth), area.width)
+    const settingsHeight = Math.min(Math.round(request.settingsHeight), area.height)
+    settingsPanelScreenBounds = {
+      x: Math.round(area.x + (area.width - settingsWidth) / 2),
+      y: Math.round(area.y + (area.height - settingsHeight) / 2),
+      width: settingsWidth,
+      height: settingsHeight,
+    }
+    settingsWindowScreenBounds = { ...area }
+  }
+  const settingsBounds = settingsPanelScreenBounds
+  const next = settingsWindowScreenBounds
+  if (!next) return null
+  petWindowLayoutMode = 'settings'
+  if (
+    current.x !== next.x
+    || current.y !== next.y
+    || current.width !== next.width
+    || current.height !== next.height
+  ) {
+    mainWindow.setBounds(next)
+  }
+  saveWindowState()
+  return {
+    petX: petBounds.x - next.x + petBounds.width / 2,
+    petY: petBounds.y - next.y + petBounds.height / 2,
+    settingsX: settingsBounds.x - next.x,
+    settingsY: settingsBounds.y - next.y,
+    settingsWidth: settingsBounds.width,
+    settingsHeight: settingsBounds.height,
+  }
+}
 
 function setAlwaysOnTopState(flag: boolean): void {
   alwaysOnTop = flag
   mainWindow?.setAlwaysOnTop(flag, 'floating')
+  mainWindow?.webContents.send('desktop-only-changed', !flag)
   saveWindowState()
   createTray()
 }
@@ -232,7 +331,7 @@ function createWindow(): void {
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
-    type: 'panel',
+    type: 'normal',
     transparent: true,
     frame: false,
     hasShadow: false,
@@ -260,14 +359,19 @@ function createWindow(): void {
 
   mainWindow.webContents.once('did-finish-load', () => {
     mainWindow?.webContents.send('set-hover-fade', hoverFadeEnabled)
+    mainWindow?.webContents.send('desktop-only-changed', !alwaysOnTop)
   })
 
   mainWindow.on('move', () => {
-    enforceWindowBounds()
+    if (petWindowLayoutMode === 'compact') {
+      compactWindowBounds = mainWindow?.getBounds() ?? null
+    }
     saveWindowState()
   })
   mainWindow.on('resize', () => {
-    enforceWindowBounds()
+    if (petWindowLayoutMode === 'compact') {
+      compactWindowBounds = mainWindow?.getBounds() ?? null
+    }
     saveWindowState()
   })
   mainWindow.on('close', saveWindowState)
@@ -365,13 +469,38 @@ app.whenReady().then(() => {
   ipcMain.handle('drag-window', (event, { dx, dy }: { dx: number; dy: number }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return
+    if (
+      petWindowLayoutMode === 'settings'
+      && compactWindowBounds
+      && activePetLayoutRequest
+    ) {
+      compactWindowBounds = {
+        ...compactWindowBounds,
+        x: compactWindowBounds.x + dx,
+        y: compactWindowBounds.y + dy,
+      }
+      const layout = applyPetWindowLayout(activePetLayoutRequest)
+      win.webContents.send('pet-window-layout-changed', layout)
+      return
+    }
     const bounds = win.getBounds()
-    const nextBounds = clampWindowBounds({ ...bounds, x: bounds.x + dx, y: bounds.y + dy })
-    win.setPosition(nextBounds.x, nextBounds.y)
+    win.setPosition(bounds.x + dx, bounds.y + dy)
+  })
+
+  ipcMain.handle('set-pet-window-layout', (event, request: PetWindowLayoutRequest) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return null
+    return applyPetWindowLayout(request)
   })
 
   ipcMain.handle('set-always-on-top', (_event, flag: boolean) => {
     setAlwaysOnTopState(flag)
+  })
+
+  ipcMain.handle('get-desktop-only', () => !alwaysOnTop)
+
+  ipcMain.handle('set-desktop-only', (_event, flag: boolean) => {
+    if (typeof flag !== 'boolean') return
+    setAlwaysOnTopState(!flag)
   })
 
   ipcMain.handle('set-click-through-locked', (_event, flag: boolean) => {

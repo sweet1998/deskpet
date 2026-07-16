@@ -2,7 +2,14 @@
   <div ref="deskpetStageRef" class="deskpet-stage" :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }" @mousedown.left="onPetMouseDown" @contextmenu="onPetContextMenu" @mouseenter="isHovered = true" @mouseleave="isHovered = false">
     <div ref="stageRef" class="live2d-stage" />
 
-    <SettingsPanel :open="showSettings" @close="showSettings = false" />
+    <SettingsPanel
+      :open="settingsPanelOpen"
+      :left="settingsPanelLeft"
+      :top="settingsPanelTop"
+      :width="settingsPanelWidth"
+      :height="settingsPanelHeight"
+      @close="showSettings = false"
+    />
 
     <div v-if="modelError" class="model-error">
       <div class="error-icon">!</div>
@@ -28,18 +35,24 @@ import { useLive2DAnimation } from '@/composables/useLive2DAnimation'
 import { useWindowDrag } from '@/composables/useWindowDrag'
 import { useModelZoom } from '@/composables/useModelZoom'
 import { useExpressionState } from '@/composables/useExpressionState'
+import { usePetActionState } from '@/composables/usePetActionState'
 import { useMotionPriority, MotionLayer } from '@/composables/useMotionPriority'
 import { useIdleScheduler } from '@/composables/useIdleScheduler'
 import { useLipSync } from '@/composables/useLipSync'
 import { createPixiApp, loadLive2DModel, resizeModel, resizeModelFit } from '@/services/live2d/loader'
 import { discoverModel } from '@/services/live2d/model-discovery'
 import { getAnimationTarget, getEmotionTarget, loadEmotionAdapter } from '@/services/live2d/emotion-adapter'
-import { isClientPointInsideModel } from '@/services/live2d/model-bounds'
+import { isClientPointInsideModel, modelBoundsToClientBounds } from '@/services/live2d/model-bounds'
 import { shouldPetWindowBeInteractive } from '@/services/interaction/pet-window-policy'
 import { isPointOverVisibleUi as isClientPointOverVisibleUi } from '@/services/interaction/ui-hit-test'
 import type { PetContextMenuCommand } from '../../shared/pet-context-menu'
 
 const store = useDeskpetStore()
+const MODEL_REFERENCE_WIDTH = 600
+const MODEL_REFERENCE_HEIGHT = 800
+const PET_WINDOW_PADDING = 8
+const SETTINGS_PANEL_WIDTH = 280
+const SETTINGS_PANEL_HEIGHT = 600
 const transport = useChimeraTransport()
 const { start: startAnim, stop: stopAnim } = useLive2DAnimation()
 const { onWindowMouseDown, cleanup: cleanupWindowDrag } = useWindowDrag(
@@ -51,6 +64,11 @@ const deskpetStageRef = ref<HTMLDivElement>()
 const stageRef = ref<HTMLDivElement>()
 const isHovered = ref(false)
 const showSettings = ref(false)
+const settingsPanelOpen = ref(false)
+const settingsPanelLeft = ref(0)
+const settingsPanelTop = ref(0)
+const settingsPanelWidth = ref(SETTINGS_PANEL_WIDTH)
+const settingsPanelHeight = ref(SETTINGS_PANEL_HEIGHT)
 const modelError = ref('')
 
 let animFrameId = 0
@@ -59,14 +77,23 @@ let unsubscribeResetModelView: (() => void) | null = null
 let unsubscribeSetHoverFade: (() => void) | null = null
 let unsubscribeScreenshot: (() => void) | null = null
 let unsubscribePetContextCommand: (() => void) | null = null
+let unsubscribePetWindowLayout: (() => void) | null = null
 let lastPointerInteractive: boolean | null = null
 let petDragActive = false
 let pointerSyncFrameId = 0
 let stageMutationObserver: MutationObserver | null = null
+let petViewportWidth = 0
+let petViewportHeight = 0
+let petModelX = 0
+let petModelY = 0
+let layoutRequestGeneration = 0
 
 onMounted(async () => {
   unsubscribePetContextCommand = window.electronAPI?.onPetContextMenuCommand(
     handlePetContextCommand,
+  ) ?? null
+  unsubscribePetWindowLayout = window.electronAPI?.onPetWindowLayoutChanged(
+    applyPetWindowLayoutResult,
   ) ?? null
   unsubscribeGlobalCursor = window.electronAPI?.onGlobalCursorPosition?.((position) => {
     mouseX = position.x
@@ -109,7 +136,7 @@ onMounted(async () => {
 
     const model = await loadLive2DModel(modelUrl, app)
     store.emotionAdapter = await loadEmotionAdapter(modelUrl)
-    resizeModel(model, window.innerWidth, window.innerHeight, store.modelZoom)
+    resizeModel(model, MODEL_REFERENCE_WIDTH, MODEL_REFERENCE_HEIGHT, store.modelZoom)
     store.live2dModel = model
     store.modelLoaded = true
     schedulePointerInteractiveSync()
@@ -118,6 +145,8 @@ onMounted(async () => {
     startAnim(model)
     const canvas = app.view as HTMLCanvasElement
     canvas.addEventListener('wheel', onWheel as any, { passive: false } as any)
+    updatePetViewportFromModel()
+    syncPetWindowLayout()
     console.log('[Deskpet] Live2D model loaded successfully')
   } catch (err) {
     console.error('[Deskpet] Failed to load Live2D model:', err)
@@ -152,23 +181,36 @@ let lastZoom = store.modelZoom
 let mouseX = window.innerWidth / 2
 let mouseY = window.innerHeight / 2
 
-watch(showSettings, () => {
+watch(showSettings, (open) => {
   schedulePointerInteractiveSync()
+  if (!open) settingsPanelOpen.value = false
+  void syncPetWindowLayout().then(() => {
+    if (open && showSettings.value) settingsPanelOpen.value = true
+  })
 }, { flush: 'post' })
 
 const { onWheel } = useModelZoom(
   store,
   () => ({ x: mouseX, y: mouseY }),
-  () => ({ width: window.innerWidth, height: window.innerHeight }),
   (zoom) => {
     lastZoom = zoom
+    updatePetViewportFromModel()
+    syncPetWindowLayout()
     schedulePointerInteractiveSync()
   },
 )
-const { cleanup: cleanupExpression } = useExpressionState(store)
+const { activateEmotionState, cleanup: cleanupExpression } = useExpressionState(store)
+const { playActionEffect, cleanup: cleanupActionEffects } = usePetActionState(store)
 const { playMotionWithPriority } = useMotionPriority(store)
 const idleScheduler = useIdleScheduler(playMotionWithPriority)
 const { getMouthOpen } = useLipSync()
+const stopPendingAnimationWatch = watch(
+  [() => store.pendingAnimation, () => store.live2dModel],
+  ([pending, model]) => {
+    if (pending && model) playPendingAnimation()
+  },
+  { flush: 'sync' },
+)
 
 function isUiTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('[data-pet-ui]'))
@@ -184,6 +226,49 @@ function isPointOverModel(clientX: number, clientY: number): boolean {
 function isPointOverVisibleUi(clientX: number, clientY: number): boolean {
   const stage = deskpetStageRef.value
   return Boolean(stage && isClientPointOverVisibleUi(stage, clientX, clientY))
+}
+
+function updatePetViewportFromModel(): void {
+  const model = store.live2dModel
+  const canvas = store.pixiApp?.view as HTMLCanvasElement | undefined
+  if (!model || !canvas) return
+  const bounds = modelBoundsToClientBounds(model.getBounds(), canvas)
+  petViewportWidth = Math.ceil(bounds.width + PET_WINDOW_PADDING * 2)
+  petViewportHeight = Math.ceil(bounds.height + PET_WINDOW_PADDING * 2)
+}
+
+async function syncPetWindowLayout(): Promise<void> {
+  if (!petViewportWidth || !petViewportHeight) return
+  const generation = ++layoutRequestGeneration
+  const result = await window.electronAPI?.setPetWindowLayout({
+    mode: showSettings.value ? 'settings' : 'compact',
+    petWidth: petViewportWidth,
+    petHeight: petViewportHeight,
+    settingsWidth: SETTINGS_PANEL_WIDTH,
+    settingsHeight: SETTINGS_PANEL_HEIGHT,
+  })
+  if (!result || generation !== layoutRequestGeneration) return
+  applyPetWindowLayoutResult(result)
+}
+
+function applyPetWindowLayoutResult(result: PetWindowLayoutResult): void {
+  petModelX = result.petX
+  petModelY = result.petY
+  settingsPanelLeft.value = result.settingsX
+  settingsPanelTop.value = result.settingsY
+  settingsPanelWidth.value = result.settingsWidth || SETTINGS_PANEL_WIDTH
+  settingsPanelHeight.value = result.settingsHeight || SETTINGS_PANEL_HEIGHT
+  positionModelForCurrentLayout(window.innerWidth, window.innerHeight)
+  schedulePointerInteractiveSync()
+}
+
+function positionModelForCurrentLayout(width: number, height: number): void {
+  const model = store.live2dModel
+  if (!model) return
+  model.position.set(
+    petModelX || width / 2,
+    petModelY || height / 2,
+  )
 }
 
 function syncPointerInteractive(clientX: number, clientY: number): void {
@@ -245,8 +330,16 @@ function handlePetContextCommand(command: PetContextMenuCommand): void {
     return
   }
   if (command.type === 'emotion') {
-    if (getEmotionTarget(store.emotionAdapter, command.id)) {
+    const target = getEmotionTarget(store.emotionAdapter, command.id)
+    if (!target) return
+    if (store.currentEmotion !== command.id) {
       store.currentEmotion = command.id
+      return
+    }
+    activateEmotionState(command.id)
+    if (target.motion) {
+      playMotionWithPriority(target.motion.group, MotionLayer.Reply, target.motion.index ?? 0)
+      idleScheduler.notifyInteraction()
     }
     return
   }
@@ -256,18 +349,30 @@ function handlePetContextCommand(command: PetContextMenuCommand): void {
   }
 }
 
+function playPendingAnimation(): void {
+  const pending = store.consumePendingAnimation()
+  if (!pending || !store.live2dModel) return
+  const target = getAnimationTarget(store.emotionAdapter, pending.name)
+  if (!target) {
+    console.debug(`[Deskpet] No animation adapter target: ${pending.name}`)
+    return
+  }
+
+  let played = false
+  if (target.motion) {
+    playMotionWithPriority(target.motion.group, MotionLayer.Reply, target.motion.index ?? 0)
+    played = true
+  }
+  if (target.effect) {
+    played = playActionEffect(target.effect) || played
+  }
+  if (played) {
+    idleScheduler.notifyInteraction()
+  }
+}
+
 function startAnimationPoll() {
   const tick = () => {
-    const pending = store.consumePendingAnimation()
-    if (pending && store.live2dModel) {
-      const target = getAnimationTarget(store.emotionAdapter, pending.name)
-      if (target?.motion) {
-        playMotionWithPriority(target.motion.group, MotionLayer.Reply, target.motion.index ?? 0)
-        idleScheduler.notifyInteraction()
-      } else {
-        console.debug(`[Deskpet] No animation adapter target: ${pending.name}`)
-      }
-    }
     if (store.live2dModel) {
       const cw = window.innerWidth
       const ch = window.innerHeight
@@ -276,13 +381,20 @@ function startAnimationPoll() {
         store.pixiApp!.stage.scale.set(2)
         lastW = cw
         lastH = ch
-        resizeModelFit(store.live2dModel, cw, ch, store.modelZoom)
+        positionModelForCurrentLayout(cw, ch)
         schedulePointerInteractiveSync()
       }
       if (store.modelZoom !== lastZoom) {
         lastZoom = store.modelZoom
-        // zoom focal point is handled in onWheel, not here
-        resizeModel(store.live2dModel, cw, ch, store.modelZoom)
+        resizeModel(
+          store.live2dModel,
+          MODEL_REFERENCE_WIDTH,
+          MODEL_REFERENCE_HEIGHT,
+          store.modelZoom,
+        )
+        positionModelForCurrentLayout(cw, ch)
+        updatePetViewportFromModel()
+        syncPetWindowLayout()
         schedulePointerInteractiveSync()
       }
       try { store.live2dModel.focus(mouseX, mouseY) } catch { /* focus not supported */ }
@@ -315,6 +427,8 @@ onUnmounted(() => {
   unsubscribeGlobalCursor = null
   unsubscribePetContextCommand?.()
   unsubscribePetContextCommand = null
+  unsubscribePetWindowLayout?.()
+  unsubscribePetWindowLayout = null
   unsubscribeResetModelView?.()
   unsubscribeResetModelView = null
   unsubscribeSetHoverFade?.()
@@ -322,6 +436,8 @@ onUnmounted(() => {
   unsubscribeScreenshot?.()
   unsubscribeScreenshot = null
   cleanupExpression()
+  cleanupActionEffects()
+  stopPendingAnimationWatch()
   idleScheduler.stop()
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('resize', schedulePointerInteractiveSync)
@@ -340,7 +456,15 @@ onUnmounted(() => {
 function resetModelView() {
   store.resetModelView()
   if (store.live2dModel) {
-    resizeModelFit(store.live2dModel, window.innerWidth, window.innerHeight, store.modelZoom)
+    resizeModelFit(
+      store.live2dModel,
+      MODEL_REFERENCE_WIDTH,
+      MODEL_REFERENCE_HEIGHT,
+      store.modelZoom,
+    )
+    positionModelForCurrentLayout(window.innerWidth, window.innerHeight)
+    updatePetViewportFromModel()
+    syncPetWindowLayout()
     lastZoom = store.modelZoom
     schedulePointerInteractiveSync()
   }

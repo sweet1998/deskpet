@@ -15,10 +15,30 @@ interface GlobalCursorPosition {
   y: number
 }
 
+interface PetWindowLayoutResult {
+  petX: number
+  petY: number
+  settingsX: number
+  settingsY: number
+  settingsWidth: number
+  settingsHeight: number
+}
+
 interface ElectronAPI {
   dragWindow: (dx: number, dy: number) => Promise<void>
+  setPetWindowLayout: (request: {
+    mode: 'compact' | 'settings'
+    petWidth: number
+    petHeight: number
+    settingsWidth: number
+    settingsHeight: number
+  }) => Promise<PetWindowLayoutResult | null>
+  onPetWindowLayoutChanged: (callback: (layout: PetWindowLayoutResult) => void) => () => void
   setPetHitTestInteractive: (interactive: boolean) => Promise<void>
   setAlwaysOnTop: (flag: boolean) => Promise<void>
+  getDesktopOnly: () => Promise<boolean>
+  setDesktopOnly: (flag: boolean) => Promise<void>
+  onDesktopOnlyChanged: (callback: (flag: boolean) => void) => () => void
   setClickThroughLocked: (flag: boolean) => Promise<void>
   minimizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>

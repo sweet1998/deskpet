@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "modelId": "hiyori_pro_t11",
+  "name": "Hiyori Pro",
+  "emotions": {
+    "happy": {
+      "motion": { "group": "Tap", "index": 1 },
+      "parameters": {
+        "ParamEyeLSmile": 1,
+        "ParamEyeRSmile": 1,
+        "ParamMouthForm": 1,
+        "ParamCheek": 1,
+        "ParamMouthOpenY": 0.35
+      }
+    },
+    "sad": {
+      "motion": { "group": "FlickDown", "index": 0 },
+      "parameters": {
+        "ParamMouthForm": -1,
+        "ParamBrowLY": -0.5,
+        "ParamBrowRY": -0.5,
+        "ParamBrowLForm": -1,
+        "ParamBrowRForm": -1,
+        "ParamEyeLOpen": 0.65,
+        "ParamEyeROpen": 0.65
+      }
+    },
+    "angry": {
+      "motion": { "group": "Flick@Body", "index": 0 },
+      "parameters": {
+        "ParamMouthForm": -0.7,
+        "ParamBrowLAngle": -0.8,
+        "ParamBrowRAngle": 0.8,
+        "ParamBrowLForm": 1,
+        "ParamBrowRForm": 1,
+        "ParamEyeLOpen": 0.75,
+        "ParamEyeROpen": 0.75
+      }
+    },
+    "surprise": {
+      "motion": { "group": "Flick", "index": 0 },
+      "parameters": {
+        "ParamEyeLOpen": 1,
+        "ParamEyeROpen": 1,
+        "ParamMouthOpenY": 1,
+        "ParamMouthForm": 0.25,
+        "ParamBrowLY": 1,
+        "ParamBrowRY": 1
+      }
+    },
+    "thinking": {
+      "motion": { "group": "FlickUp", "index": 0 },
+      "parameters": {
+        "ParamMouthForm": 0,
+        "ParamBrowLY": 0.3,
+        "ParamBrowRY": 0.3,
+        "ParamAngleZ": -12,
+        "ParamEyeBallX": 0.65,
+        "ParamEyeBallY": 0.55,
+        "ParamMouthOpenY": 0.15
+      }
+    },
+    "shy": {
+      "motion": { "group": "Tap@Body", "index": 0 },
+      "parameters": {
+        "ParamCheek": 1,
+        "ParamEyeLSmile": 0.7,
+        "ParamEyeRSmile": 0.7,
+        "ParamMouthForm": 0.5,
+        "ParamAngleZ": 10,
+        "ParamEyeBallY": -0.35
+      }
+    },
+    "curious": {
+      "motion": { "group": "FlickUp", "index": 0 },
+      "parameters": {
+        "ParamMouthForm": 0.3,
+        "ParamBrowLY": 0.4,
+        "ParamBrowRY": 0.4,
+        "ParamAngleZ": 14,
+        "ParamEyeBallX": -0.45,
+        "ParamEyeBallY": 0.35,
+        "ParamMouthOpenY": 0.25
+      }
+    },
+    "neutral": {
+      "parameters": {
+        "ParamCheek": 0,
+        "ParamEyeLSmile": 0,
+        "ParamEyeRSmile": 0,
+        "ParamEyeLOpen": 1,
+        "ParamEyeROpen": 1,
+        "ParamMouthForm": 0,
+        "ParamMouthOpenY": 0,
+        "ParamAngleZ": 0,
+        "ParamEyeBallX": 0,
+        "ParamEyeBallY": 0,
+        "ParamBrowLY": 0,
+        "ParamBrowRY": 0,
+        "ParamBrowLAngle": 0,
+        "ParamBrowRAngle": 0,
+        "ParamBrowLForm": 0,
+        "ParamBrowRForm": 0
+      }
+    },
+    "idle": {
+      "parameters": {
+        "ParamCheek": 0,
+        "ParamEyeLSmile": 0,
+        "ParamEyeRSmile": 0,
+        "ParamEyeLOpen": 1,
+        "ParamEyeROpen": 1,
+        "ParamMouthForm": 0,
+        "ParamMouthOpenY": 0,
+        "ParamAngleZ": 0,
+        "ParamEyeBallX": 0,
+        "ParamEyeBallY": 0,
+        "ParamBrowLY": 0,
+        "ParamBrowRY": 0,
+        "ParamBrowLAngle": 0,
+        "ParamBrowRAngle": 0,
+        "ParamBrowLForm": 0,
+        "ParamBrowRForm": 0
+      }
+    }
+  },
+  "animations": {
+    "wave": {
+      "motion": { "group": "Tap", "index": 1 },
+      "effect": "wave"
+    },
+    "walk": {
+      "motion": { "group": "Tap@Body", "index": 0 },
+      "effect": "walk"
+    },
+    "crawl": {
+      "motion": { "group": "FlickDown", "index": 0 },
+      "effect": "crawl"
+    },
+    "jump": {
+      "motion": { "group": "Tap", "index": 0 },
+      "effect": "jump"
+    },
+    "roll": {
+      "motion": { "group": "Flick@Body", "index": 0 },
+      "effect": "roll"
+    },
+    "spin": {
+      "motion": { "group": "Flick", "index": 0 },
+      "effect": "spin"
+    },
+    "sit": {
+      "motion": { "group": "FlickDown", "index": 0 },
+      "effect": "sit"
+    },
+    "sleep": {
+      "effect": "sleep"
+    },
+    "wake": {
+      "motion": { "group": "FlickUp", "index": 0 },
+      "effect": "wake"
+    },
+    "dance": {
+      "motion": { "group": "Tap@Body", "index": 0 },
+      "effect": "dance"
+    },
+    "cheer": {
+      "motion": { "group": "Tap", "index": 1 },
+      "effect": "cheer"
+    }
+  }
+}

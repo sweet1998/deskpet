@@ -16,8 +16,48 @@ interface GlobalCursorPosition {
 
 contextBridge.exposeInMainWorld('electronAPI', {
   dragWindow: (dx: number, dy: number) => ipcRenderer.invoke('drag-window', { dx, dy }),
+  setPetWindowLayout: (request: {
+    mode: 'compact' | 'settings'
+    petWidth: number
+    petHeight: number
+    settingsWidth: number
+    settingsHeight: number
+  }): Promise<{
+    petX: number
+    petY: number
+    settingsX: number
+    settingsY: number
+    settingsWidth: number
+    settingsHeight: number
+  } | null> => ipcRenderer.invoke('set-pet-window-layout', request),
+  onPetWindowLayoutChanged: (callback: (layout: {
+    petX: number
+    petY: number
+    settingsX: number
+    settingsY: number
+    settingsWidth: number
+    settingsHeight: number
+  }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, layout: {
+      petX: number
+      petY: number
+      settingsX: number
+      settingsY: number
+      settingsWidth: number
+      settingsHeight: number
+    }) => callback(layout)
+    ipcRenderer.on('pet-window-layout-changed', listener)
+    return () => ipcRenderer.removeListener('pet-window-layout-changed', listener)
+  },
   setPetHitTestInteractive: (interactive: boolean): Promise<void> => ipcRenderer.invoke('set-pet-hit-test-interactive', interactive),
   setAlwaysOnTop: (flag: boolean) => ipcRenderer.invoke('set-always-on-top', flag),
+  getDesktopOnly: (): Promise<boolean> => ipcRenderer.invoke('get-desktop-only'),
+  setDesktopOnly: (flag: boolean): Promise<void> => ipcRenderer.invoke('set-desktop-only', flag),
+  onDesktopOnlyChanged: (callback: (flag: boolean) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, flag: boolean) => callback(flag)
+    ipcRenderer.on('desktop-only-changed', listener)
+    return () => ipcRenderer.removeListener('desktop-only-changed', listener)
+  },
   setClickThroughLocked: (flag: boolean) => ipcRenderer.invoke('set-click-through-locked', flag),
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
   closeWindow: () => ipcRenderer.invoke('close-window'),

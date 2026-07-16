@@ -24,7 +24,8 @@ export interface EmotionTarget {
 }
 
 export interface AnimationTarget {
-  motion: EmotionMotionTarget
+  motion?: EmotionMotionTarget
+  effect?: string
 }
 
 export interface ModelEmotionAdapter {
@@ -91,14 +92,20 @@ function normalizeAnimationTarget(target: unknown): AnimationTarget | null {
   if (!target || typeof target !== 'object') return null
 
   const entry = target as any
-  if (!entry.motion || typeof entry.motion !== 'object' || typeof entry.motion.group !== 'string') return null
+  const normalized: AnimationTarget = {}
 
-  return {
-    motion: {
+  if (entry.motion && typeof entry.motion === 'object' && typeof entry.motion.group === 'string') {
+    normalized.motion = {
       group: entry.motion.group,
       index: typeof entry.motion.index === 'number' ? entry.motion.index : 0
     }
   }
+
+  if (typeof entry.effect === 'string' && entry.effect) {
+    normalized.effect = entry.effect
+  }
+
+  return normalized.motion || normalized.effect ? normalized : null
 }
 
 function normalizeAdapter(raw: any): ModelEmotionAdapter {
