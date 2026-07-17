@@ -1,8 +1,12 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useDeskpetStore } from '@/stores/deskpet'
 import { useChatStore } from '@/stores/chat'
+import { useAgentStore } from '@/stores/agent'
 import { useLipSync } from './useLipSync'
 import { isDeskpetEmotionValue } from '@/services/live2d/emotion-adapter'
+import { isAgentState } from '@/services/agent-protocol'
+import type { AgentConfirmation, AgentTaskResult } from '@/services/agent-protocol'
+import { getAiProvider } from '@/services/ai-provider'
 
 function getWsUrl(): string {
   try {
@@ -30,12 +34,16 @@ export function useWebSocket() {
   const token = getWsToken()
   const store = useDeskpetStore()
   const chatStore = useChatStore()
+  const agentStore = useAgentStore()
   const { start: startLipSync, stop: stopLipSync } = useLipSync()
 
   let currentAudio: HTMLAudioElement | null = null
+  let currentAudioUrl: string | null = null
   let audioQueue: string[] = []
 
   function playNextInQueue() {
+    if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl)
+    currentAudioUrl = null
     currentAudio = null
     if (audioQueue.length === 0) return
     const b64 = audioQueue.shift()!
@@ -45,12 +53,22 @@ export function useWebSocket() {
   function playAudioNow(base64: string) {
     const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
     const blob = new Blob([bytes], { type: 'audio/wav' })
-    const audio = new Audio(URL.createObjectURL(blob))
+    currentAudioUrl = URL.createObjectURL(blob)
+    const audio = new Audio(currentAudioUrl)
     currentAudio = audio
     startLipSync()
     audio.onended = () => { stopLipSync(); playNextInQueue() }
     audio.onerror = () => { stopLipSync(); playNextInQueue() }
     audio.play()
+  }
+
+  function stopOutput() {
+    audioQueue = []
+    currentAudio?.pause()
+    currentAudio = null
+    if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl)
+    currentAudioUrl = null
+    stopLipSync()
   }
 
   function playAudio(base64: string) {
@@ -113,12 +131,25 @@ export function useWebSocket() {
     switch (type) {
       case 'output:text:delta':
         chatStore.appendChatText(data.delta, request_id || data.request_id || '')
+        if (agentStore.state !== 'executing') {
+          agentStore.applyState({
+            requestId: request_id || data.request_id || agentStore.activeRequestId,
+            state: 'speaking',
+            interruptible: true,
+          })
+        }
         break
 
       case 'output:text:done':
         chatStore.finishChatStream(request_id || data.request_id || '')
         if (!data.error) {
           setTimeout(() => chatStore.hideChatBubble(), 8000)
+        } else {
+          agentStore.applyState({
+            requestId: request_id || data.request_id || agentStore.activeRequestId,
+            state: 'error',
+            error: data.error,
+          })
         }
         break
 
@@ -146,6 +177,45 @@ export function useWebSocket() {
 
       case 'state:thinking':
         store.isThinking = true
+        agentStore.applyState({
+          requestId: request_id || data.request_id || agentStore.activeRequestId,
+          state: 'thinking',
+          step: '正在理解你的请求',
+          interruptible: true,
+        })
+        break
+
+      case 'state:agent':
+        if (isAgentState(data.state)) {
+          agentStore.applyState({
+            requestId: request_id || data.requestId || data.request_id || agentStore.activeRequestId,
+            state: data.state,
+            progress: typeof data.progress === 'number' ? data.progress : undefined,
+            step: typeof data.step === 'string' ? data.step : undefined,
+            interruptible: Boolean(data.interruptible),
+            error: typeof data.error === 'string' ? data.error : undefined,
+          })
+        }
+        break
+
+      case 'tool:confirmation':
+        agentStore.setConfirmation({
+          requestId: request_id || data.requestId || data.request_id || '',
+          tool: String(data.tool || ''),
+          summary: String(data.summary || ''),
+          risk: ['low', 'medium', 'high'].includes(data.risk) ? data.risk : 'medium',
+          expiresAt: typeof data.expiresAt === 'number' ? data.expiresAt : undefined,
+        } as AgentConfirmation)
+        break
+
+      case 'output:result':
+        agentStore.setResult({
+          requestId: request_id || data.requestId || data.request_id || agentStore.activeRequestId,
+          kind: data.kind || 'text',
+          title: String(data.title || '任务结果'),
+          content: String(data.content || ''),
+          actions: Array.isArray(data.actions) ? data.actions.map(String) : [],
+        } as AgentTaskResult)
         break
 
       case 'output:emoji':
@@ -166,8 +236,8 @@ export function useWebSocket() {
     return true
   }
 
-  function sendScreenshot(base64: string) {
-    send('input:screenshot', { image: base64 })
+  function sendScreenshot(base64: string, requestId: string) {
+    return send('input:screenshot', { image: base64, requestId })
   }
 
   function startHeartbeat() {
@@ -185,6 +255,7 @@ export function useWebSocket() {
   }
 
   function scheduleReconnect() {
+    if (getAiProvider() !== 'maibot') return
     if (reconnectTimer.value) return
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempt.value), maxReconnectDelay)
     reconnectAttempt.value++
@@ -196,6 +267,7 @@ export function useWebSocket() {
   }
 
   function disconnect() {
+    stopOutput()
     stopHeartbeat()
     if (reconnectTimer.value) {
       clearTimeout(reconnectTimer.value)
@@ -206,12 +278,12 @@ export function useWebSocket() {
   }
 
   onMounted(() => {
-    connect()
+    if (getAiProvider() === 'maibot') connect()
   })
 
   onUnmounted(() => {
     disconnect()
   })
 
-  return { ws, connect, disconnect, send, sendScreenshot }
+  return { ws, connect, disconnect, send, sendScreenshot, stopOutput }
 }

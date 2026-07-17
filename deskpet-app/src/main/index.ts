@@ -1,9 +1,11 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShortcut, desktopCapturer } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShortcut, desktopCapturer, dialog } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import http from 'http'
 import { shouldIgnoreMouseEvents, shouldPublishCursorPosition } from './mouse-event-policy'
 import { buildPetContextMenuTemplate } from './pet-context-menu'
+import { requestDoubao, normalizeDoubaoConfig, type StoredDoubaoConfig } from './doubao-client'
+import { DOUBAO_BASE_URL, type DoubaoChatRequest, type DoubaoConfigInput } from '../shared/doubao'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('in-process-gpu')
@@ -152,6 +154,34 @@ let compactWindowBounds: WindowBoundsState | null = null
 let activePetLayoutRequest: PetWindowLayoutRequest | null = null
 let settingsPanelScreenBounds: WindowBoundsState | null = null
 let settingsWindowScreenBounds: WindowBoundsState | null = null
+const doubaoRequests = new Map<string, AbortController>()
+
+function getDoubaoConfigPath(): string {
+  return path.join(app.getPath('userData'), 'doubao-config.json')
+}
+
+function readDoubaoConfig(): StoredDoubaoConfig {
+  try {
+    return normalizeDoubaoConfig(JSON.parse(fs.readFileSync(getDoubaoConfigPath(), 'utf-8')))
+  } catch {
+    return { apiKey: '', model: '' }
+  }
+}
+
+function writeDoubaoConfig(input: DoubaoConfigInput): StoredDoubaoConfig {
+  const config = normalizeDoubaoConfig(input, readDoubaoConfig())
+  fs.mkdirSync(app.getPath('userData'), { recursive: true })
+  fs.writeFileSync(getDoubaoConfigPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
+  return config
+}
+
+function getDoubaoConfigView(config = readDoubaoConfig()) {
+  return {
+    baseUrl: DOUBAO_BASE_URL,
+    model: config.model,
+    hasApiKey: Boolean(config.apiKey),
+  }
+}
 
 function isValidLayoutDimension(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -208,7 +238,12 @@ function applyPetWindowLayout(request: PetWindowLayoutRequest): PetWindowLayoutR
   }
   compactWindowBounds = petBounds
 
-  if (!settingsPanelScreenBounds || petWindowLayoutMode === 'compact') {
+  if (
+    !settingsPanelScreenBounds
+    || petWindowLayoutMode === 'compact'
+    || settingsPanelScreenBounds.width !== Math.round(request.settingsWidth)
+    || settingsPanelScreenBounds.height !== Math.round(request.settingsHeight)
+  ) {
     const display = screen.getDisplayMatching(petBounds)
     const area = display.workArea
     const settingsWidth = Math.min(Math.round(request.settingsWidth), area.width)
@@ -553,9 +588,72 @@ app.whenReady().then(() => {
     })
   })
 
+  ipcMain.handle('get-doubao-config', () => getDoubaoConfigView())
+
+  ipcMain.handle('save-doubao-config', (_event, input: DoubaoConfigInput) => {
+    return getDoubaoConfigView(writeDoubaoConfig(input))
+  })
+
+  ipcMain.handle('test-doubao-connection', async (_event, input: DoubaoConfigInput) => {
+    const config = writeDoubaoConfig(input)
+    return requestDoubao(
+      config,
+      [{ role: 'user', content: '只回复“连接成功”四个字。' }],
+      { maxTokens: 16 },
+    )
+  })
+
+  ipcMain.handle('doubao-chat', async (event, input: DoubaoChatRequest) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) {
+      return { ok: false, error: '无效的调用来源' }
+    }
+    if (
+      !input || typeof input.requestId !== 'string' || !input.requestId
+      || !Array.isArray(input.messages)
+    ) return { ok: false, error: '无效的豆包请求' }
+
+    const controller = new AbortController()
+    doubaoRequests.get(input.requestId)?.abort()
+    doubaoRequests.set(input.requestId, controller)
+    try {
+      return await requestDoubao(readDoubaoConfig(), input.messages, { signal: controller.signal })
+    } finally {
+      if (doubaoRequests.get(input.requestId) === controller) {
+        doubaoRequests.delete(input.requestId)
+      }
+    }
+  })
+
+  ipcMain.handle('cancel-doubao-chat', (_event, requestId: unknown) => {
+    if (typeof requestId !== 'string') return false
+    const controller = doubaoRequests.get(requestId)
+    controller?.abort()
+    return Boolean(controller)
+  })
+
   ipcMain.handle('set-auto-screenshot-interval', (_event, sec: number) => {
     autoScreenshotInterval = sec
     if (autoScreenshotTimer) setAutoScreenshot(true, sec)
+  })
+
+  ipcMain.handle('save-agent-result', async (_event, value: unknown) => {
+    if (!value || typeof value !== 'object') return false
+    const input = value as { title?: unknown; content?: unknown }
+    if (typeof input.content !== 'string' || !input.content || input.content.length > 2_000_000) return false
+    const title = typeof input.title === 'string' && input.title.trim()
+      ? input.title.trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)
+      : '麦麦任务结果'
+    const options = {
+      title: '保存 Agent 结果',
+      defaultPath: `${title}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }, { name: '文本', extensions: ['txt'] }],
+    }
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return false
+    await fs.promises.writeFile(result.filePath, `# ${title}\n\n${input.content}\n`, 'utf-8')
+    return true
   })
 
   ipcMain.handle('close-window', () => {

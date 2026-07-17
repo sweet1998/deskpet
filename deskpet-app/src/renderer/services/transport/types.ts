@@ -1,6 +1,11 @@
+import type { AgentFileInput } from '@/services/agent-protocol'
+
 export interface DeskpetTransport {
-  sendUserText: (text: string) => boolean
-  sendScreenshot: (base64: string) => boolean
+  sendUserText: (text: string, requestId: string) => boolean
+  sendFile: (file: AgentFileInput) => boolean
+  sendScreenshot: (base64: string, requestId: string) => boolean
+  sendInterrupt: (requestId: string) => boolean
+  sendConfirmation: (requestId: string, allowed: boolean) => boolean
   sendHeartbeat: () => boolean
   connect: () => void
   disconnect: () => void

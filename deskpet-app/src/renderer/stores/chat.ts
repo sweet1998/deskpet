@@ -21,13 +21,17 @@ export type ChatMessage =
 
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
+  const bubbleVisible = ref(false)
 
   // backward-compat: last assistant bubble
   const chatBubble = computed(() => {
-    const last = [...messages.value].reverse().find((m) => m.role === 'assistant')
+    const last = [...messages.value].reverse().find(
+      (message): message is Extract<ChatMessage, { type: 'text' }> =>
+        message.role === 'assistant' && message.type === 'text',
+    )
     return {
       text: last?.text || '',
-      visible: !!last,
+      visible: Boolean(last && bubbleVisible.value),
       streaming: last?.streaming || false,
       requestId: last?.id || null,
     }
@@ -40,12 +44,14 @@ export const useChatStore = defineStore('chat', () => {
       text,
       streaming: false,
       timestamp: Date.now(),
+      type: 'text',
     })
   }
 
   function appendChatText(delta: string, requestId: string) {
+    bubbleVisible.value = true
     const existing = messages.value.find((m) => m.id === requestId)
-    if (existing) {
+    if (existing?.type === 'text') {
       existing.text += delta
     } else {
       messages.value.push({
@@ -54,26 +60,30 @@ export const useChatStore = defineStore('chat', () => {
         text: delta,
         streaming: true,
         timestamp: Date.now(),
+        type: 'text',
       })
     }
   }
 
   function finishChatStream(requestId: string) {
     const msg = messages.value.find((m) => m.id === requestId)
-    if (msg) msg.streaming = false
+    if (msg?.type === 'text') msg.streaming = false
   }
 
   function showChatMessage(text: string) {
+    bubbleVisible.value = true
     messages.value.push({
       id: `assistant-${Date.now()}`,
       role: 'assistant',
       text,
       streaming: false,
       timestamp: Date.now(),
+      type: 'text',
     })
   }
 
   function addEmojiMessage(base64: string, description: string) {
+    bubbleVisible.value = true
     messages.value.push({
       id: `emoji-${Date.now()}`,
       role: 'assistant',
@@ -85,11 +95,12 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function hideChatBubble() {
-    // no-op — messages stay in history
+    bubbleVisible.value = false
   }
 
   return {
     messages,
+    bubbleVisible,
     chatBubble,
     addUserMessage,
     addEmojiMessage,

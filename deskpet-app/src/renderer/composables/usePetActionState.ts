@@ -130,7 +130,7 @@ export function usePetActionState(store: ReturnType<typeof useDeskpetStore>) {
     boundInternalModel.on('beforeModelUpdate', applyActiveParameters)
   }
 
-  function playActionEffect(action: string): boolean {
+  function playActionEffect(action: string, loop = false): boolean {
     const duration = ACTION_DURATIONS[action]
     if (!duration || !actionFrame(action, 0)) return false
 
@@ -138,9 +138,10 @@ export function usePetActionState(store: ReturnType<typeof useDeskpetStore>) {
     const startedAt = performance.now()
     activeParameters = actionFrame(action, 0)
     timer = window.setInterval(() => {
-      const progress = Math.min(1, (performance.now() - startedAt) / duration)
+      const elapsed = performance.now() - startedAt
+      const progress = loop ? (elapsed % duration) / duration : Math.min(1, elapsed / duration)
       activeParameters = actionFrame(action, progress)
-      if (progress >= 1) stopAction()
+      if (!loop && progress >= 1) stopAction()
     }, 16)
     return true
   }
@@ -157,5 +158,5 @@ export function usePetActionState(store: ReturnType<typeof useDeskpetStore>) {
     bindModel(null)
   }
 
-  return { playActionEffect, cleanup }
+  return { playActionEffect, stopActionEffect: stopAction, cleanup }
 }

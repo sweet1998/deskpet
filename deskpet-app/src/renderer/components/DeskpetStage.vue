@@ -1,6 +1,40 @@
 <template>
-  <div ref="deskpetStageRef" class="deskpet-stage" :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }" @mousedown.left="onPetMouseDown" @contextmenu="onPetContextMenu" @mouseenter="isHovered = true" @mouseleave="isHovered = false">
+  <div
+    ref="deskpetStageRef"
+    class="deskpet-stage"
+    :class="{ hovered: isHovered, 'hover-fade-enabled': store.hoverFadeEnabled }"
+    @mousedown.left="onPetMouseDown"
+    @mouseup.left="onPetMouseUp"
+    @contextmenu="onPetContextMenu"
+    @mouseenter="isHovered = true"
+    @mouseleave="isHovered = false"
+    @dragenter.prevent="onFileDragEnter"
+    @dragover.prevent
+    @dragleave="onFileDragLeave"
+    @drop.prevent="onFileDrop"
+  >
     <div ref="stageRef" class="live2d-stage" />
+
+    <PetInteraction
+      :pet-x="petModelX || lastW / 2"
+      :pet-y="petModelY || lastH / 2"
+      :pet-width="petViewportWidth"
+      :pet-height="petViewportHeight"
+      @submit="submitUserText"
+      @voice-start="startVoiceInput"
+      @voice-stop="stopVoiceInput"
+      @interrupt="interruptAgent"
+    />
+
+    <AgentTaskPanel
+      @interrupt="interruptAgent"
+      @confirm="respondToConfirmation"
+      @save="saveTaskResult"
+    />
+
+    <div v-if="fileDragActive" class="file-drop-hint" data-pet-ui>
+      松开交给麦麦
+    </div>
 
     <SettingsPanel
       :open="settingsPanelOpen"
@@ -27,9 +61,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import SettingsPanel from './SettingsPanel.vue'
+import PetInteraction from './PetInteraction.vue'
+import AgentTaskPanel from './AgentTaskPanel.vue'
 import { useDeskpetStore } from '@/stores/deskpet'
+import { useAgentStore } from '@/stores/agent'
+import { useChatStore } from '@/stores/chat'
 import { useChimeraTransport } from '@/services/transport/chimera'
 import { useLive2DAnimation } from '@/composables/useLive2DAnimation'
 import { useWindowDrag } from '@/composables/useWindowDrag'
@@ -39,6 +77,8 @@ import { usePetActionState } from '@/composables/usePetActionState'
 import { useMotionPriority, MotionLayer } from '@/composables/useMotionPriority'
 import { useIdleScheduler } from '@/composables/useIdleScheduler'
 import { useLipSync } from '@/composables/useLipSync'
+import { useVoiceInput } from '@/composables/useVoiceInput'
+import { useProactiveCompanion } from '@/composables/useProactiveCompanion'
 import { createPixiApp, loadLive2DModel, resizeModel, resizeModelFit } from '@/services/live2d/loader'
 import { discoverModel } from '@/services/live2d/model-discovery'
 import { getAnimationTarget, getEmotionTarget, loadEmotionAdapter } from '@/services/live2d/emotion-adapter'
@@ -53,7 +93,14 @@ const MODEL_REFERENCE_HEIGHT = 800
 const PET_WINDOW_PADDING = 8
 const SETTINGS_PANEL_WIDTH = 280
 const SETTINGS_PANEL_HEIGHT = 600
+const AGENT_PANEL_WIDTH = 460
+const AGENT_PANEL_HEIGHT = 560
+const MAX_AGENT_FILE_BYTES = 12 * 1024 * 1024
 const transport = useChimeraTransport()
+const agent = useAgentStore()
+const chat = useChatStore()
+const voiceInput = useVoiceInput()
+const proactiveCompanion = useProactiveCompanion(agent)
 const { start: startAnim, stop: stopAnim } = useLive2DAnimation()
 const { onWindowMouseDown, cleanup: cleanupWindowDrag } = useWindowDrag(
   undefined,
@@ -70,6 +117,10 @@ const settingsPanelTop = ref(0)
 const settingsPanelWidth = ref(SETTINGS_PANEL_WIDTH)
 const settingsPanelHeight = ref(SETTINGS_PANEL_HEIGHT)
 const modelError = ref('')
+const fileDragActive = ref(false)
+const expandedUiOpen = computed(() => Boolean(
+  showSettings.value || agent.workspaceOpen || chat.chatBubble.visible,
+))
 
 let animFrameId = 0
 let unsubscribeGlobalCursor: (() => void) | null = null
@@ -82,11 +133,12 @@ let lastPointerInteractive: boolean | null = null
 let petDragActive = false
 let pointerSyncFrameId = 0
 let stageMutationObserver: MutationObserver | null = null
-let petViewportWidth = 0
-let petViewportHeight = 0
-let petModelX = 0
-let petModelY = 0
+const petViewportWidth = ref(0)
+const petViewportHeight = ref(0)
+const petModelX = ref(0)
+const petModelY = ref(0)
 let layoutRequestGeneration = 0
+let pointerDownScreenPosition: { x: number; y: number } | null = null
 
 onMounted(async () => {
   unsubscribePetContextCommand = window.electronAPI?.onPetContextMenuCommand(
@@ -141,6 +193,7 @@ onMounted(async () => {
     store.modelLoaded = true
     schedulePointerInteractiveSync()
     idleScheduler.start()
+    proactiveCompanion.start()
 
     startAnim(model)
     const canvas = app.view as HTMLCanvasElement
@@ -160,7 +213,13 @@ onMounted(async () => {
     store.hoverFadeEnabled = enabled
   }) ?? null
   unsubscribeScreenshot = window.electronAPI?.onScreenshotCaptured?.((base64) => {
-    transport.sendScreenshot(base64)
+    const requestId = createRequestId()
+    agent.beginRequest(requestId, '分析当前屏幕', '屏幕截图')
+    agent.taskPanelOpen = true
+    agent.applyState({ requestId, state: 'executing', progress: 25, step: '正在理解屏幕内容', interruptible: true })
+    if (!transport.sendScreenshot(base64, requestId)) {
+      agent.applyState({ requestId, state: 'error', error: '截图任务提交失败，请检查 MaiBot 连接' })
+    }
   }) ?? null
 
   startAnimationPoll()
@@ -181,12 +240,14 @@ let lastZoom = store.modelZoom
 let mouseX = window.innerWidth / 2
 let mouseY = window.innerHeight / 2
 
-watch(showSettings, (open) => {
+watch([expandedUiOpen, showSettings], async () => {
   schedulePointerInteractiveSync()
-  if (!open) settingsPanelOpen.value = false
-  void syncPetWindowLayout().then(() => {
-    if (open && showSettings.value) settingsPanelOpen.value = true
-  })
+  if (!showSettings.value) settingsPanelOpen.value = false
+  try {
+    await syncPetWindowLayout()
+  } finally {
+    if (showSettings.value) settingsPanelOpen.value = true
+  }
 }, { flush: 'post' })
 
 const { onWheel } = useModelZoom(
@@ -200,7 +261,7 @@ const { onWheel } = useModelZoom(
   },
 )
 const { activateEmotionState, cleanup: cleanupExpression } = useExpressionState(store)
-const { playActionEffect, cleanup: cleanupActionEffects } = usePetActionState(store)
+const { playActionEffect, stopActionEffect, cleanup: cleanupActionEffects } = usePetActionState(store)
 const { playMotionWithPriority } = useMotionPriority(store)
 const idleScheduler = useIdleScheduler(playMotionWithPriority)
 const { getMouthOpen } = useLipSync()
@@ -211,6 +272,31 @@ const stopPendingAnimationWatch = watch(
   },
   { flush: 'sync' },
 )
+
+watch(() => agent.state, (state) => {
+  const stateBehavior: Partial<Record<typeof state, { emotion: string; action?: string; loop?: boolean }>> = {
+    idle: { emotion: 'neutral' },
+    listening: { emotion: 'curious' },
+    thinking: { emotion: 'thinking' },
+    planning: { emotion: 'thinking', action: 'walk', loop: true },
+    executing: { emotion: 'curious', action: 'walk', loop: true },
+    awaiting_confirmation: { emotion: 'curious', action: 'wave' },
+    speaking: { emotion: 'neutral' },
+    success: { emotion: 'happy', action: 'cheer' },
+    error: { emotion: 'sad' },
+    interrupted: { emotion: 'neutral' },
+  }
+  const behavior = stateBehavior[state]
+  if (!behavior) return
+  idleScheduler.notifyInteraction()
+  store.currentEmotion = behavior.emotion
+  if (behavior.action) {
+    store.pendingAnimation = behavior.action
+    store.pendingAnimationLoop = Boolean(behavior.loop)
+  } else {
+    stopActionEffect()
+  }
+})
 
 function isUiTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('[data-pet-ui]'))
@@ -233,27 +319,27 @@ function updatePetViewportFromModel(): void {
   const canvas = store.pixiApp?.view as HTMLCanvasElement | undefined
   if (!model || !canvas) return
   const bounds = modelBoundsToClientBounds(model.getBounds(), canvas)
-  petViewportWidth = Math.ceil(bounds.width + PET_WINDOW_PADDING * 2)
-  petViewportHeight = Math.ceil(bounds.height + PET_WINDOW_PADDING * 2)
+  petViewportWidth.value = Math.ceil(bounds.width + PET_WINDOW_PADDING * 2)
+  petViewportHeight.value = Math.ceil(bounds.height + PET_WINDOW_PADDING * 2)
 }
 
 async function syncPetWindowLayout(): Promise<void> {
-  if (!petViewportWidth || !petViewportHeight) return
+  if (!petViewportWidth.value || !petViewportHeight.value) return
   const generation = ++layoutRequestGeneration
   const result = await window.electronAPI?.setPetWindowLayout({
-    mode: showSettings.value ? 'settings' : 'compact',
-    petWidth: petViewportWidth,
-    petHeight: petViewportHeight,
-    settingsWidth: SETTINGS_PANEL_WIDTH,
-    settingsHeight: SETTINGS_PANEL_HEIGHT,
+    mode: expandedUiOpen.value ? 'settings' : 'compact',
+    petWidth: petViewportWidth.value,
+    petHeight: petViewportHeight.value,
+    settingsWidth: showSettings.value ? SETTINGS_PANEL_WIDTH : AGENT_PANEL_WIDTH,
+    settingsHeight: showSettings.value ? SETTINGS_PANEL_HEIGHT : AGENT_PANEL_HEIGHT,
   })
   if (!result || generation !== layoutRequestGeneration) return
   applyPetWindowLayoutResult(result)
 }
 
 function applyPetWindowLayoutResult(result: PetWindowLayoutResult): void {
-  petModelX = result.petX
-  petModelY = result.petY
+  petModelX.value = result.petX
+  petModelY.value = result.petY
   settingsPanelLeft.value = result.settingsX
   settingsPanelTop.value = result.settingsY
   settingsPanelWidth.value = result.settingsWidth || SETTINGS_PANEL_WIDTH
@@ -266,8 +352,8 @@ function positionModelForCurrentLayout(width: number, height: number): void {
   const model = store.live2dModel
   if (!model) return
   model.position.set(
-    petModelX || width / 2,
-    petModelY || height / 2,
+    petModelX.value || width / 2,
+    petModelY.value || height / 2,
   )
 }
 
@@ -275,7 +361,7 @@ function syncPointerInteractive(clientX: number, clientY: number): void {
   const interactive = shouldPetWindowBeInteractive({
     dragActive: petDragActive,
     pointOverModel: isPointOverModel(clientX, clientY),
-    settingsOpen: showSettings.value,
+    settingsOpen: expandedUiOpen.value,
     pointOverSettings: isPointOverVisibleUi(clientX, clientY),
   })
   if (interactive === lastPointerInteractive) return
@@ -307,7 +393,155 @@ function onPetMouseDown(event: MouseEvent): void {
     || !isPointOverModel(event.clientX, event.clientY)
   ) return
   event.preventDefault()
+  pointerDownScreenPosition = { x: event.screenX, y: event.screenY }
   onWindowMouseDown(event)
+}
+
+function onPetMouseUp(event: MouseEvent): void {
+  const start = pointerDownScreenPosition
+  pointerDownScreenPosition = null
+  if (!start || !isPointOverModel(event.clientX, event.clientY)) return
+  const distance = Math.hypot(event.screenX - start.x, event.screenY - start.y)
+  if (distance > 5) return
+  agent.proactiveMessage = ''
+  agent.interactionOpen = true
+}
+
+function createRequestId(): string {
+  return typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `deskpet-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function submitUserText(text: string): void {
+  const value = text.trim()
+  if (!value) return
+  const requestId = createRequestId()
+  const memoryMatch = value.match(/^(?:请)?记住[：:\s]*(.+)$/)
+  if (memoryMatch?.[1]) agent.addMemory(memoryMatch[1])
+  chat.addUserMessage(value)
+  agent.beginRequest(requestId, value)
+  agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
+  agent.interactionOpen = true
+  if (!transport.sendUserText(value, requestId)) {
+    agent.applyState({ requestId, state: 'error', error: '尚未连接到 MaiBot' })
+  }
+}
+
+async function startVoiceInput(): Promise<void> {
+  if (agent.recording) return
+  const requestId = createRequestId()
+  agent.beginRequest(requestId, '语音对话')
+  agent.recording = true
+  agent.applyState({ requestId, state: 'listening', step: '正在聆听', interruptible: true })
+  try {
+    await voiceInput.start()
+  } catch {
+    agent.recording = false
+    agent.applyState({ requestId, state: 'error', error: '无法使用麦克风，请检查系统权限' })
+  }
+}
+
+async function stopVoiceInput(): Promise<void> {
+  if (!agent.recording) return
+  agent.recording = false
+  const text = await voiceInput.stop()
+  if (text) submitUserText(text)
+  else agent.applyState({ requestId: agent.activeRequestId, state: 'idle', progress: 0, step: '' })
+}
+
+function interruptAgent(): void {
+  if (agent.recording) {
+    agent.recording = false
+    void voiceInput.stop()
+  }
+  transport.sendInterrupt(agent.activeRequestId)
+  agent.applyState({
+    requestId: agent.activeRequestId,
+    state: 'interrupted',
+    progress: 0,
+    step: '已停止',
+    interruptible: false,
+  })
+}
+
+function onFileDragEnter(event: DragEvent): void {
+  if (event.dataTransfer?.types.includes('Files')) fileDragActive.value = true
+}
+
+function onFileDragLeave(event: DragEvent): void {
+  if (event.relatedTarget instanceof Node && deskpetStageRef.value?.contains(event.relatedTarget)) return
+  fileDragActive.value = false
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error)
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
+    reader.readAsDataURL(file)
+  })
+}
+
+async function onFileDrop(event: DragEvent): Promise<void> {
+  fileDragActive.value = false
+  if (!isPointOverModel(event.clientX, event.clientY)) return
+  const file = event.dataTransfer?.files?.[0]
+  if (!file) return
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  if (!extension || !['pdf', 'txt', 'md', 'markdown'].includes(extension)) {
+    agent.interactionOpen = true
+    agent.applyState({ requestId: '', state: 'error', error: '目前支持 PDF、TXT 和 Markdown 文件' })
+    return
+  }
+  if (file.size > MAX_AGENT_FILE_BYTES) {
+    agent.interactionOpen = true
+    agent.applyState({ requestId: '', state: 'error', error: '文件不能超过 12MB' })
+    return
+  }
+
+  const requestId = createRequestId()
+  agent.beginRequest(requestId, '总结文件并生成待办', file.name)
+  agent.taskPanelOpen = true
+  agent.applyState({ requestId, state: 'planning', progress: 15, step: '正在制定处理计划', interruptible: true })
+  try {
+    const base64 = await readFileAsBase64(file)
+    const sent = transport.sendFile({
+      requestId,
+      name: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+      base64,
+      prompt: '请总结这份文件，提取关键结论，并生成清晰可执行的待办事项。',
+    })
+    if (!sent) throw new Error('not connected')
+  } catch {
+    agent.applyState({ requestId, state: 'error', error: '文件任务提交失败，请检查 MaiBot 连接' })
+  }
+}
+
+function respondToConfirmation(allowed: boolean): void {
+  const requestId = agent.confirmation?.requestId
+  if (!requestId) return
+  transport.sendConfirmation(requestId, allowed)
+  agent.setConfirmation(null)
+  agent.applyState({
+    requestId,
+    state: allowed ? 'executing' : 'interrupted',
+    progress: agent.progress,
+    step: allowed ? '已允许，继续执行' : '已取消操作',
+    interruptible: allowed,
+  })
+}
+
+async function saveTaskResult(): Promise<void> {
+  const result = agent.taskResult
+  if (!result) return
+  const saved = await window.electronAPI?.saveAgentResult({
+    title: result.title,
+    content: result.content,
+  })
+  if (saved) agent.currentStep = '结果已保存'
 }
 
 function onPetContextMenu(event: MouseEvent): void {
@@ -327,6 +561,7 @@ function onPetContextMenu(event: MouseEvent): void {
 function handlePetContextCommand(command: PetContextMenuCommand): void {
   if (command.type === 'settings') {
     showSettings.value = true
+    settingsPanelOpen.value = true
     return
   }
   if (command.type === 'emotion') {
@@ -364,7 +599,7 @@ function playPendingAnimation(): void {
     played = true
   }
   if (target.effect) {
-    played = playActionEffect(target.effect) || played
+    played = playActionEffect(target.effect, pending.loop) || played
   }
   if (played) {
     idleScheduler.notifyInteraction()
@@ -437,6 +672,7 @@ onUnmounted(() => {
   unsubscribeScreenshot = null
   cleanupExpression()
   cleanupActionEffects()
+  proactiveCompanion.stop()
   stopPendingAnimationWatch()
   idleScheduler.stop()
   window.removeEventListener('mousemove', onMouseMove)
@@ -491,6 +727,21 @@ onUnmounted(() => { /* cleanup in stopAnim + pixiApp.destroy */ })
 
 .deskpet-stage.hover-fade-enabled.hovered .live2d-stage {
   opacity: 0.15;
+}
+
+.file-drop-hint {
+  position: absolute;
+  z-index: 45;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  padding: 6px 9px;
+  border: 1px solid rgba(85,119,167,.55);
+  border-radius: 6px;
+  color: #314763;
+  background: rgba(250,250,248,.95);
+  font-size: 11px;
+  pointer-events: none;
 }
 
 .model-error {

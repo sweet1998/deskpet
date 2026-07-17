@@ -50,6 +50,12 @@ interface ElectronAPI {
   onScreenshotCaptured: (callback: (base64: string) => void) => () => void
   setAutoScreenshotInterval: (sec: number) => void
   sttTranscribe: (audio: ArrayBuffer, url?: string) => Promise<string | null>
+  getDoubaoConfig: () => Promise<import('../shared/doubao').DoubaoConfigView>
+  saveDoubaoConfig: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoConfigView>
+  testDoubaoConnection: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoResult>
+  doubaoChat: (input: import('../shared/doubao').DoubaoChatRequest) => Promise<import('../shared/doubao').DoubaoResult>
+  cancelDoubaoChat: (requestId: string) => Promise<boolean>
+  saveAgentResult: (value: { title: string; content: string }) => Promise<boolean>
 }
 
 interface Window {

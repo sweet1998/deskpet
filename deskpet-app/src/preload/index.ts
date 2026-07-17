@@ -4,6 +4,7 @@ import {
   type PetContextMenuCommand,
   type PetContextMenuRequest,
 } from '../shared/pet-context-menu'
+import type { DoubaoChatRequest, DoubaoConfigInput } from '../shared/doubao'
 
 interface GlobalCursorPosition {
   screenX: number
@@ -92,4 +93,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   setAutoScreenshotInterval: (sec: number) => ipcRenderer.invoke('set-auto-screenshot-interval', sec),
   sttTranscribe: (audio: ArrayBuffer, url?: string): Promise<string | null> => ipcRenderer.invoke('stt-transcribe', audio, url),
+  getDoubaoConfig: () => ipcRenderer.invoke('get-doubao-config'),
+  saveDoubaoConfig: (input: DoubaoConfigInput) => ipcRenderer.invoke('save-doubao-config', input),
+  testDoubaoConnection: (input: DoubaoConfigInput) => ipcRenderer.invoke('test-doubao-connection', input),
+  doubaoChat: (input: DoubaoChatRequest) => ipcRenderer.invoke('doubao-chat', input),
+  cancelDoubaoChat: (requestId: string): Promise<boolean> => ipcRenderer.invoke('cancel-doubao-chat', requestId),
+  saveAgentResult: (value: { title: string; content: string }): Promise<boolean> =>
+    ipcRenderer.invoke('save-agent-result', value),
 })

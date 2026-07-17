@@ -45,6 +45,8 @@ describe('DeskpetStage model-only shell', () => {
     const shape = collectTemplateShape(readFileSync(filename, 'utf8'))
 
     expect(shape.tags).toContain('SettingsPanel')
+    expect(shape.tags).toContain('PetInteraction')
+    expect(shape.tags).toContain('AgentTaskPanel')
     expect(shape.tags).not.toContain('ChatBubble')
     expect(shape.tags).not.toContain('QuickInput')
     expect(shape.classes).not.toContain('nav-bar')
@@ -55,5 +57,8 @@ describe('DeskpetStage model-only shell', () => {
     expect(shape.template).not.toContain('🎤')
     expect(shape.scriptSetup).not.toContain('modelOffsetX')
     expect(shape.scriptSetup).not.toContain('modelOffsetY')
+    expect(shape.scriptSetup).toMatch(
+      /command\.type === 'settings'[\s\S]*showSettings\.value = true[\s\S]*settingsPanelOpen\.value = true/,
+    )
   })
 })

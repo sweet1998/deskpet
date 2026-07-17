@@ -81,8 +81,10 @@ EMOTION_KEYWORDS = {
 }
 
 ACTION_LIST = [
-    "wave", "jump", "spin", "sit", "sleep", "wake", "dance", "cheer"
+    "wave", "walk", "crawl", "jump", "roll", "spin", "sit", "sleep", "wake", "dance", "cheer"
 ]
+
+MAX_AGENT_FILE_BYTES = 12 * 1024 * 1024
 
 
 @dataclass
@@ -194,6 +196,9 @@ class DeskpetPlugin(MaiBotPlugin):
 
     async def on_load(self) -> None:
         self._last_tool_emotion_at = 0.0
+        self._active_request_id: Optional[str] = None
+        self._active_request_kind = "text"
+        self._confirmation_waiters: Dict[str, asyncio.Future] = {}
         self._ws_server: Optional[DeskpetWSServer] = None
         if not self.config.plugin.enabled:
             return
@@ -267,7 +272,9 @@ class DeskpetPlugin(MaiBotPlugin):
             self.ctx.logger.warning(f"[Deskpet] Empty extracted text, message keys: {list(message.keys())}")
             return {"success": True}
 
-        req_id = uuid.uuid4().hex[:12]
+        req_id = self._active_request_id or uuid.uuid4().hex[:12]
+        request_kind = self._active_request_kind
+        await self._broadcast_agent_state(req_id, "speaking", 90, "正在组织回复", True)
 
         recent_tool_emotion = time.time() - self._last_tool_emotion_at < TOOL_EMOTION_SUPPRESS_SECONDS
         if recent_tool_emotion:
@@ -285,6 +292,21 @@ class DeskpetPlugin(MaiBotPlugin):
             await asyncio.sleep(0.03)
 
         await self._ws_server.broadcast("output:text:done", {"request_id": req_id})
+
+        if request_kind in ("file-summary", "screen-analysis"):
+            title = "文件处理结果" if request_kind == "file-summary" else "屏幕分析结果"
+            await self._ws_server.broadcast("output:result", {
+                "requestId": req_id,
+                "kind": request_kind,
+                "title": title,
+                "content": response_text,
+                "actions": ["保存结果"],
+            }, req_id)
+        else:
+            await self._broadcast_agent_state(req_id, "success", 100, "回复完成", False)
+
+        self._active_request_id = None
+        self._active_request_kind = "text"
 
         # 异步取 TTS 音频
         asyncio.create_task(self._send_tts_audio(response_text, req_id))
@@ -353,6 +375,12 @@ class DeskpetPlugin(MaiBotPlugin):
             await self._handle_input_click(msg)
         elif msg.type == "input:screenshot":
             await self._handle_screenshot(msg)
+        elif msg.type == "input:file":
+            await self._handle_input_file(msg)
+        elif msg.type == "input:interrupt":
+            await self._handle_interrupt(msg)
+        elif msg.type == "tool:confirmation:response":
+            self._handle_confirmation_response(msg)
         elif msg.type == "heartbeat":
             pass  # silently ack
 
@@ -366,8 +394,11 @@ class DeskpetPlugin(MaiBotPlugin):
         if not self._ws_server:
             return
 
-        req_id = msg.request_id or uuid.uuid4().hex[:12]
+        req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
+        self._active_request_id = req_id
+        self._active_request_kind = "text"
         await self._ws_server.broadcast("state:thinking", {"request_id": req_id})
+        await self._broadcast_agent_state(req_id, "thinking", 10, "正在理解你的请求", True)
 
         message_id = f"deskpet-{uuid.uuid4().hex[:16]}"
         accepted = await self.ctx.gateway.route_message(
@@ -396,6 +427,93 @@ class DeskpetPlugin(MaiBotPlugin):
                 {"error": "Message rejected by MaiBot", "request_id": req_id},
             )
 
+    async def _handle_input_file(self, msg: DeskpetMessage) -> None:
+        name = str(msg.data.get("name", "")).strip()
+        mime_type = str(msg.data.get("mimeType", "application/octet-stream"))
+        encoded = str(msg.data.get("base64", ""))
+        prompt = str(msg.data.get("prompt", "总结这份文件并生成待办")).strip()
+        req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
+        if not name or not encoded or not self._ws_server:
+            return
+
+        try:
+            file_bytes = base64.b64decode(encoded, validate=True)
+        except Exception:
+            await self._broadcast_agent_state(req_id, "error", 0, "文件读取失败", False, "文件编码无效")
+            return
+        if len(file_bytes) > MAX_AGENT_FILE_BYTES:
+            await self._broadcast_agent_state(req_id, "error", 0, "文件过大", False, "文件不能超过 12MB")
+            return
+
+        self._active_request_id = req_id
+        self._active_request_kind = "file-summary"
+        await self._broadcast_agent_state(req_id, "planning", 15, "正在制定文件处理计划", True)
+        await self._broadcast_agent_state(req_id, "executing", 35, f"正在阅读 {name}", True)
+
+        message_id = f"deskpet-file-{uuid.uuid4().hex[:16]}"
+        accepted = await self.ctx.gateway.route_message(
+            gateway_name=self.GATEWAY_NAME,
+            message={
+                "message_id": message_id,
+                "platform": "deskpet",
+                "timestamp": str(time.time()),
+                "message_info": {
+                    "user_info": {
+                        "user_id": self.DESKPET_USER_ID,
+                        "user_nickname": "桌宠用户",
+                    },
+                    "additional_config": {"request_id": req_id, "source_name": name},
+                },
+                "raw_message": [
+                    {
+                        "type": "file",
+                        "data": name,
+                        "mime_type": mime_type,
+                        "binary_data_base64": encoded,
+                    },
+                    {"type": "text", "data": prompt},
+                ],
+            },
+        )
+        if not accepted:
+            await self._broadcast_agent_state(req_id, "error", 0, "任务提交失败", False, "MaiBot 拒绝了文件任务")
+
+    async def _handle_interrupt(self, msg: DeskpetMessage) -> None:
+        req_id = str(msg.data.get("requestId") or msg.request_id or self._active_request_id or "")
+        if req_id and self._ws_server:
+            await self._broadcast_agent_state(req_id, "interrupted", 0, "已停止当前输出", False)
+        if req_id == self._active_request_id:
+            self._active_request_id = None
+            self._active_request_kind = "text"
+
+    def _handle_confirmation_response(self, msg: DeskpetMessage) -> None:
+        req_id = str(msg.data.get("requestId") or msg.request_id or "")
+        waiter = self._confirmation_waiters.pop(req_id, None)
+        if waiter and not waiter.done():
+            waiter.set_result(bool(msg.data.get("allowed")))
+
+    async def _broadcast_agent_state(
+        self,
+        req_id: str,
+        state: str,
+        progress: int,
+        step: str,
+        interruptible: bool,
+        error: str = "",
+    ) -> None:
+        if not self._ws_server:
+            return
+        data = {
+            "requestId": req_id,
+            "state": state,
+            "progress": progress,
+            "step": step,
+            "interruptible": interruptible,
+        }
+        if error:
+            data["error"] = error
+        await self._ws_server.broadcast("state:agent", data, req_id)
+
     async def _handle_input_click(self, msg: DeskpetMessage) -> None:
         reactions = ["嗯？", "怎么啦？", "别戳啦~", "有什么事吗？", "嘻嘻"]
         reaction = random.choice(reactions)
@@ -411,6 +529,10 @@ class DeskpetPlugin(MaiBotPlugin):
         image_hash = hashlib.sha256(image_bytes).hexdigest()
         self.ctx.logger.info(f"[Deskpet] Screenshot received ({len(image_bytes)} bytes, hash={image_hash[:12]})")
 
+        req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
+        self._active_request_id = req_id
+        self._active_request_kind = "screen-analysis"
+        await self._broadcast_agent_state(req_id, "executing", 35, "正在理解屏幕内容", True)
         message_id = f"deskpet-ss-{uuid.uuid4().hex[:16]}"
         await self.ctx.gateway.route_message(
             gateway_name=self.GATEWAY_NAME,
@@ -436,6 +558,55 @@ class DeskpetPlugin(MaiBotPlugin):
                 ],
             },
         )
+
+    @Tool(
+        "request_deskpet_confirmation",
+        brief_description="向桌宠用户请求敏感操作确认",
+        detailed_description="在创建提醒、写文件、发送消息或执行其他外部写操作前，请求用户明确允许。",
+        parameters=[
+            ToolParameterInfo(
+                name="tool", param_type=ToolParamType.STRING,
+                description="准备执行的工具或操作名称", required=True,
+            ),
+            ToolParameterInfo(
+                name="summary", param_type=ToolParamType.STRING,
+                description="面向用户的影响说明", required=True,
+            ),
+            ToolParameterInfo(
+                name="risk", param_type=ToolParamType.STRING,
+                description="风险等级: low, medium, high", required=False,
+            ),
+        ],
+    )
+    async def handle_request_confirmation(
+        self,
+        tool: str,
+        summary: str,
+        risk: str = "medium",
+        **kwargs,
+    ) -> dict:
+        if not self._ws_server or not self._ws_server.has_clients:
+            return {"success": False, "allowed": False, "error": "No deskpet client connected"}
+
+        req_id = uuid.uuid4().hex[:12]
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        self._confirmation_waiters[req_id] = waiter
+        await self._ws_server.broadcast("tool:confirmation", {
+            "requestId": req_id,
+            "tool": tool,
+            "summary": summary,
+            "risk": risk if risk in ("low", "medium", "high") else "medium",
+            "expiresAt": int((time.time() + 60) * 1000),
+        }, req_id)
+
+        try:
+            allowed = await asyncio.wait_for(waiter, timeout=60)
+        except asyncio.TimeoutError:
+            allowed = False
+        finally:
+            self._confirmation_waiters.pop(req_id, None)
+        return {"success": True, "allowed": allowed}
 
     # ── Tool: 表情 ──
 
