@@ -127,11 +127,14 @@ export function useWebSocket() {
 
   function handleMessage(msg: WSMessage) {
     const { type, data, request_id } = msg
+    const responseRequestId = request_id || data.requestId || data.request_id || ''
+    const responseRole = responseRequestId ? chatStore.getRequestRole(responseRequestId) : undefined
+    const responseIsActive = !responseRole || responseRole === agentStore.currentRole
 
     switch (type) {
       case 'output:text:delta':
-        chatStore.appendChatText(data.delta, request_id || data.request_id || '')
-        if (agentStore.state !== 'executing') {
+        chatStore.appendChatText(data.delta, responseRequestId)
+        if (responseIsActive && agentStore.state !== 'executing') {
           agentStore.applyState({
             requestId: request_id || data.request_id || agentStore.activeRequestId,
             state: 'speaking',
@@ -141,10 +144,10 @@ export function useWebSocket() {
         break
 
       case 'output:text:done':
-        chatStore.finishChatStream(request_id || data.request_id || '')
-        if (!data.error) {
+        chatStore.finishChatStream(responseRequestId)
+        if (!data.error && responseIsActive) {
           setTimeout(() => chatStore.hideChatBubble(), 8000)
-        } else {
+        } else if (responseIsActive) {
           agentStore.applyState({
             requestId: request_id || data.request_id || agentStore.activeRequestId,
             state: 'error',
@@ -154,11 +157,12 @@ export function useWebSocket() {
         break
 
       case 'output:text':
-        chatStore.showChatMessage(data.text)
-        setTimeout(() => chatStore.hideChatBubble(), 8000)
+        chatStore.showChatMessage(data.text, responseRequestId)
+        if (responseIsActive) setTimeout(() => chatStore.hideChatBubble(), 8000)
         break
 
       case 'state:emotion':
+        if (!responseIsActive) break
         if (isDeskpetEmotionValue(data.emotion)) {
           store.currentEmotion = data.emotion
         } else {
@@ -167,17 +171,18 @@ export function useWebSocket() {
         break
 
       case 'state:animation':
+        if (!responseIsActive) break
         store.pendingAnimation = data.name
         store.pendingAnimationLoop = !!data.loop
         break
 
       case 'output:audio':
-        if (data.base64) playAudio(data.base64)
+        if (responseIsActive && data.base64) playAudio(data.base64)
         break
 
       case 'state:thinking':
         store.isThinking = true
-        agentStore.applyState({
+        if (responseIsActive) agentStore.applyState({
           requestId: request_id || data.request_id || agentStore.activeRequestId,
           state: 'thinking',
           step: '正在理解你的请求',
@@ -186,7 +191,7 @@ export function useWebSocket() {
         break
 
       case 'state:agent':
-        if (isAgentState(data.state)) {
+        if (responseIsActive && isAgentState(data.state)) {
           agentStore.applyState({
             requestId: request_id || data.requestId || data.request_id || agentStore.activeRequestId,
             state: data.state,
@@ -199,6 +204,7 @@ export function useWebSocket() {
         break
 
       case 'tool:confirmation':
+        if (!responseIsActive) break
         agentStore.setConfirmation({
           requestId: request_id || data.requestId || data.request_id || '',
           tool: String(data.tool || ''),
@@ -209,6 +215,7 @@ export function useWebSocket() {
         break
 
       case 'output:result':
+        if (!responseIsActive) break
         agentStore.setResult({
           requestId: request_id || data.requestId || data.request_id || agentStore.activeRequestId,
           kind: data.kind || 'text',
@@ -219,7 +226,7 @@ export function useWebSocket() {
         break
 
       case 'output:emoji':
-        if (data.base64) chatStore.addEmojiMessage(data.base64, data.description || '')
+        if (data.base64) chatStore.addEmojiMessage(data.base64, data.description || '', responseRequestId)
         break
 
       case 'heartbeat':

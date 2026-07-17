@@ -44,6 +44,31 @@
               <p class="hint">API Key 仅保存在本机应用数据目录，不会写入网页存储。</p>
             </template>
           </div>
+          <div class="section role-section">
+            <div class="section-title">角色</div>
+            <label>默认角色</label>
+            <select v-model="agent.currentRole">
+              <option value="default">麦麦</option>
+              <option value="stock_expert">炒股专家</option>
+            </select>
+            <p class="hint">对话栏可随时切换；长期记忆共享，对话历史按角色隔离。</p>
+          </div>
+          <div class="section market-section">
+            <div class="section-title">富途 OpenD 行情</div>
+            <label>OpenD Host</label>
+            <input v-model="marketOpenDHost" placeholder="127.0.0.1" />
+            <label>OpenD Port</label>
+            <input v-model.number="marketOpenDPort" type="number" min="1" max="65535" placeholder="11111" />
+            <label>行情桥地址</label>
+            <input v-model="marketBridgeUrl" placeholder="http://127.0.0.1:18531" />
+            <div class="button-row">
+              <button type="button" :disabled="marketBusy" @click="saveMarket">保存</button>
+              <button type="button" :disabled="marketBusy" @click="testMarket">测试连接</button>
+            </div>
+            <p v-if="marketStatus" class="status" :class="marketStatusKind">{{ marketStatus }}</p>
+            <p class="hint">仅请求只读行情，不读取账户、持仓或交易数据。</p>
+            <p class="hint">缺少依赖时运行：pip install futu-api aiohttp</p>
+          </div>
           <!-- MaiBot 连接 -->
           <div v-if="aiProvider === 'maibot'" class="section">
             <div class="section-title">MaiBot 连接</div>
@@ -123,6 +148,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { useAgentStore } from '@/stores/agent'
 import { getAiProvider, setAiProvider } from '@/services/ai-provider'
 import type { AiProvider } from '../../shared/doubao'
+import type { MarketBridgeConfig } from '../../shared/market'
 
 defineProps<{
   open: boolean
@@ -152,6 +178,12 @@ const doubaoHasApiKey = ref(false)
 const doubaoBusy = ref(false)
 const doubaoStatus = ref('')
 const doubaoStatusKind = ref<'success' | 'error'>('success')
+const marketOpenDHost = ref('127.0.0.1')
+const marketOpenDPort = ref(11111)
+const marketBridgeUrl = ref('http://127.0.0.1:18531')
+const marketBusy = ref(false)
+const marketStatus = ref('')
+const marketStatusKind = ref<'success' | 'error'>('success')
 const agent = useAgentStore()
 const newMemory = ref('')
 let unsubscribeDesktopOnly: (() => void) | null = null
@@ -164,6 +196,8 @@ onMounted(async () => {
     doubaoBaseUrl.value = config.baseUrl
     doubaoHasApiKey.value = config.hasApiKey
   }
+  const marketConfig = await window.electronAPI?.getMarketConfig()
+  if (marketConfig) applyMarketConfig(marketConfig)
   unsubscribeDesktopOnly = window.electronAPI?.onDesktopOnlyChanged((flag) => {
     desktopOnly.value = flag
   }) ?? null
@@ -245,6 +279,52 @@ async function testDoubao() {
 function addMemory() {
   agent.addMemory(newMemory.value)
   newMemory.value = ''
+}
+
+function currentMarketConfig(): MarketBridgeConfig {
+  return {
+    openDHost: marketOpenDHost.value.trim(),
+    openDPort: Number(marketOpenDPort.value),
+    bridgeUrl: marketBridgeUrl.value.trim(),
+  }
+}
+function applyMarketConfig(config: MarketBridgeConfig) {
+  marketOpenDHost.value = config.openDHost
+  marketOpenDPort.value = config.openDPort
+  marketBridgeUrl.value = config.bridgeUrl
+}
+async function saveMarket() {
+  marketBusy.value = true
+  marketStatus.value = ''
+  try {
+    const saved = await window.electronAPI?.saveMarketConfig(currentMarketConfig())
+    if (!saved) throw new Error('保存失败')
+    applyMarketConfig(saved)
+    marketStatus.value = '行情配置已保存'
+    marketStatusKind.value = 'success'
+  } catch (error) {
+    marketStatus.value = error instanceof Error ? error.message : '保存失败'
+    marketStatusKind.value = 'error'
+  } finally {
+    marketBusy.value = false
+  }
+}
+async function testMarket() {
+  await saveMarket()
+  if (marketStatusKind.value === 'error') return
+  marketBusy.value = true
+  marketStatus.value = '正在连接 OpenD…'
+  try {
+    const result = await window.electronAPI?.testMarketConnection()
+    if (!result?.ok) throw new Error(result?.message || '连接失败')
+    marketStatus.value = result.message
+    marketStatusKind.value = 'success'
+  } catch (error) {
+    marketStatus.value = error instanceof Error ? error.message : '连接失败'
+    marketStatusKind.value = 'error'
+  } finally {
+    marketBusy.value = false
+  }
 }
 </script>
 

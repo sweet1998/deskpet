@@ -23,7 +23,7 @@
         ref="controlsRef"
         class="interaction-controls"
         :class="{
-          expanded: inputOpen || agent.conversationOpen || Boolean(inlineBubbleText),
+          expanded: inputOpen || agent.conversationOpen || Boolean(inlineBubbleText) || roleMenuOpen,
           dragging: draggingSurface,
           'conversation-expanded': agent.conversationOpen,
         }"
@@ -41,7 +41,7 @@
         </section>
         <section v-if="agent.conversationOpen" class="conversation-section">
           <header>
-            <span>对话</span>
+            <span>{{ currentProfile.name }} · 对话</span>
             <button class="icon-button" type="button" title="收起对话" @click="agent.conversationOpen = false">
               <ChevronDown :size="17" />
             </button>
@@ -58,6 +58,20 @@
             </div>
           </div>
         </section>
+        <div v-if="roleMenuOpen" class="role-menu">
+          <button
+            v-for="profile in roleOptions"
+            :key="profile.roleId"
+            type="button"
+            :class="{ selected: profile.roleId === agent.currentRole }"
+            @click="selectRole(profile.roleId)"
+          >
+            <Sparkles v-if="profile.roleId === 'default'" :size="16" />
+            <ChartCandlestick v-else :size="16" />
+            <span>{{ profile.name }}</span>
+            <Check v-if="profile.roleId === agent.currentRole" :size="15" />
+          </button>
+        </div>
         <div v-if="inputOpen" class="input-row">
           <input
             ref="inputRef"
@@ -69,6 +83,7 @@
             <Send :size="17" />
           </button>
         </div>
+        <p v-if="currentProfile.riskNotice" class="risk-notice">{{ currentProfile.riskNotice }}</p>
         <div class="toolbar-row">
           <button class="icon-button" :class="{ active: inputOpen }" type="button" title="文字输入" @click="toggleInput">
             <Keyboard :size="18" />
@@ -86,6 +101,10 @@
           </button>
           <button class="icon-button" :class="{ active: agent.conversationOpen }" type="button" title="对话记录" @click="agent.conversationOpen = !agent.conversationOpen">
             <MessagesSquare :size="18" />
+          </button>
+          <button class="icon-button" :class="{ active: roleMenuOpen }" type="button" :title="`当前角色：${currentProfile.name}`" @click="roleMenuOpen = !roleMenuOpen">
+            <Sparkles v-if="agent.currentRole === 'default'" :size="18" />
+            <ChartCandlestick v-else :size="18" />
           </button>
           <button
             v-if="agent.interruptible"
@@ -107,10 +126,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { ChevronDown, GripHorizontal, Keyboard, MessagesSquare, Mic, Send, Square, X } from 'lucide-vue-next'
+import { ChartCandlestick, Check, ChevronDown, GripHorizontal, Keyboard, MessagesSquare, Mic, Send, Sparkles, Square, X } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore } from '@/stores/chat'
 import { clampPetSurfacePosition, placePetSurface } from '@/services/interaction/pet-ui-position'
+import { ROLE_IDS, ROLE_PROFILES, type RoleId } from '../../shared/roles'
 
 const props = defineProps<{
   petX: number
@@ -129,6 +149,7 @@ const emit = defineEmits<{
 const agent = useAgentStore()
 const chat = useChatStore()
 const inputOpen = ref(false)
+const roleMenuOpen = ref(false)
 const inputText = ref('')
 const inputRef = ref<HTMLInputElement>()
 const controlsRef = ref<HTMLDivElement>()
@@ -207,6 +228,8 @@ const stateLabels: Record<string, string> = {
 }
 
 const stateLabel = computed(() => stateLabels[agent.state] || '')
+const currentProfile = computed(() => ROLE_PROFILES[agent.currentRole])
+const roleOptions = ROLE_IDS.map((roleId) => ROLE_PROFILES[roleId])
 const bubbleText = computed(() => {
   if (agent.proactiveMessage) return agent.proactiveMessage
   if (agent.state === 'listening') return '我在听。'
@@ -220,13 +243,15 @@ const inlineBubbleText = computed(() => (
 ))
 
 const anchorStyle = computed(() => {
-  const controlsWidth = inputOpen.value || agent.conversationOpen || inlineBubbleText.value
+  const controlsWidth = inputOpen.value || agent.conversationOpen || inlineBubbleText.value || roleMenuOpen.value
     ? Math.max(240, Math.min(320, viewportWidth.value - 24))
-    : 176
+    : 216
   const conversationHeight = Math.max(220, Math.min(360, viewportHeight.value - 180))
   const controlsHeight = 58
     + (inputOpen.value ? 50 : 0)
     + (inlineBubbleText.value ? 80 : 0)
+    + (roleMenuOpen.value ? 82 : 0)
+    + (currentProfile.value.riskNotice ? 30 : 0)
     + (agent.conversationOpen ? conversationHeight + 6 : 0)
   const controls = resolveSurfacePosition(
     controlsOffset.value,
@@ -305,6 +330,11 @@ function submit() {
   inputText.value = ''
   inputOpen.value = false
 }
+
+function selectRole(roleId: RoleId) {
+  agent.currentRole = roleId
+  roleMenuOpen.value = false
+}
 </script>
 
 <style scoped>
@@ -338,6 +368,11 @@ function submit() {
 .input-row { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid #e2e6ec; }
 .input-row input { min-width: 0; flex: 1; height: 34px; border: 0; border-radius: 6px; padding: 0 10px; color: #293548; background: #f1f4f8; outline: none; }
 .input-row input:focus { border-color: #5577a7; }
+.role-menu { flex: none; margin-bottom: 6px; padding: 5px; display: grid; gap: 3px; border-bottom: 1px solid #dce1e9; }
+.role-menu button { height: 31px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 5px; color: #40516c; background: transparent; cursor: pointer; }
+.role-menu button:hover, .role-menu button.selected { background: #e9edf3; }
+.role-menu button span { flex: 1; text-align: left; }
+.risk-notice { flex: none; margin: 0 3px 5px; color: #8c6570; font-size: 10px; line-height: 1.35; }
 .icon-button { width: 36px; height: 34px; flex: none; display: grid; place-items: center; border: 0; border-radius: 6px; color: #40516c; background: transparent; cursor: pointer; }
 .icon-button:hover { background: #e9edf3; }
 .icon-button.active { color: #fff; background: #5577a7; }

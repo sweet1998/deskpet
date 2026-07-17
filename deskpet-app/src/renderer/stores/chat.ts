@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { normalizeRoleId, type RoleId } from '../../shared/roles'
 
 export type ChatMessage =
   | {
@@ -20,7 +21,13 @@ export type ChatMessage =
     }
 
 export const useChatStore = defineStore('chat', () => {
-  const messages = ref<ChatMessage[]>([])
+  const messagesByRole = ref<Record<RoleId, ChatMessage[]>>({
+    default: [],
+    stock_expert: [],
+  })
+  const activeRole = ref<RoleId>('default')
+  const requestRoleById = ref<Record<string, RoleId>>({})
+  const messages = computed(() => messagesByRole.value[activeRole.value])
   const bubbleVisible = ref(false)
 
   // backward-compat: last assistant bubble
@@ -37,9 +44,28 @@ export const useChatStore = defineStore('chat', () => {
     }
   })
 
-  function addUserMessage(text: string) {
-    messages.value.push({
-      id: `user-${Date.now()}`,
+  function setActiveRole(roleId: RoleId) {
+    activeRole.value = normalizeRoleId(roleId)
+  }
+
+  function bindRequest(requestId: string, roleId: RoleId = activeRole.value) {
+    if (requestId) requestRoleById.value[requestId] = normalizeRoleId(roleId)
+  }
+
+  function roleMessages(requestId?: string): ChatMessage[] {
+    const roleId = requestId ? requestRoleById.value[requestId] ?? activeRole.value : activeRole.value
+    return messagesByRole.value[roleId]
+  }
+
+  function getRequestRole(requestId: string): RoleId | undefined {
+    return requestRoleById.value[requestId]
+  }
+
+  function addUserMessage(text: string, requestId?: string, roleId: RoleId = activeRole.value) {
+    const normalizedRole = normalizeRoleId(roleId)
+    if (requestId) bindRequest(requestId, normalizedRole)
+    messagesByRole.value[normalizedRole].push({
+      id: requestId ? `user-${requestId}` : `user-${Date.now()}`,
       role: 'user',
       text,
       streaming: false,
@@ -49,12 +75,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function appendChatText(delta: string, requestId: string) {
-    bubbleVisible.value = true
-    const existing = messages.value.find((m) => m.id === requestId)
+    if (!requestId || getRequestRole(requestId) === activeRole.value) bubbleVisible.value = true
+    const target = roleMessages(requestId)
+    const existing = target.find((m) => m.id === requestId)
     if (existing?.type === 'text') {
       existing.text += delta
     } else {
-      messages.value.push({
+      target.push({
         id: requestId,
         role: 'assistant',
         text: delta,
@@ -66,13 +93,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function finishChatStream(requestId: string) {
-    const msg = messages.value.find((m) => m.id === requestId)
+    const msg = roleMessages(requestId).find((m) => m.id === requestId)
     if (msg?.type === 'text') msg.streaming = false
   }
 
-  function showChatMessage(text: string) {
-    bubbleVisible.value = true
-    messages.value.push({
+  function showChatMessage(text: string, requestId?: string) {
+    if (!requestId || getRequestRole(requestId) === activeRole.value) bubbleVisible.value = true
+    roleMessages(requestId).push({
       id: `assistant-${Date.now()}`,
       role: 'assistant',
       text,
@@ -82,9 +109,9 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  function addEmojiMessage(base64: string, description: string) {
-    bubbleVisible.value = true
-    messages.value.push({
+  function addEmojiMessage(base64: string, description: string, requestId?: string) {
+    if (!requestId || getRequestRole(requestId) === activeRole.value) bubbleVisible.value = true
+    roleMessages(requestId).push({
       id: `emoji-${Date.now()}`,
       role: 'assistant',
       base64,
@@ -100,6 +127,9 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     messages,
+    messagesByRole,
+    activeRole,
+    requestRoleById,
     bubbleVisible,
     chatBubble,
     addUserMessage,
@@ -108,5 +138,8 @@ export const useChatStore = defineStore('chat', () => {
     finishChatStream,
     showChatMessage,
     hideChatBubble,
+    setActiveRole,
+    bindRequest,
+    getRequestRole,
   }
 })

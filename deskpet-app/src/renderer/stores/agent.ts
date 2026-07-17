@@ -6,6 +6,7 @@ import type {
   AgentStateEvent,
   AgentTaskResult,
 } from '@/services/agent-protocol'
+import { normalizeRoleId, type RoleId } from '../../shared/roles'
 
 const PREFERENCES_KEY = 'deskpet/agent-preferences'
 const MEMORIES_KEY = 'deskpet/agent-memories'
@@ -15,6 +16,7 @@ interface AgentPreferences {
   proactiveEnabled: boolean
   quietStart: string
   quietEnd: string
+  currentRole: RoleId
 }
 
 const DEFAULT_PREFERENCES: AgentPreferences = {
@@ -22,6 +24,7 @@ const DEFAULT_PREFERENCES: AgentPreferences = {
   proactiveEnabled: true,
   quietStart: '22:00',
   quietEnd: '08:00',
+  currentRole: 'default',
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -57,6 +60,7 @@ export const useAgentStore = defineStore('agent', () => {
   const proactiveEnabled = ref(persisted.proactiveEnabled)
   const quietStart = ref(persisted.quietStart)
   const quietEnd = ref(persisted.quietEnd)
+  const currentRole = ref<RoleId>(normalizeRoleId(persisted.currentRole))
   const memories = ref<string[]>(readJson<string[]>(MEMORIES_KEY, []))
 
   const workspaceOpen = computed(() => Boolean(
@@ -67,12 +71,13 @@ export const useAgentStore = defineStore('agent', () => {
     || proactiveMessage.value,
   ))
 
-  watch([userName, proactiveEnabled, quietStart, quietEnd], () => {
+  watch([userName, proactiveEnabled, quietStart, quietEnd, currentRole], () => {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify({
       userName: userName.value,
       proactiveEnabled: proactiveEnabled.value,
       quietStart: quietStart.value,
       quietEnd: quietEnd.value,
+      currentRole: currentRole.value,
     }))
   })
   watch(memories, (value) => {
@@ -155,6 +160,7 @@ export const useAgentStore = defineStore('agent', () => {
     proactiveEnabled,
     quietStart,
     quietEnd,
+    currentRole,
     memories,
     workspaceOpen,
     beginRequest,

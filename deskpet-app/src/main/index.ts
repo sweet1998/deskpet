@@ -6,6 +6,8 @@ import { shouldIgnoreMouseEvents, shouldPublishCursorPosition } from './mouse-ev
 import { buildPetContextMenuTemplate } from './pet-context-menu'
 import { requestDoubao, normalizeDoubaoConfig, type StoredDoubaoConfig } from './doubao-client'
 import { DOUBAO_BASE_URL, type DoubaoChatRequest, type DoubaoConfigInput } from '../shared/doubao'
+import { MarketBridgeManager, normalizeMarketConfig } from './market-bridge'
+import type { MarketBridgeConfig } from '../shared/market'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('in-process-gpu')
@@ -155,9 +157,29 @@ let activePetLayoutRequest: PetWindowLayoutRequest | null = null
 let settingsPanelScreenBounds: WindowBoundsState | null = null
 let settingsWindowScreenBounds: WindowBoundsState | null = null
 const doubaoRequests = new Map<string, AbortController>()
+let marketBridge: MarketBridgeManager | null = null
 
 function getDoubaoConfigPath(): string {
   return path.join(app.getPath('userData'), 'doubao-config.json')
+}
+
+function getMarketConfigPath(): string {
+  return path.join(app.getPath('userData'), 'market-config.json')
+}
+
+function readMarketConfig(): MarketBridgeConfig {
+  try {
+    return normalizeMarketConfig(JSON.parse(fs.readFileSync(getMarketConfigPath(), 'utf-8')))
+  } catch {
+    return normalizeMarketConfig(null)
+  }
+}
+
+function writeMarketConfig(input: unknown): MarketBridgeConfig {
+  const config = normalizeMarketConfig(input)
+  fs.mkdirSync(app.getPath('userData'), { recursive: true })
+  fs.writeFileSync(getMarketConfigPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
+  return config
 }
 
 function readDoubaoConfig(): StoredDoubaoConfig {
@@ -497,6 +519,8 @@ function createTray(): void {
 }
 
 app.whenReady().then(() => {
+  marketBridge = new MarketBridgeManager(readMarketConfig, app.getAppPath())
+  void marketBridge.ensureStarted()
   createWindow()
   createTray()
   registerGlobalShortcuts()
@@ -631,6 +655,33 @@ app.whenReady().then(() => {
     return Boolean(controller)
   })
 
+  ipcMain.handle('get-market-config', () => readMarketConfig())
+
+  ipcMain.handle('save-market-config', (_event, input: unknown) => {
+    const config = writeMarketConfig(input)
+    marketBridge?.restartOwned()
+    return config
+  })
+
+  ipcMain.handle('test-market-connection', async () => {
+    return marketBridge?.ensureStarted() ?? {
+      ok: false,
+      status: 'error',
+      message: '行情桥尚未初始化',
+    }
+  })
+
+  ipcMain.handle('get-market-context', async (event, query: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow || typeof query !== 'string') {
+      return { status: 'unavailable', source: 'futu-opend', error: '无效的行情请求' }
+    }
+    return marketBridge?.context(query) ?? {
+      status: 'unavailable',
+      source: 'futu-opend',
+      error: '行情桥尚未初始化',
+    }
+  })
+
   ipcMain.handle('set-auto-screenshot-interval', (_event, sec: number) => {
     autoScreenshotInterval = sec
     if (autoScreenshotTimer) setAutoScreenshot(true, sec)
@@ -669,6 +720,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  marketBridge?.stop()
+  marketBridge = null
   stopGlobalCursorPolling()
   globalShortcut.unregisterAll()
   if (tray) { tray.destroy(); tray = null }

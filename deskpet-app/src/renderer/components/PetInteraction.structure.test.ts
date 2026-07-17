@@ -39,5 +39,8 @@ describe('PetInteraction unified conversation surface', () => {
     expect(controlsSource).toContain('input-row')
     expect(controlsSource).toContain('toolbar-row')
     expect(descriptor.template?.content).toContain('bubbleText && !agent.interactionOpen')
+    expect(controlsSource).toContain('role-menu')
+    expect(controlsSource).toContain('currentProfile.riskNotice')
+    expect(controlsSource).toContain('currentProfile.name }} · 对话')
   })
 })

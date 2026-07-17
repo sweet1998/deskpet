@@ -214,6 +214,7 @@ onMounted(async () => {
   }) ?? null
   unsubscribeScreenshot = window.electronAPI?.onScreenshotCaptured?.((base64) => {
     const requestId = createRequestId()
+    chat.bindRequest(requestId, agent.currentRole)
     agent.beginRequest(requestId, '分析当前屏幕', '屏幕截图')
     agent.taskPanelOpen = true
     agent.applyState({ requestId, state: 'executing', progress: 25, step: '正在理解屏幕内容', interruptible: true })
@@ -297,6 +298,19 @@ watch(() => agent.state, (state) => {
     stopActionEffect()
   }
 })
+
+watch(() => agent.currentRole, (roleId, previousRole) => {
+  if (roleId === previousRole) return
+  const requestId = agent.activeRequestId
+  if (requestId && agent.interruptible) transport.sendInterrupt(requestId)
+  chat.hideChatBubble()
+  chat.setActiveRole(roleId)
+  agent.proactiveMessage = ''
+  agent.activeRequestId = ''
+  agent.taskPanelOpen = false
+  agent.setConfirmation(null)
+  agent.applyState({ requestId: '', state: 'idle', progress: 0, step: '', interruptible: false })
+}, { immediate: true })
 
 function isUiTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('[data-pet-ui]'))
@@ -419,7 +433,7 @@ function submitUserText(text: string): void {
   const requestId = createRequestId()
   const memoryMatch = value.match(/^(?:请)?记住[：:\s]*(.+)$/)
   if (memoryMatch?.[1]) agent.addMemory(memoryMatch[1])
-  chat.addUserMessage(value)
+  chat.addUserMessage(value, requestId, agent.currentRole)
   agent.beginRequest(requestId, value)
   agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
   agent.interactionOpen = true
@@ -501,6 +515,7 @@ async function onFileDrop(event: DragEvent): Promise<void> {
   }
 
   const requestId = createRequestId()
+  chat.bindRequest(requestId, agent.currentRole)
   agent.beginRequest(requestId, '总结文件并生成待办', file.name)
   agent.taskPanelOpen = true
   agent.applyState({ requestId, state: 'planning', progress: 15, step: '正在制定处理计划', interruptible: true })

@@ -109,6 +109,8 @@ maibot-deskpet-plugin/
 
 ### 对话
 - **双向对话**：通过 MaiBot MessageGateway 接入完整推理管线（Planner → Replyer → 回复）
+- **角色切换**：麦麦与炒股专家共享用户记忆，对话历史按角色隔离
+- **A 股研究**：炒股专家通过本地富途 OpenD 获取快照、120 日日 K 和基础估值，只读且不接入交易账户
 - **聊天气泡**：漫画风格浮动气泡（左上角，5 秒自动消失） + 聊天记录面板
 - **消息流**：用户/AI 双色气泡，流式文字实时更新，自动滚屏
 - **表情系统**：MaiBot 可通过 Tool 控制角色表情与动作动画
@@ -142,6 +144,7 @@ maibot-deskpet-plugin/
 | AI 接入 | MaiBot MessageGateway 插件协议 |
 | TTS | GPT-SoVITS (HTTP API v2, 角色声线克隆) |
 | STT | SenseVoice (sherpa-onnx, 本地离线) |
+| A 股行情 | 富途 OpenD + 本地 aiohttp 桥（端口 18531） |
 
 ## 安装与运行
 
@@ -215,18 +218,18 @@ npm install
 
 ### 第三步：安装 Python 依赖
 
-桌宠需要用 Python 跑 STT 和 TTS 桥，先装依赖包：
+桌宠需要用 Python 跑 STT、TTS 和富途行情桥，先装依赖包：
 
 > 如果还没有装 Python，先去 [python.org](https://www.python.org/downloads/) 下载安装（勾选"Add Python to PATH"）
 
 ```bash
-pip install aiohttp websockets edge-tts sherpa-onnx numpy
+pip install aiohttp websockets edge-tts sherpa-onnx numpy futu-api
 ```
 
 验证安装成功：
 
 ```bash
-python -c "import aiohttp; import sherpa_onnx; print('OK')"
+python -c "import aiohttp; import sherpa_onnx; import futu; print('OK')"
 ```
 
 看到 `OK` 就说明装好了。
@@ -379,6 +382,15 @@ stream_buffer_size = 50
 | VAD 灵敏度 | localStorage `deskpet/vad-threshold` | `0.02` |
 | 静音判定秒数 | localStorage `deskpet/vad-silence` | `1.5` |
 | 自动截图间隔 | localStorage `deskpet/auto-screenshot-interval` | `60` |
+
+### 富途 OpenD 行情
+
+1. 安装并登录富途 OpenD，确认已获得对应 A 股行情权限。
+2. 默认 OpenD 地址为 `127.0.0.1:11111`，行情桥为 `http://127.0.0.1:18531`。
+3. Electron 会先检查外部行情桥；不存在时自动用系统 `python3` 启动 `futu-market-bridge.py`。
+4. 在设置页的“富途 OpenD 行情”区域保存配置并测试连接。
+
+行情桥仅创建 `OpenQuoteContext`，不创建交易上下文，不读取账户、持仓或下单接口。炒股专家的结果仅供研究参考，不构成投资建议。
 
 ## 启发的方向与未来计划
 

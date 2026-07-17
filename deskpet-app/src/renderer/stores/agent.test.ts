@@ -32,5 +32,15 @@ describe('agent store', () => {
     store.removeMemory(0)
     expect(store.memories).toEqual([])
   })
-})
 
+  it('persists the selected role and rejects an invalid persisted role', async () => {
+    const store = useAgentStore()
+    store.currentRole = 'stock_expert'
+    await Promise.resolve()
+    expect(JSON.parse(localStorage.getItem('deskpet/agent-preferences') || '{}').currentRole).toBe('stock_expert')
+
+    localStorage.setItem('deskpet/agent-preferences', JSON.stringify({ currentRole: 'admin' }))
+    setActivePinia(createPinia())
+    expect(useAgentStore().currentRole).toBe('default')
+  })
+})

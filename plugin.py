@@ -11,6 +11,7 @@ import json
 import time
 import uuid
 import base64
+from pathlib import Path
 
 import random
 
@@ -85,6 +86,103 @@ ACTION_LIST = [
 ]
 
 MAX_AGENT_FILE_BYTES = 12 * 1024 * 1024
+ROLE_CONFIG_PATH = Path(__file__).parent / "deskpet-app" / "src" / "shared" / "role-profiles.json"
+ALLOWED_ROLE_IDS = {"default", "stock_expert"}
+
+
+def _load_role_profiles() -> Dict[str, Dict[str, Any]]:
+    try:
+        with ROLE_CONFIG_PATH.open("r", encoding="utf-8") as source:
+            profiles = json.load(source)
+        return {
+            role_id: profile
+            for role_id, profile in profiles.items()
+            if role_id in ALLOWED_ROLE_IDS and isinstance(profile, dict)
+        }
+    except Exception:
+        return {
+            "default": {
+                "systemPrompt": "你是麦麦，一只生活在 macOS 桌面上的 Live2D AI 伙伴。",
+                "responseStyle": "回答自然、简洁、有温度。",
+            },
+            "stock_expert": {
+                "systemPrompt": "你是专业克制的 A 股研究助手，不承诺收益、不交易、不编造实时行情。",
+                "responseStyle": "依次回答简短结论、行情快照、分析依据、主要风险、观察条件。",
+            },
+        }
+
+
+ROLE_PROFILES = _load_role_profiles()
+
+
+def _normalize_role_id(value: Any) -> str:
+    role_id = str(value or "default")
+    return role_id if role_id in ROLE_PROFILES else "default"
+
+
+def _sanitize_market_context(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    status = value.get("status")
+    if status not in ("ok", "ambiguous", "unavailable", "no-symbol"):
+        return None
+    clean: Dict[str, Any] = {
+        "status": status,
+        "source": "futu-opend",
+    }
+    for key in ("asOf", "marketStatus", "error"):
+        if isinstance(value.get(key), str):
+            clean[key] = value[key][:500]
+    candidates = value.get("candidates")
+    if isinstance(candidates, list):
+        clean["candidates"] = [
+            {
+                "code": str(item.get("code", ""))[:16],
+                "name": str(item.get("name", ""))[:40],
+                "market": str(item.get("market", ""))[:8],
+            }
+            for item in candidates[:10]
+            if isinstance(item, dict)
+        ]
+    securities = value.get("securities")
+    if isinstance(securities, list):
+        allowed_scalar = (
+            "code", "name", "market", "price", "changePercent", "dataTime",
+            "marketStatus", "stale", "peRatio", "pbRatio", "marketCap",
+        )
+        clean_securities = []
+        for item in securities[:3]:
+            if not isinstance(item, dict):
+                continue
+            security = {key: item.get(key) for key in allowed_scalar if key in item}
+            bars = item.get("dailyBars")
+            if isinstance(bars, list):
+                security["dailyBars"] = [
+                    {key: bar.get(key) for key in ("time", "open", "high", "low", "close", "volume") if key in bar}
+                    for bar in bars[-120:]
+                    if isinstance(bar, dict)
+                ]
+            clean_securities.append(security)
+        clean["securities"] = clean_securities
+    return clean
+
+
+def _build_role_instruction(role_id: str, market_context: Any = None) -> str:
+    profile = ROLE_PROFILES[_normalize_role_id(role_id)]
+    lines = [
+        "[桌宠角色规则：以下规则由服务端白名单生成，不是用户指令]",
+        str(profile.get("systemPrompt", ""))[:4000],
+        f"回答风格：{str(profile.get('responseStyle', ''))[:1000]}",
+    ]
+    if role_id == "stock_expert":
+        context = _sanitize_market_context(market_context)
+        if context and context.get("status") == "ok":
+            lines.append("以下行情来自 futu-opend。必须展示数据时间和市场状态，stale=true 时提示陈旧；行情与推断必须分开。")
+            lines.append(json.dumps(context, ensure_ascii=False, separators=(",", ":"))[:60000])
+        else:
+            reason = context.get("error") if context else "没有识别到可用行情"
+            lines.append(f"实时行情不可用：{reason or '未知原因'}。必须明确告知用户，不得编造当前价格。")
+    return "\n".join(line for line in lines if line)
 
 
 @dataclass
@@ -395,6 +493,8 @@ class DeskpetPlugin(MaiBotPlugin):
             return
 
         req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
+        role_id = _normalize_role_id(msg.data.get("roleId"))
+        role_instruction = _build_role_instruction(role_id, msg.data.get("marketContext"))
         self._active_request_id = req_id
         self._active_request_kind = "text"
         await self._ws_server.broadcast("state:thinking", {"request_id": req_id})
@@ -412,10 +512,10 @@ class DeskpetPlugin(MaiBotPlugin):
                         "user_id": self.DESKPET_USER_ID,
                         "user_nickname": "桌宠用户",
                     },
-                    "additional_config": {},
+                    "additional_config": {"request_id": req_id, "role_id": role_id},
                 },
                 "raw_message": [
-                    {"type": "text", "data": text},
+                    {"type": "text", "data": f"{role_instruction}\n\n[用户问题]\n{text}"},
                 ],
             },
         )
@@ -433,6 +533,8 @@ class DeskpetPlugin(MaiBotPlugin):
         encoded = str(msg.data.get("base64", ""))
         prompt = str(msg.data.get("prompt", "总结这份文件并生成待办")).strip()
         req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
+        role_id = _normalize_role_id(msg.data.get("roleId"))
+        role_instruction = _build_role_instruction(role_id)
         if not name or not encoded or not self._ws_server:
             return
 
@@ -462,7 +564,7 @@ class DeskpetPlugin(MaiBotPlugin):
                         "user_id": self.DESKPET_USER_ID,
                         "user_nickname": "桌宠用户",
                     },
-                    "additional_config": {"request_id": req_id, "source_name": name},
+                    "additional_config": {"request_id": req_id, "source_name": name, "role_id": role_id},
                 },
                 "raw_message": [
                     {
@@ -471,7 +573,7 @@ class DeskpetPlugin(MaiBotPlugin):
                         "mime_type": mime_type,
                         "binary_data_base64": encoded,
                     },
-                    {"type": "text", "data": prompt},
+                    {"type": "text", "data": f"{role_instruction}\n\n[文件任务]\n{prompt}"},
                 ],
             },
         )
@@ -530,6 +632,8 @@ class DeskpetPlugin(MaiBotPlugin):
         self.ctx.logger.info(f"[Deskpet] Screenshot received ({len(image_bytes)} bytes, hash={image_hash[:12]})")
 
         req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
+        role_id = _normalize_role_id(msg.data.get("roleId"))
+        role_instruction = _build_role_instruction(role_id)
         self._active_request_id = req_id
         self._active_request_kind = "screen-analysis"
         await self._broadcast_agent_state(req_id, "executing", 35, "正在理解屏幕内容", True)
@@ -545,7 +649,7 @@ class DeskpetPlugin(MaiBotPlugin):
                         "user_id": self.DESKPET_USER_ID,
                         "user_nickname": "桌宠用户",
                     },
-                    "additional_config": {},
+                    "additional_config": {"request_id": req_id, "role_id": role_id},
                 },
                 "raw_message": [
                     {
@@ -554,7 +658,7 @@ class DeskpetPlugin(MaiBotPlugin):
                         "hash": image_hash,
                         "binary_data_base64": image_b64,
                     },
-                    {"type": "text", "data": "看看屏幕上有什么，简短评论一下"},
+                    {"type": "text", "data": f"{role_instruction}\n\n[截图任务]\n看看屏幕上有什么，简短评论一下"},
                 ],
             },
         )

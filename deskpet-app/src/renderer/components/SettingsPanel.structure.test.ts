@@ -65,5 +65,8 @@ describe('SettingsPanel pointer event boundary', () => {
     expect(hasStoppedMousedown(overlay)).toBe(false)
     expect(hasStoppedMousedown(panel)).toBe(true)
     expect(hasStaticAttribute(panel, 'data-pet-ui')).toBe(true)
+    expect(template).toContain('默认角色')
+    expect(template).toContain('富途 OpenD 行情')
+    expect(template).toContain('测试连接')
   })
 })

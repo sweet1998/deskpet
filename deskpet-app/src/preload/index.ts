@@ -5,6 +5,7 @@ import {
   type PetContextMenuRequest,
 } from '../shared/pet-context-menu'
 import type { DoubaoChatRequest, DoubaoConfigInput } from '../shared/doubao'
+import type { MarketBridgeConfig } from '../shared/market'
 
 interface GlobalCursorPosition {
   screenX: number
@@ -98,6 +99,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   testDoubaoConnection: (input: DoubaoConfigInput) => ipcRenderer.invoke('test-doubao-connection', input),
   doubaoChat: (input: DoubaoChatRequest) => ipcRenderer.invoke('doubao-chat', input),
   cancelDoubaoChat: (requestId: string): Promise<boolean> => ipcRenderer.invoke('cancel-doubao-chat', requestId),
+  getMarketConfig: (): Promise<MarketBridgeConfig> => ipcRenderer.invoke('get-market-config'),
+  saveMarketConfig: (input: MarketBridgeConfig): Promise<MarketBridgeConfig> => ipcRenderer.invoke('save-market-config', input),
+  testMarketConnection: () => ipcRenderer.invoke('test-market-connection'),
+  getMarketContext: (query: string) => ipcRenderer.invoke('get-market-context', query),
   saveAgentResult: (value: { title: string; content: string }): Promise<boolean> =>
     ipcRenderer.invoke('save-agent-result', value),
 })
