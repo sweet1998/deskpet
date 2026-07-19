@@ -26,4 +26,36 @@ describe('chat store roles', () => {
     expect(chat.messagesByRole.stock_expert).toEqual([])
     expect(chat.bubbleVisible).toBe(false)
   })
+
+  it('stores a collapsible thought summary before the formal answer', () => {
+    const chat = useChatStore()
+    chat.bindRequest('req-thought', 'stock_expert')
+    chat.appendThought('req-thought', '正在获取行情')
+    chat.appendThought('req-thought', '正在获取行情')
+    chat.appendThought('req-thought', '正在整理风险依据')
+    chat.finishThought('req-thought')
+
+    const thought = chat.messagesByRole.stock_expert[0]
+    expect(thought).toMatchObject({ type: 'thought', complete: true, collapsed: true })
+    expect(thought.type === 'thought' && thought.steps).toHaveLength(2)
+    chat.toggleThought('req-thought')
+    expect(thought.type === 'thought' && thought.collapsed).toBe(false)
+  })
+
+  it('stores one retryable status message and resolves the original request text', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('再试一次', 'req-error', 'default')
+    chat.showStatusMessage('req-error', '网络异常', 'network')
+    chat.showStatusMessage('req-error', '响应超时', 'timeout')
+
+    expect(chat.getRequestText('req-error')).toBe('再试一次')
+    expect(chat.messagesByRole.default).toHaveLength(2)
+    expect(chat.messagesByRole.default[1]).toMatchObject({
+      id: 'status-req-error',
+      type: 'status',
+      text: '响应超时',
+      code: 'timeout',
+      retryable: true,
+    })
+  })
 })

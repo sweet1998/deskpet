@@ -24,6 +24,16 @@ describe('agent store', () => {
     expect(store.currentStep).toContain('report.pdf')
   })
 
+  it('records request activity for the inactivity watchdog', () => {
+    const store = useAgentStore()
+    store.beginRequest('req-active')
+    const started = store.activityVersion
+    store.touchRequest('req-old')
+    expect(store.activityVersion).toBe(started)
+    store.touchRequest('req-active')
+    expect(store.activityVersion).toBe(started + 1)
+  })
+
   it('deduplicates and removes explicit memories', () => {
     const store = useAgentStore()
     store.addMemory('周五交周报')

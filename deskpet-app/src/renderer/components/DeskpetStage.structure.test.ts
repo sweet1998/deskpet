@@ -60,5 +60,7 @@ describe('DeskpetStage model-only shell', () => {
     expect(shape.scriptSetup).toMatch(
       /command\.type === 'settings'[\s\S]*showSettings\.value = true[\s\S]*settingsPanelOpen\.value = true/,
     )
+    expect(shape.scriptSetup).toContain('watch(() => agent.activityVersion')
+    expect(shape.scriptSetup).toContain('startTextRequestTimer(agent.activeRequestId)')
   })
 })

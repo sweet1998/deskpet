@@ -130,9 +130,11 @@ export function useWebSocket() {
     const responseRequestId = request_id || data.requestId || data.request_id || ''
     const responseRole = responseRequestId ? chatStore.getRequestRole(responseRequestId) : undefined
     const responseIsActive = !responseRole || responseRole === agentStore.currentRole
+    if (responseIsActive && responseRequestId) agentStore.touchRequest(responseRequestId)
 
     switch (type) {
       case 'output:text:delta':
+        chatStore.finishThought(responseRequestId)
         chatStore.appendChatText(data.delta, responseRequestId)
         if (responseIsActive && agentStore.state !== 'executing') {
           agentStore.applyState({
@@ -144,21 +146,42 @@ export function useWebSocket() {
         break
 
       case 'output:text:done':
+        chatStore.finishThought(responseRequestId)
         chatStore.finishChatStream(responseRequestId)
         if (!data.error && responseIsActive) {
+          agentStore.applyState({
+            requestId: responseRequestId,
+            state: 'success',
+            progress: 100,
+            step: '回答完成',
+            interruptible: false,
+          })
           setTimeout(() => chatStore.hideChatBubble(), 8000)
         } else if (responseIsActive) {
+          const message = String(data.error || 'MaiBot 返回了异常结果')
+          chatStore.showStatusMessage(responseRequestId, message, 'service')
           agentStore.applyState({
             requestId: request_id || data.request_id || agentStore.activeRequestId,
             state: 'error',
-            error: data.error,
+            interruptible: false,
+            error: message,
           })
         }
         break
 
       case 'output:text':
+        chatStore.finishThought(responseRequestId)
         chatStore.showChatMessage(data.text, responseRequestId)
-        if (responseIsActive) setTimeout(() => chatStore.hideChatBubble(), 8000)
+        if (responseIsActive) {
+          agentStore.applyState({
+            requestId: responseRequestId,
+            state: 'success',
+            progress: 100,
+            step: '回答完成',
+            interruptible: false,
+          })
+          setTimeout(() => chatStore.hideChatBubble(), 8000)
+        }
         break
 
       case 'state:emotion':
@@ -192,6 +215,16 @@ export function useWebSocket() {
 
       case 'state:agent':
         if (responseIsActive && isAgentState(data.state)) {
+          if (responseRequestId && ['speaking', 'success', 'error', 'interrupted'].includes(data.state)) {
+            chatStore.finishThought(responseRequestId)
+          }
+          if (responseRequestId && data.state === 'error') {
+            chatStore.showStatusMessage(
+              responseRequestId,
+              String(data.error || '任务执行失败，请稍后重试。'),
+              'service',
+            )
+          }
           agentStore.applyState({
             requestId: request_id || data.requestId || data.request_id || agentStore.activeRequestId,
             state: data.state,

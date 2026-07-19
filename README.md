@@ -110,7 +110,7 @@ maibot-deskpet-plugin/
 ### 对话
 - **双向对话**：通过 MaiBot MessageGateway 接入完整推理管线（Planner → Replyer → 回复）
 - **角色切换**：麦麦与炒股专家共享用户记忆，对话历史按角色隔离
-- **A 股研究**：炒股专家通过本地富途 OpenD 获取快照、120 日日 K 和基础估值，只读且不接入交易账户
+- **A 股研究**：炒股专家通过桌宠后端获取 AKShare 行情、公司资料、财务指标和 120 日日 K，并计算趋势与风险指标；腾讯/东方财富按数据分项兜底
 - **聊天气泡**：漫画风格浮动气泡（左上角，5 秒自动消失） + 聊天记录面板
 - **消息流**：用户/AI 双色气泡，流式文字实时更新，自动滚屏
 - **表情系统**：MaiBot 可通过 Tool 控制角色表情与动作动画
@@ -144,9 +144,11 @@ maibot-deskpet-plugin/
 | AI 接入 | MaiBot MessageGateway 插件协议 |
 | TTS | GPT-SoVITS (HTTP API v2, 角色声线克隆) |
 | STT | SenseVoice (sherpa-onnx, 本地离线) |
-| A 股行情 | 富途 OpenD + 本地 aiohttp 桥（端口 18531） |
+| A 股行情 | AKShare 主源 + 腾讯/东方财富兜底；富途 OpenD 为可选高级适配器 |
 
 ## 安装与运行
+
+面向普通用户的免安装行情和 Agent 服务见 [backend/README.md](backend/README.md)。本地富途 OpenD 仍作为可选高级行情适配器保留。
 
 ### 第零步：MaiBot 配置（必要）
 

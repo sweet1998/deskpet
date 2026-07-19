@@ -48,9 +48,35 @@
           </header>
           <div class="message-list">
             <div v-if="chat.messages.length === 0" class="empty">还没有对话</div>
-            <div v-for="message in chat.messages" :key="message.id" :class="['message', message.role]">
+            <div v-for="message in chat.messages" :key="message.id" :class="['message', message.role, message.type]">
+              <template v-if="message.type === 'thought'">
+                <button class="thought-toggle" type="button" @click="chat.toggleThought(message.requestId)">
+                  <BrainCircuit :size="14" />
+                  <span>{{ message.complete ? '思考过程' : '正在思考' }}</span>
+                  <ChevronRight v-if="message.collapsed" :size="14" />
+                  <ChevronDown v-else :size="14" />
+                </button>
+                <div v-show="!message.collapsed" class="thought-steps">
+                  <div v-for="step in message.steps" :key="step.id">{{ step.text }}</div>
+                </div>
+              </template>
+              <template v-else-if="message.type === 'status'">
+                <div class="status-message-copy">
+                  <CircleAlert :size="15" />
+                  <span>{{ message.text }}</span>
+                </div>
+                <button
+                  v-if="message.retryable"
+                  class="retry-button"
+                  type="button"
+                  :disabled="agent.interruptible"
+                  @click="$emit('retry', message.requestId)"
+                >
+                  <RotateCcw :size="13" /> 重试
+                </button>
+              </template>
               <img
-                v-if="message.type === 'emoji'"
+                v-else-if="message.type === 'emoji'"
                 :src="`data:image/png;base64,${message.base64}`"
                 alt="AI 表情"
               />
@@ -76,10 +102,11 @@
           <input
             ref="inputRef"
             v-model="inputText"
-            placeholder="说点什么..."
+            :placeholder="agent.interruptible ? '当前请求处理中...' : '说点什么...'"
+            :disabled="agent.interruptible"
             @keydown.enter="submit"
           />
-          <button class="icon-button accent" type="button" title="发送" :disabled="!inputText.trim()" @click="submit">
+          <button class="icon-button accent" type="button" title="发送" :disabled="agent.interruptible || !inputText.trim()" @click="submit">
             <Send :size="17" />
           </button>
         </div>
@@ -93,6 +120,7 @@
             :class="{ recording: agent.recording }"
             type="button"
             title="按住说话"
+            :disabled="agent.interruptible"
             @pointerdown.prevent="$emit('voice-start')"
             @pointerup.prevent="$emit('voice-stop')"
             @pointercancel="$emit('voice-stop')"
@@ -126,7 +154,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { ChartCandlestick, Check, ChevronDown, GripHorizontal, Keyboard, MessagesSquare, Mic, Send, Sparkles, Square, X } from 'lucide-vue-next'
+import { BrainCircuit, ChartCandlestick, Check, ChevronDown, ChevronRight, CircleAlert, GripHorizontal, Keyboard, MessagesSquare, Mic, RotateCcw, Send, Sparkles, Square, X } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore } from '@/stores/chat'
 import { clampPetSurfacePosition, placePetSurface } from '@/services/interaction/pet-ui-position'
@@ -144,6 +172,7 @@ const emit = defineEmits<{
   'voice-start': []
   'voice-stop': []
   interrupt: []
+  retry: [requestId: string]
 }>()
 
 const agent = useAgentStore()
@@ -325,7 +354,7 @@ async function toggleInput() {
 
 function submit() {
   const value = inputText.value.trim()
-  if (!value) return
+  if (!value || agent.interruptible) return
   emit('submit', value)
   inputText.value = ''
   inputOpen.value = false
@@ -389,6 +418,18 @@ function selectRole(roleId: RoleId) {
 .message { max-width: 86%; padding: 7px 9px; border-radius: 7px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .message.user { align-self: flex-end; color: #fff; background: #425d82; }
 .message.assistant { align-self: flex-start; background: #edf0f5; }
+.message.thought { width: 100%; max-width: 100%; box-sizing: border-box; padding: 2px 0 8px; color: #8791a2; background: transparent; border-bottom: 1px solid #e4e7ec; }
+.message.status { width: 100%; max-width: 100%; box-sizing: border-box; color: #7f3f49; background: #fff4f3; border: 1px solid #efcfcc; }
+.status-message-copy { display: flex; align-items: flex-start; gap: 7px; }
+.status-message-copy svg { flex: none; margin-top: 1px; }
+.retry-button { margin: 7px 0 0 22px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid #dbaeb0; border-radius: 5px; color: #914550; background: #fffafa; cursor: pointer; }
+.retry-button:hover { background: #f9e8e7; }
+.retry-button:disabled { opacity: .45; cursor: default; }
+.thought-toggle { width: 100%; height: 28px; padding: 0 3px; display: flex; align-items: center; gap: 6px; border: 0; color: #7f8998; background: transparent; cursor: pointer; }
+.thought-toggle span { flex: 1; text-align: left; font-size: 11px; }
+.thought-steps { padding: 1px 5px 3px 23px; display: flex; flex-direction: column; gap: 5px; }
+.thought-steps div { position: relative; color: #9aa3b0; font-size: 11px; line-height: 1.45; }
+.thought-steps div::before { content: ''; position: absolute; left: -12px; top: 6px; width: 4px; height: 4px; border-radius: 50%; background: #bdc4ce; }
 .message img { max-width: 150px; display: block; }
 .empty { margin: auto; color: #8791a2; font-size: 12px; }
 .bubble-pop-enter-active, .bubble-pop-leave-active, .toolbar-pop-enter-active, .toolbar-pop-leave-active { transition: opacity .18s ease, transform .18s ease; }

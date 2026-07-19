@@ -26,6 +26,39 @@ export interface MarketDailyBar {
   volume: number | null
 }
 
+export interface MarketCompanyProfile {
+  industry: string | null
+  listingDate: string | null
+  totalShares: number | null
+  floatShares: number | null
+  floatMarketCap: number | null
+}
+
+export interface MarketFinancialSnapshot {
+  reportDate: string | null
+  eps: number | null
+  revenue: number | null
+  revenueYoY: number | null
+  netProfit: number | null
+  netProfitYoY: number | null
+  roe: number | null
+  grossMargin: number | null
+  netMargin: number | null
+  debtRatio: number | null
+  operatingCashFlowPerShare: number | null
+}
+
+export interface MarketTechnicalSummary {
+  return5d: number | null
+  return20d: number | null
+  return60d: number | null
+  ma5: number | null
+  ma20: number | null
+  ma60: number | null
+  volatility20d: number | null
+  maxDrawdown60d: number | null
+}
+
 export interface MarketSecurityContext extends MarketCandidate {
   price: number | null
   changePercent: number | null
@@ -36,11 +69,16 @@ export interface MarketSecurityContext extends MarketCandidate {
   pbRatio: number | null
   marketCap: number | null
   dailyBars: MarketDailyBar[]
+  profile: MarketCompanyProfile
+  financial: MarketFinancialSnapshot
+  technical: MarketTechnicalSummary
+  dataSources: Record<string, string>
+  warnings: string[]
 }
 
 export interface MarketContextResult {
   status: 'ok' | 'ambiguous' | 'unavailable' | 'no-symbol'
-  source: 'futu-opend'
+  source: string
   asOf?: string
   marketStatus?: string
   securities?: MarketSecurityContext[]

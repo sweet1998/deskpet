@@ -11,6 +11,8 @@ export interface RoleProfile {
   systemPrompt: string
   responseStyle: string
   riskNotice: string
+  capabilities: string[]
+  outOfScopeMessage: string
   emotionBias: string
   actionBias: string
 }

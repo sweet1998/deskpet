@@ -24,6 +24,7 @@
       @voice-start="startVoiceInput"
       @voice-stop="stopVoiceInput"
       @interrupt="interruptAgent"
+      @retry="retryRequest"
     />
 
     <AgentTaskPanel
@@ -96,6 +97,7 @@ const SETTINGS_PANEL_HEIGHT = 600
 const AGENT_PANEL_WIDTH = 460
 const AGENT_PANEL_HEIGHT = 560
 const MAX_AGENT_FILE_BYTES = 12 * 1024 * 1024
+const TEXT_REQUEST_TIMEOUT_MS = 60_000
 const transport = useChimeraTransport()
 const agent = useAgentStore()
 const chat = useChatStore()
@@ -118,6 +120,7 @@ const settingsPanelWidth = ref(SETTINGS_PANEL_WIDTH)
 const settingsPanelHeight = ref(SETTINGS_PANEL_HEIGHT)
 const modelError = ref('')
 const fileDragActive = ref(false)
+const textRequestTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const expandedUiOpen = computed(() => Boolean(
   showSettings.value || agent.workspaceOpen || chat.chatBubble.visible,
 ))
@@ -275,6 +278,9 @@ const stopPendingAnimationWatch = watch(
 )
 
 watch(() => agent.state, (state) => {
+  if (['success', 'error', 'interrupted', 'idle'].includes(state)) {
+    clearTextRequestTimer(agent.activeRequestId)
+  }
   const stateBehavior: Partial<Record<typeof state, { emotion: string; action?: string; loop?: boolean }>> = {
     idle: { emotion: 'neutral' },
     listening: { emotion: 'curious' },
@@ -299,10 +305,19 @@ watch(() => agent.state, (state) => {
   }
 })
 
+watch(() => agent.activityVersion, () => {
+  if (agent.activeRequestId && agent.interruptible) {
+    startTextRequestTimer(agent.activeRequestId)
+  }
+})
+
 watch(() => agent.currentRole, (roleId, previousRole) => {
   if (roleId === previousRole) return
   const requestId = agent.activeRequestId
-  if (requestId && agent.interruptible) transport.sendInterrupt(requestId)
+  if (requestId && agent.interruptible) {
+    transport.sendInterrupt(requestId)
+    clearTextRequestTimer(requestId)
+  }
   chat.hideChatBubble()
   chat.setActiveRole(roleId)
   agent.proactiveMessage = ''
@@ -427,9 +442,38 @@ function createRequestId(): string {
     : `deskpet-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function clearTextRequestTimer(requestId: string): void {
+  const timer = textRequestTimers.get(requestId)
+  if (timer) clearTimeout(timer)
+  textRequestTimers.delete(requestId)
+}
+
+function startTextRequestTimer(requestId: string): void {
+  clearTextRequestTimer(requestId)
+  textRequestTimers.set(requestId, setTimeout(() => {
+    textRequestTimers.delete(requestId)
+    if (agent.activeRequestId !== requestId || !agent.interruptible) return
+    transport.sendInterrupt(requestId)
+    chat.finishThought(requestId)
+    chat.showStatusMessage(
+      requestId,
+      '响应超时。请检查网络或 AI 服务配置后重试。',
+      'timeout',
+    )
+    agent.applyState({
+      requestId,
+      state: 'error',
+      progress: 0,
+      step: '请求超时',
+      interruptible: false,
+      error: '响应超时，请稍后重试',
+    })
+  }, TEXT_REQUEST_TIMEOUT_MS))
+}
+
 function submitUserText(text: string): void {
   const value = text.trim()
-  if (!value) return
+  if (!value || agent.interruptible) return
   const requestId = createRequestId()
   const memoryMatch = value.match(/^(?:请)?记住[：:\s]*(.+)$/)
   if (memoryMatch?.[1]) agent.addMemory(memoryMatch[1])
@@ -437,9 +481,19 @@ function submitUserText(text: string): void {
   agent.beginRequest(requestId, value)
   agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
   agent.interactionOpen = true
+  startTextRequestTimer(requestId)
   if (!transport.sendUserText(value, requestId)) {
+    clearTextRequestTimer(requestId)
+    chat.finishThought(requestId)
+    chat.showStatusMessage(requestId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
     agent.applyState({ requestId, state: 'error', error: '尚未连接到 MaiBot' })
   }
+}
+
+function retryRequest(requestId: string): void {
+  if (agent.interruptible) return
+  const text = chat.getRequestText(requestId)
+  if (text) submitUserText(text)
 }
 
 async function startVoiceInput(): Promise<void> {
@@ -469,7 +523,10 @@ function interruptAgent(): void {
     agent.recording = false
     void voiceInput.stop()
   }
-  transport.sendInterrupt(agent.activeRequestId)
+  const requestId = agent.activeRequestId
+  transport.sendInterrupt(requestId)
+  clearTextRequestTimer(requestId)
+  chat.finishThought(requestId)
   agent.applyState({
     requestId: agent.activeRequestId,
     state: 'interrupted',
@@ -666,6 +723,8 @@ function onMouseMove(e: MouseEvent) {
 window.addEventListener('mousemove', onMouseMove)
 window.addEventListener('resize', schedulePointerInteractiveSync)
 onUnmounted(() => {
+  for (const timer of textRequestTimers.values()) clearTimeout(timer)
+  textRequestTimers.clear()
   stopAnim()
   if (animFrameId) cancelAnimationFrame(animFrameId)
   cleanupWindowDrag()

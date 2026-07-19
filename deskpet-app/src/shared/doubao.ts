@@ -1,6 +1,6 @@
 export const DOUBAO_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 
-export type AiProvider = 'doubao' | 'maibot'
+export type AiProvider = 'doubao' | 'maibot' | 'backend'
 
 export interface DoubaoConfigInput {
   apiKey?: string

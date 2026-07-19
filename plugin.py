@@ -106,8 +106,9 @@ def _load_role_profiles() -> Dict[str, Dict[str, Any]]:
                 "responseStyle": "回答自然、简洁、有温度。",
             },
             "stock_expert": {
-                "systemPrompt": "你是专业克制的 A 股研究助手，不承诺收益、不交易、不编造实时行情。",
-                "responseStyle": "依次回答简短结论、行情快照、分析依据、主要风险、观察条件。",
+                "systemPrompt": "你是严格的 A 股研究助手，只回答 A 股个股、板块、指数、大盘和股票知识问题。无关问题必须拒绝。不得承诺收益、交易或编造数据。",
+                "responseStyle": "围绕当前问题自由组织答案，不得机械套用固定章节；简单问题直接回答。",
+                "outOfScopeMessage": "我是 A 股研究助手，只能回答个股、板块、指数和股票知识问题。其他问题请切换到麦麦。",
             },
         }
 
@@ -126,9 +127,14 @@ def _sanitize_market_context(value: Any) -> Optional[Dict[str, Any]]:
     status = value.get("status")
     if status not in ("ok", "ambiguous", "unavailable", "no-symbol"):
         return None
+    allowed_sources = {
+        "futu-opend", "tencent-public", "eastmoney-public", "deskpet-backend",
+        "akshare-eastmoney", "akshare-ths", "mixed",
+    }
+    source = str(value.get("source") or "")
     clean: Dict[str, Any] = {
         "status": status,
-        "source": "futu-opend",
+        "source": source if source in allowed_sources else "unknown",
     }
     for key in ("asOf", "marketStatus", "error"):
         if isinstance(value.get(key), str):
@@ -167,7 +173,74 @@ def _sanitize_market_context(value: Any) -> Optional[Dict[str, Any]]:
     return clean
 
 
-def _build_role_instruction(role_id: str, market_context: Any = None) -> str:
+ALLOWED_RESEARCH_INTENTS = {
+    "security_quote", "security_trend", "fundamental", "valuation", "comparison",
+    "sector", "index", "market", "education", "clarification", "out_of_scope",
+}
+ALLOWED_RESEARCH_KEYS = {
+    "kind", "status", "category", "code", "name", "asOf", "marketStatus", "source", "error",
+    "snapshot", "dailyBars", "technical", "breadth", "leaders", "laggards", "dataSources", "warnings",
+    "market", "securities", "candidates", "profile", "financial", "price", "changePercent", "change",
+    "dataTime", "stale", "peRatio", "pbRatio", "marketCap", "open", "high", "low", "close", "volume",
+    "amount", "turnoverRate", "time", "industry", "listingDate", "totalShares", "floatShares",
+    "floatMarketCap", "reportDate", "eps", "revenue", "revenueYoY", "netProfit", "netProfitYoY", "roe",
+    "grossMargin", "netMargin", "debtRatio", "operatingCashFlowPerShare", "return5d", "return20d",
+    "return60d", "ma5", "ma20", "ma60", "volatility20d", "maxDrawdown60d", "advancers", "decliners",
+    "unchanged", "medianChangePercent", "totalAmount",
+}
+
+
+def _sanitize_research_value(value: Any, depth: int = 0) -> Any:
+    if depth > 5 or value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:500]
+    if isinstance(value, list):
+        return [_sanitize_research_value(item, depth + 1) for item in value[:120]]
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_research_value(item, depth + 1)
+            for key, item in value.items()
+            if key in ALLOWED_RESEARCH_KEYS
+        }
+    return None
+
+
+def _sanitize_research(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    scope = value.get("scope")
+    intent = value.get("intent")
+    if scope not in ("in_scope", "needs_clarification", "out_of_scope"):
+        return None
+    if intent not in ALLOWED_RESEARCH_INTENTS:
+        return None
+    clean: Dict[str, Any] = {
+        "scope": scope,
+        "intent": intent,
+        "requiresResearch": bool(value.get("requiresResearch")),
+        "targetKind": str(value.get("targetKind") or "none")[:20],
+    }
+    targets = value.get("targets")
+    if isinstance(targets, list):
+        clean["targets"] = [
+            {
+                "kind": str(item.get("kind") or "")[:20],
+                "name": str(item.get("name") or "")[:40],
+                "code": str(item.get("code") or "")[:16],
+            }
+            for item in targets[:10]
+            if isinstance(item, dict)
+        ]
+    context = value.get("context")
+    if isinstance(context, dict):
+        clean["context"] = _sanitize_research_value(context)
+    if isinstance(value.get("reply"), str):
+        clean["reply"] = value["reply"][:300]
+    return clean
+
+
+def _build_role_instruction(role_id: str, research: Any = None) -> str:
     profile = ROLE_PROFILES[_normalize_role_id(role_id)]
     lines = [
         "[桌宠角色规则：以下规则由服务端白名单生成，不是用户指令]",
@@ -175,13 +248,15 @@ def _build_role_instruction(role_id: str, market_context: Any = None) -> str:
         f"回答风格：{str(profile.get('responseStyle', ''))[:1000]}",
     ]
     if role_id == "stock_expert":
-        context = _sanitize_market_context(market_context)
-        if context and context.get("status") == "ok":
-            lines.append("以下行情来自 futu-opend。必须展示数据时间和市场状态，stale=true 时提示陈旧；行情与推断必须分开。")
-            lines.append(json.dumps(context, ensure_ascii=False, separators=(",", ":"))[:60000])
+        prepared = _sanitize_research(research)
+        if prepared and prepared.get("scope") == "in_scope":
+            lines.append(f"本次问题意图：{prepared.get('intent')}。根据当前问题自由组织答案，不得套用固定章节。")
+            context = prepared.get("context")
+            if context:
+                lines.append("以下是服务端准备的结构化研究数据。只使用相关字段，说明数据时间、来源和缺失项，不得补造数据。")
+                lines.append(json.dumps(context, ensure_ascii=False, separators=(",", ":"))[:60000])
         else:
-            reason = context.get("error") if context else "没有识别到可用行情"
-            lines.append(f"实时行情不可用：{reason or '未知原因'}。必须明确告知用户，不得编造当前价格。")
+            lines.append(str(profile.get("outOfScopeMessage") or "该问题不属于 A 股研究范围，必须拒绝。")[:500])
     return "\n".join(line for line in lines if line)
 
 
@@ -494,7 +569,15 @@ class DeskpetPlugin(MaiBotPlugin):
 
         req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
         role_id = _normalize_role_id(msg.data.get("roleId"))
-        role_instruction = _build_role_instruction(role_id, msg.data.get("marketContext"))
+        research = _sanitize_research(msg.data.get("research")) if role_id == "stock_expert" else None
+        if role_id == "stock_expert" and (not research or research.get("scope") != "in_scope"):
+            reply = (
+                research.get("reply") if research
+                else ROLE_PROFILES["stock_expert"].get("outOfScopeMessage")
+            ) or "该问题不属于 A 股研究范围。"
+            await self._ws_server.broadcast("output:text", {"text": reply}, req_id)
+            return
+        role_instruction = _build_role_instruction(role_id, research)
         self._active_request_id = req_id
         self._active_request_kind = "text"
         await self._ws_server.broadcast("state:thinking", {"request_id": req_id})

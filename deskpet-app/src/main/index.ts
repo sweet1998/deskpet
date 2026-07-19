@@ -520,7 +520,6 @@ function createTray(): void {
 
 app.whenReady().then(() => {
   marketBridge = new MarketBridgeManager(readMarketConfig, app.getAppPath())
-  void marketBridge.ensureStarted()
   createWindow()
   createTray()
   registerGlobalShortcuts()

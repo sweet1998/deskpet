@@ -1,0 +1,477 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
+from functools import partial
+import math
+import time
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+from .base import MarketProvider
+from .eastmoney import _market_name, map_symbol
+
+
+def _clean(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if value != value:
+            return None
+    except (TypeError, ValueError):
+        return None
+    text = str(value).strip()
+    return None if text in ("", "-", "--", "None", "<NA>", "NaT") else value
+
+
+def _number(value: Any) -> Optional[float]:
+    value = _clean(value)
+    if value is None:
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _text(value: Any) -> Optional[str]:
+    value = _clean(value)
+    return str(value).strip() if value is not None else None
+
+
+def _date_text(value: Any) -> Optional[str]:
+    value = _clean(value)
+    if value is None:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.date().isoformat() if isinstance(value, datetime) else value.isoformat()
+    raw = str(value).strip().split(" ", 1)[0]
+    digits = "".join(character for character in raw if character.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return raw or None
+
+
+def _records(frame: Any) -> List[Dict[str, Any]]:
+    if frame is None:
+        return []
+    if isinstance(frame, list):
+        return [dict(item) for item in frame if isinstance(item, dict)]
+    if getattr(frame, "empty", False):
+        return []
+    return [dict(item) for item in frame.to_dict(orient="records")]
+
+
+class AkshareProvider(MarketProvider):
+    name = "akshare-eastmoney"
+
+    def __init__(
+        self,
+        timeout: float = 8.0,
+        max_workers: int = 4,
+        ak_module: Any = None,
+    ):
+        if ak_module is None:
+            import akshare as ak_module
+        self.ak = ak_module
+        self.timeout = timeout
+        self.executor = ThreadPoolExecutor(
+            max_workers=max(1, max_workers),
+            thread_name_prefix="deskpet-akshare",
+        )
+        self._spot_rows: List[Dict[str, Any]] = []
+        self._spot_expires_at = 0.0
+        self._spot_lock = asyncio.Lock()
+        self._name_rows: List[Dict[str, Any]] = []
+        self._name_expires_at = 0.0
+        self._name_lock = asyncio.Lock()
+
+    async def _call(self, function: Any, *args: Any, **kwargs: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self.executor, partial(function, *args, **kwargs))
+        try:
+            return await asyncio.wait_for(future, timeout=self.timeout)
+        except asyncio.TimeoutError as error:
+            raise RuntimeError(f"AKShare 请求超过 {self.timeout:g} 秒") from error
+
+    async def _spot_table(self) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        if self._spot_rows and now < self._spot_expires_at:
+            return self._spot_rows
+        async with self._spot_lock:
+            now = time.monotonic()
+            if self._spot_rows and now < self._spot_expires_at:
+                return self._spot_rows
+            rows = _records(await self._call(self.ak.stock_zh_a_spot_em))
+            if not rows:
+                raise RuntimeError("AKShare 没有返回 A 股实时行情")
+            self._spot_rows = rows
+            self._spot_expires_at = time.monotonic() + 15
+            return rows
+
+    async def _name_table(self) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        if self._name_rows and now < self._name_expires_at:
+            return self._name_rows
+        async with self._name_lock:
+            now = time.monotonic()
+            if self._name_rows and now < self._name_expires_at:
+                return self._name_rows
+            function = getattr(self.ak, "stock_info_a_code_name", None)
+            if function is None:
+                raise RuntimeError("当前 AKShare 版本没有 A 股代码名称接口")
+            rows = _records(await self._call(function))
+            if not rows:
+                raise RuntimeError("AKShare 没有返回 A 股代码名称表")
+            self._name_rows = rows
+            self._name_expires_at = time.monotonic() + 86400
+            return rows
+
+    async def search(self, query: str) -> List[Dict[str, str]]:
+        normalized = query.strip().lower()
+        for loader, code_key, name_key in (
+            (self._name_table, "code", "name"),
+            (self._spot_table, "代码", "名称"),
+        ):
+            try:
+                rows = await loader()
+            except Exception:
+                continue
+            output: List[Dict[str, str]] = []
+            for row in rows:
+                symbol = str(row.get(code_key) or "").strip()
+                name = str(row.get(name_key) or "").strip()
+                code = map_symbol(symbol)
+                if not code or normalized not in name.lower():
+                    continue
+                output.append({"code": code, "name": name, "market": _market_name(code)})
+                if len(output) >= 10:
+                    break
+            if output:
+                return output
+        return []
+
+    async def snapshot(self, code: str) -> Dict[str, Any]:
+        symbol = code.split(".", 1)[1]
+        for row in await self._spot_table():
+            if str(row.get("代码") or "").strip() != symbol:
+                continue
+            return {
+                "code": code,
+                "name": _text(row.get("名称")) or symbol,
+                "market": _market_name(code),
+                "price": _number(row.get("最新价")),
+                "changePercent": _number(row.get("涨跌幅")),
+                "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                "peRatio": _number(row.get("市盈率-动态")),
+                "pbRatio": _number(row.get("市净率")),
+                "marketCap": _number(row.get("总市值")),
+                "floatMarketCap": _number(row.get("流通市值")),
+            }
+        raise RuntimeError(f"AKShare 实时行情中没有 {code}")
+
+    async def daily_bars(self, code: str, count: int) -> List[Dict[str, Any]]:
+        symbol = code.split(".", 1)[1]
+        end = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        start = end - timedelta(days=max(240, count * 3))
+        frame = await self._call(
+            self.ak.stock_zh_a_hist,
+            symbol=symbol,
+            period="daily",
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
+        output = []
+        for row in _records(frame)[-count:]:
+            output.append({
+                "time": _date_text(row.get("日期")) or "",
+                "open": _number(row.get("开盘")),
+                "close": _number(row.get("收盘")),
+                "high": _number(row.get("最高")),
+                "low": _number(row.get("最低")),
+                "volume": _number(row.get("成交量")),
+            })
+        if not output:
+            raise RuntimeError(f"AKShare 没有返回 {code} 的日 K")
+        return output
+
+    async def company_profile(self, code: str) -> Dict[str, Any]:
+        symbol = code.split(".", 1)[1]
+        frame = await self._call(self.ak.stock_individual_info_em, symbol=symbol)
+        values = {
+            str(row.get("item") or "").strip(): row.get("value")
+            for row in _records(frame)
+        }
+        if not values:
+            raise RuntimeError(f"AKShare 没有返回 {code} 的公司资料")
+        return {
+            "industry": _text(values.get("行业")),
+            "listingDate": _date_text(values.get("上市时间")),
+            "totalShares": _number(values.get("总股本")),
+            "floatShares": _number(values.get("流通股")),
+            "floatMarketCap": _number(values.get("流通市值")),
+        }
+
+    async def financial_snapshot(self, code: str) -> Dict[str, Any]:
+        market, symbol = code.split(".", 1)
+        frame = await self._call(
+            self.ak.stock_financial_analysis_indicator_em,
+            symbol=f"{symbol}.{market}",
+            indicator="按报告期",
+        )
+        rows = _records(frame)
+        if not rows:
+            raise RuntimeError(f"AKShare 没有返回 {code} 的财务指标")
+        row = max(rows, key=lambda item: _date_text(item.get("REPORT_DATE")) or "")
+        return {
+            "reportDate": _date_text(row.get("REPORT_DATE")),
+            "eps": _number(row.get("EPSJB")),
+            "revenue": _number(row.get("TOTALOPERATEREVE")),
+            "revenueYoY": _number(row.get("TOTALOPERATEREVETZ")),
+            "netProfit": _number(row.get("PARENTNETPROFIT")),
+            "netProfitYoY": _number(row.get("PARENTNETPROFITTZ")),
+            "roe": _number(row.get("ROEJQ")),
+            "grossMargin": _number(row.get("XSMLL")),
+            "netMargin": _number(row.get("XSJLL")),
+            "debtRatio": _number(row.get("ZCFZL")),
+            "operatingCashFlowPerShare": _number(row.get("MGJYXJJE")),
+        }
+
+    async def sector_catalog(self, category: str) -> List[Dict[str, Any]]:
+        eastmoney_function = (
+            self.ak.stock_board_industry_name_em
+            if category == "industry"
+            else self.ak.stock_board_concept_name_em
+        )
+        try:
+            rows = _records(await self._call(eastmoney_function))
+            name_key, code_key, source_kind = "板块名称", "板块代码", category
+        except Exception:
+            ths_function = (
+                self.ak.stock_board_industry_name_ths
+                if category == "industry"
+                else self.ak.stock_board_concept_name_ths
+            )
+            rows = _records(await self._call(ths_function))
+            name_key, code_key, source_kind = "name", "code", f"{category}_ths"
+        return [
+            {
+                "kind": source_kind,
+                "code": _text(row.get(code_key)) or "",
+                "name": _text(row.get(name_key)) or "",
+            }
+            for row in rows
+            if _text(row.get(code_key)) and _text(row.get(name_key))
+        ]
+
+    async def sector_snapshot(self, category: str, code: str, name: str) -> Dict[str, Any]:
+        if category.endswith("_ths"):
+            function = (
+                self.ak.stock_board_industry_summary_ths
+                if category == "industry_ths"
+                else self.ak.stock_board_concept_summary_ths
+            )
+            rows = _records(await self._call(function))
+            row = next((item for item in rows if str(item.get("板块") or item.get("概念名称") or "") == name), None)
+            if not row:
+                raise RuntimeError(f"AKShare 同花顺数据中没有板块 {name}")
+            return {
+                "changePercent": _number(row.get("涨跌幅")),
+                "volume": _number(row.get("总成交量")),
+                "amount": _number(row.get("总成交额")),
+                "advancers": _number(row.get("上涨家数")),
+                "decliners": _number(row.get("下跌家数")),
+                "leader": _text(row.get("领涨股")),
+                "leaderPrice": _number(row.get("领涨股-最新价")),
+                "leaderChangePercent": _number(row.get("领涨股-涨跌幅")),
+                "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            }
+        function = (
+            self.ak.stock_board_industry_spot_em
+            if category == "industry"
+            else self.ak.stock_board_concept_spot_em
+        )
+        values = {
+            str(row.get("item") or "").strip(): row.get("value")
+            for row in _records(await self._call(function, symbol=code))
+        }
+        if not values:
+            raise RuntimeError(f"AKShare 没有返回板块 {code} 的快照")
+        return {
+            "price": _number(values.get("最新")),
+            "changePercent": _number(values.get("涨跌幅")),
+            "change": _number(values.get("涨跌额")),
+            "open": _number(values.get("开盘")),
+            "high": _number(values.get("最高")),
+            "low": _number(values.get("最低")),
+            "volume": _number(values.get("成交量")),
+            "amount": _number(values.get("成交额")),
+            "turnoverRate": _number(values.get("换手率")),
+            "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+        }
+
+    async def sector_bars(self, category: str, name: str, count: int) -> List[Dict[str, Any]]:
+        end = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        start = end - timedelta(days=max(240, count * 3))
+        if category.endswith("_ths"):
+            function = (
+                self.ak.stock_board_industry_index_ths
+                if category == "industry_ths"
+                else self.ak.stock_board_concept_index_ths
+            )
+            frame = await self._call(
+                function,
+                symbol=name,
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+            )
+        elif category == "industry":
+            frame = await self._call(
+                self.ak.stock_board_industry_hist_em,
+                symbol=name,
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                period="日k",
+                adjust="qfq",
+            )
+        else:
+            frame = await self._call(
+                self.ak.stock_board_concept_hist_em,
+                symbol=name,
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                period="daily",
+                adjust="qfq",
+            )
+        output = [
+            {
+                "time": _date_text(row.get("日期")) or "",
+                "open": _number(row.get("开盘") if "开盘" in row else row.get("开盘价")),
+                "close": _number(row.get("收盘") if "收盘" in row else row.get("收盘价")),
+                "high": _number(row.get("最高") if "最高" in row else row.get("最高价")),
+                "low": _number(row.get("最低") if "最低" in row else row.get("最低价")),
+                "volume": _number(row.get("成交量")),
+                "amount": _number(row.get("成交额")),
+            }
+            for row in _records(frame)[-count:]
+        ]
+        if not output:
+            raise RuntimeError(f"AKShare 没有返回板块 {name} 的历史行情")
+        return output
+
+    async def sector_constituents(self, category: str, code: str, name: str) -> List[Dict[str, Any]]:
+        if category.endswith("_ths"):
+            raise RuntimeError("同花顺板块源未提供标准化成分股列表")
+        function = (
+            self.ak.stock_board_industry_cons_em
+            if category == "industry"
+            else self.ak.stock_board_concept_cons_em
+        )
+        output = []
+        for row in _records(await self._call(function, symbol=code)):
+            symbol = str(row.get("代码") or "").strip()
+            normalized = map_symbol(symbol)
+            if not normalized:
+                continue
+            output.append({
+                "code": normalized,
+                "name": _text(row.get("名称")) or symbol,
+                "price": _number(row.get("最新价")),
+                "changePercent": _number(row.get("涨跌幅")),
+                "amount": _number(row.get("成交额")),
+                "turnoverRate": _number(row.get("换手率")),
+                "peRatio": _number(row.get("市盈率-动态")),
+                "pbRatio": _number(row.get("市净率")),
+            })
+        if not output:
+            raise RuntimeError(f"AKShare 没有返回板块 {code} 的成分股")
+        return output
+
+    async def index_snapshot(self, code: str, category: str) -> Dict[str, Any]:
+        symbol = code[-6:]
+        frame = await self._call(self.ak.stock_zh_index_spot_em, symbol=category)
+        for row in _records(frame):
+            if str(row.get("代码") or "").strip() != symbol:
+                continue
+            return {
+                "code": code,
+                "name": _text(row.get("名称")) or symbol,
+                "price": _number(row.get("最新价")),
+                "changePercent": _number(row.get("涨跌幅")),
+                "change": _number(row.get("涨跌额")),
+                "open": _number(row.get("今开")),
+                "high": _number(row.get("最高")),
+                "low": _number(row.get("最低")),
+                "volume": _number(row.get("成交量")),
+                "amount": _number(row.get("成交额")),
+                "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            }
+        raise RuntimeError(f"AKShare 没有返回指数 {code} 的快照")
+
+    async def index_bars(self, symbol: str, count: int) -> List[Dict[str, Any]]:
+        end = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        start = end - timedelta(days=max(240, count * 3))
+        frame = await self._call(
+            self.ak.stock_zh_index_daily_em,
+            symbol=symbol,
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+        )
+        output = [
+            {
+                "time": _date_text(row.get("date")) or "",
+                "open": _number(row.get("open")),
+                "close": _number(row.get("close")),
+                "high": _number(row.get("high")),
+                "low": _number(row.get("low")),
+                "volume": _number(row.get("volume")),
+                "amount": _number(row.get("amount")),
+            }
+            for row in _records(frame)[-count:]
+        ]
+        if not output:
+            raise RuntimeError(f"AKShare 没有返回指数 {symbol} 的历史行情")
+        return output
+
+    async def market_overview(self) -> Dict[str, Any]:
+        rows = await self._spot_table()
+        changes = [
+            value
+            for row in rows
+            if (value := _number(row.get("涨跌幅"))) is not None
+        ]
+        if not changes:
+            raise RuntimeError("AKShare 没有返回有效的全市场涨跌数据")
+        sorted_changes = sorted(changes)
+        middle = len(sorted_changes) // 2
+        median = (
+            sorted_changes[middle]
+            if len(sorted_changes) % 2
+            else (sorted_changes[middle - 1] + sorted_changes[middle]) / 2
+        )
+        leaders = sorted(
+            (
+                {
+                    "code": str(row.get("代码") or ""),
+                    "name": _text(row.get("名称")) or "",
+                    "changePercent": _number(row.get("涨跌幅")),
+                }
+                for row in rows
+                if _number(row.get("涨跌幅")) is not None
+            ),
+            key=lambda item: item["changePercent"],
+            reverse=True,
+        )[:5]
+        return {
+            "asOf": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "advancers": sum(value > 0 for value in changes),
+            "decliners": sum(value < 0 for value in changes),
+            "unchanged": sum(value == 0 for value in changes),
+            "medianChangePercent": round(median, 4),
+            "totalAmount": sum(_number(row.get("成交额")) or 0 for row in rows),
+            "leaders": leaders,
+        }
+
+    async def close(self) -> None:
+        self.executor.shutdown(wait=False, cancel_futures=True)

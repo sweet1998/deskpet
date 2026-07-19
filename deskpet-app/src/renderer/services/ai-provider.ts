@@ -1,10 +1,11 @@
-import type { AiProvider } from '../../../shared/doubao'
+import type { AiProvider } from '../../shared/doubao'
 
 const PROVIDER_KEY = 'deskpet/ai-provider'
 
 export function getAiProvider(): AiProvider {
   try {
-    return localStorage.getItem(PROVIDER_KEY) === 'maibot' ? 'maibot' : 'doubao'
+    const provider = localStorage.getItem(PROVIDER_KEY)
+    return provider === 'maibot' || provider === 'backend' ? provider : 'doubao'
   } catch {
     return 'doubao'
   }

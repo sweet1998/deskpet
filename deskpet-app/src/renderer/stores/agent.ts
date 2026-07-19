@@ -47,6 +47,7 @@ export const useAgentStore = defineStore('agent', () => {
   const currentStep = ref('')
   const error = ref('')
   const interruptible = ref(false)
+  const activityVersion = ref(0)
   const sourceName = ref('')
   const taskGoal = ref('')
   const taskResult = ref<AgentTaskResult | null>(null)
@@ -92,6 +93,12 @@ export const useAgentStore = defineStore('agent', () => {
     error.value = ''
     progress.value = 0
     currentStep.value = ''
+    touchRequest(requestId)
+  }
+
+  function touchRequest(requestId: string) {
+    if (!requestId || requestId !== activeRequestId.value) return
+    activityVersion.value += 1
   }
 
   function applyState(event: AgentStateEvent) {
@@ -101,6 +108,7 @@ export const useAgentStore = defineStore('agent', () => {
     currentStep.value = event.step ?? currentStep.value
     interruptible.value = event.interruptible ?? false
     error.value = event.error ?? ''
+    touchRequest(event.requestId || activeRequestId.value)
     if (event.state === 'planning' || event.state === 'executing') taskPanelOpen.value = true
   }
 
@@ -111,6 +119,7 @@ export const useAgentStore = defineStore('agent', () => {
     currentStep.value = '任务完成'
     state.value = 'success'
     interruptible.value = false
+    touchRequest(result.requestId)
     taskPanelOpen.value = true
   }
 
@@ -147,6 +156,7 @@ export const useAgentStore = defineStore('agent', () => {
     currentStep,
     error,
     interruptible,
+    activityVersion,
     sourceName,
     taskGoal,
     taskResult,
@@ -164,6 +174,7 @@ export const useAgentStore = defineStore('agent', () => {
     memories,
     workspaceOpen,
     beginRequest,
+    touchRequest,
     applyState,
     setResult,
     setConfirmation,

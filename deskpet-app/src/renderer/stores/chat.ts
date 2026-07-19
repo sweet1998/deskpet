@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { normalizeRoleId, type RoleId } from '../../shared/roles'
 
+export type ChatStatusCode = 'timeout' | 'network' | 'service' | 'cancelled'
+
 export type ChatMessage =
   | {
       id: string
@@ -18,6 +20,26 @@ export type ChatMessage =
       description: string
       timestamp: number
       type: 'emoji'
+    }
+  | {
+      id: string
+      requestId: string
+      role: 'assistant'
+      steps: Array<{ id: string; text: string; timestamp: number }>
+      collapsed: boolean
+      complete: boolean
+      timestamp: number
+      type: 'thought'
+    }
+  | {
+      id: string
+      requestId: string
+      role: 'assistant'
+      text: string
+      code: ChatStatusCode
+      retryable: boolean
+      timestamp: number
+      type: 'status'
     }
 
 export const useChatStore = defineStore('chat', () => {
@@ -72,6 +94,84 @@ export const useChatStore = defineStore('chat', () => {
       timestamp: Date.now(),
       type: 'text',
     })
+  }
+
+  function findThought(requestId: string) {
+    return roleMessages(requestId).find(
+      (message): message is Extract<ChatMessage, { type: 'thought' }> =>
+        message.type === 'thought' && message.requestId === requestId,
+    )
+  }
+
+  function beginThought(requestId: string) {
+    if (!requestId || findThought(requestId)) return
+    roleMessages(requestId).push({
+      id: `thought-${requestId}`,
+      requestId,
+      role: 'assistant',
+      steps: [],
+      collapsed: false,
+      complete: false,
+      timestamp: Date.now(),
+      type: 'thought',
+    })
+  }
+
+  function appendThought(requestId: string, text: string) {
+    const normalized = text.trim()
+    if (!normalized) return
+    beginThought(requestId)
+    const thought = findThought(requestId)
+    if (!thought || thought.steps.at(-1)?.text === normalized) return
+    thought.steps.push({
+      id: `${requestId}-step-${thought.steps.length}`,
+      text: normalized,
+      timestamp: Date.now(),
+    })
+  }
+
+  function finishThought(requestId: string) {
+    const thought = findThought(requestId)
+    if (!thought) return
+    thought.complete = true
+    thought.collapsed = true
+  }
+
+  function toggleThought(requestId: string) {
+    const thought = findThought(requestId)
+    if (thought) thought.collapsed = !thought.collapsed
+  }
+
+  function showStatusMessage(
+    requestId: string,
+    text: string,
+    code: ChatStatusCode = 'service',
+    retryable = true,
+  ) {
+    if (!requestId || !text.trim()) return
+    const target = roleMessages(requestId)
+    const existing = target.find((message) => message.id === `status-${requestId}`)
+    if (existing?.type === 'status') {
+      existing.text = text
+      existing.code = code
+      existing.retryable = retryable
+      return
+    }
+    target.push({
+      id: `status-${requestId}`,
+      requestId,
+      role: 'assistant',
+      text,
+      code,
+      retryable,
+      timestamp: Date.now(),
+      type: 'status',
+    })
+  }
+
+  function getRequestText(requestId: string): string | undefined {
+    const message = roleMessages(requestId).find((item) => item.id === `user-${requestId}`)
+    return message?.type === 'text' ? message.text : undefined
   }
 
   function appendChatText(delta: string, requestId: string) {
@@ -141,5 +241,11 @@ export const useChatStore = defineStore('chat', () => {
     setActiveRole,
     bindRequest,
     getRequestRole,
+    beginThought,
+    appendThought,
+    finishThought,
+    toggleThought,
+    showStatusMessage,
+    getRequestText,
   }
 })
