@@ -3,7 +3,10 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from './chat'
 
 describe('chat store roles', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    localStorage.clear()
+    setActivePinia(createPinia())
+  })
 
   it('isolates history between roles', () => {
     const chat = useChatStore()
@@ -57,5 +60,24 @@ describe('chat store roles', () => {
       code: 'timeout',
       retryable: true,
     })
+  })
+
+  it('restores completed role history and drafts after reloading the store', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('分析科技板块', 'req-persist', 'stock_expert')
+    chat.appendChatText('科技板块近期偏弱', 'req-persist')
+    chat.finishChatStream('req-persist')
+    chat.setDraft('stock_expert', '继续分析半导体')
+
+    setActivePinia(createPinia())
+    const restored = useChatStore()
+
+    expect(restored.messagesByRole.stock_expert.map((message) => message.type)).toEqual(['text', 'text'])
+    expect(restored.messagesByRole.stock_expert.at(-1)).toMatchObject({
+      role: 'assistant',
+      text: '科技板块近期偏弱',
+      streaming: false,
+    })
+    expect(restored.draftsByRole.stock_expert).toBe('继续分析半导体')
   })
 })

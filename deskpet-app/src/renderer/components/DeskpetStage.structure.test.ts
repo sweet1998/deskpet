@@ -63,5 +63,11 @@ describe('DeskpetStage model-only shell', () => {
     )
     expect(shape.scriptSetup).toContain('watch(() => agent.activityVersion')
     expect(shape.scriptSetup).toContain('startTextRequestTimer(agent.activeRequestId)')
+    expect(shape.scriptSetup).toContain('agent.chatOpen = true')
+    expect(shape.scriptSetup).not.toContain('interactionOpen')
+    expect(shape.scriptSetup).not.toContain('conversationOpen')
+    const mouseUpHandler = shape.scriptSetup.match(/function onPetMouseUp[\s\S]*?\n}/)?.[0] ?? ''
+    expect(mouseUpHandler).toContain('if (!start) return')
+    expect(mouseUpHandler).not.toContain('isPointOverModel')
   })
 })

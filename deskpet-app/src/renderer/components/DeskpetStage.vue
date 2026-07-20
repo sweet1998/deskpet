@@ -430,11 +430,11 @@ function onPetMouseDown(event: MouseEvent): void {
 function onPetMouseUp(event: MouseEvent): void {
   const start = pointerDownScreenPosition
   pointerDownScreenPosition = null
-  if (!start || !isPointOverModel(event.clientX, event.clientY)) return
+  if (!start) return
   const distance = Math.hypot(event.screenX - start.x, event.screenY - start.y)
   if (distance > 5) return
   agent.proactiveMessage = ''
-  agent.interactionOpen = true
+  agent.chatOpen = true
 }
 
 function createRequestId(): string {
@@ -482,7 +482,7 @@ function submitUserText(text: string): void {
   agent.beginRequest(requestId, value)
   agent.taskPanelOpen = false
   agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
-  agent.interactionOpen = true
+  agent.chatOpen = true
   startTextRequestTimer(requestId)
   if (!transport.sendUserText(value, requestId)) {
     clearTextRequestTimer(requestId)
@@ -563,12 +563,12 @@ async function onFileDrop(event: DragEvent): Promise<void> {
   if (!file) return
   const extension = file.name.split('.').pop()?.toLowerCase()
   if (!extension || !['pdf', 'txt', 'md', 'markdown'].includes(extension)) {
-    agent.interactionOpen = true
+    agent.chatOpen = true
     agent.applyState({ requestId: '', state: 'error', error: '目前支持 PDF、TXT 和 Markdown 文件' })
     return
   }
   if (file.size > MAX_AGENT_FILE_BYTES) {
-    agent.interactionOpen = true
+    agent.chatOpen = true
     agent.applyState({ requestId: '', state: 'error', error: '文件不能超过 12MB' })
     return
   }

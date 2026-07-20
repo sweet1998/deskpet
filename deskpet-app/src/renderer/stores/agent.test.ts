@@ -39,6 +39,15 @@ describe('agent store', () => {
     expect(store.taskPanelOpen).toBe(true)
   })
 
+  it('uses one chat open state for the conversation workspace', () => {
+    const store = useAgentStore()
+    store.chatOpen = true
+    expect(store.workspaceOpen).toBe(true)
+
+    store.closeWorkspace()
+    expect(store.chatOpen).toBe(false)
+  })
+
   it('records request activity for the inactivity watchdog', () => {
     const store = useAgentStore()
     store.beginRequest('req-active')

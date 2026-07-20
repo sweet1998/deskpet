@@ -1,5 +1,5 @@
 import { computed, ref, watch } from 'vue'
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import type {
   AgentConfirmation,
   AgentState,
@@ -52,8 +52,7 @@ export const useAgentStore = defineStore('agent', () => {
   const taskGoal = ref('')
   const taskResult = ref<AgentTaskResult | null>(null)
   const confirmation = ref<AgentConfirmation | null>(null)
-  const interactionOpen = ref(false)
-  const conversationOpen = ref(false)
+  const chatOpen = ref(false)
   const taskPanelOpen = ref(false)
   const recording = ref(false)
   const proactiveMessage = ref('')
@@ -65,8 +64,7 @@ export const useAgentStore = defineStore('agent', () => {
   const memories = ref<string[]>(readJson<string[]>(MEMORIES_KEY, []))
 
   const workspaceOpen = computed(() => Boolean(
-    interactionOpen.value
-    || conversationOpen.value
+    chatOpen.value
     || taskPanelOpen.value
     || confirmation.value
     || proactiveMessage.value,
@@ -142,8 +140,7 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   function closeWorkspace() {
-    interactionOpen.value = false
-    conversationOpen.value = false
+    chatOpen.value = false
     taskPanelOpen.value = false
     proactiveMessage.value = ''
   }
@@ -160,8 +157,7 @@ export const useAgentStore = defineStore('agent', () => {
     taskGoal,
     taskResult,
     confirmation,
-    interactionOpen,
-    conversationOpen,
+    chatOpen,
     taskPanelOpen,
     recording,
     proactiveMessage,
@@ -182,3 +178,7 @@ export const useAgentStore = defineStore('agent', () => {
     closeWorkspace,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useAgentStore, import.meta.hot))
+}

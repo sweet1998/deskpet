@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { normalizeRoleId, type RoleId } from '../../shared/roles'
 
@@ -42,15 +42,106 @@ export type ChatMessage =
       type: 'status'
     }
 
+const HISTORY_KEY = 'deskpet/chat-history-v1'
+const DRAFTS_KEY = 'deskpet/chat-drafts-v1'
+const HISTORY_LIMIT = 100
+
+function readStoredObject(key: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function sanitizeStoredMessage(value: unknown): ChatMessage | null {
+  if (!value || typeof value !== 'object') return null
+  const item = value as Record<string, unknown>
+  const role = item.role === 'user' ? 'user' : item.role === 'assistant' ? 'assistant' : null
+  const id = typeof item.id === 'string' ? item.id : ''
+  const timestamp = typeof item.timestamp === 'number' ? item.timestamp : Date.now()
+  if (!id || !role) return null
+  if (item.type === 'text' && typeof item.text === 'string' && item.text.trim()) {
+    return { id, role, text: item.text, streaming: false, timestamp, type: 'text' }
+  }
+  if (item.type === 'thought' && role === 'assistant' && item.complete === true) {
+    const requestId = typeof item.requestId === 'string' ? item.requestId : ''
+    const steps = Array.isArray(item.steps)
+      ? item.steps.flatMap((step, index) => {
+        if (!step || typeof step !== 'object') return []
+        const stored = step as Record<string, unknown>
+        if (typeof stored.text !== 'string' || !stored.text.trim()) return []
+        return [{
+          id: typeof stored.id === 'string' ? stored.id : `${requestId}-stored-${index}`,
+          text: stored.text,
+          timestamp: typeof stored.timestamp === 'number' ? stored.timestamp : timestamp,
+        }]
+      })
+      : []
+    if (!requestId || !steps.length) return null
+    return {
+      id,
+      requestId,
+      role: 'assistant',
+      steps,
+      collapsed: item.collapsed !== false,
+      complete: true,
+      timestamp,
+      type: 'thought',
+    }
+  }
+  return null
+}
+
+function readStoredMessages(): Record<RoleId, ChatMessage[]> {
+  const stored = readStoredObject(HISTORY_KEY)
+  const readRole = (roleId: RoleId) => (
+    Array.isArray(stored[roleId])
+      ? stored[roleId].map(sanitizeStoredMessage).filter((item): item is ChatMessage => Boolean(item)).slice(-HISTORY_LIMIT)
+      : []
+  )
+  return { default: readRole('default'), stock_expert: readRole('stock_expert') }
+}
+
+function readStoredDrafts(): Record<RoleId, string> {
+  const stored = readStoredObject(DRAFTS_KEY)
+  return {
+    default: typeof stored.default === 'string' ? stored.default.slice(0, 4000) : '',
+    stock_expert: typeof stored.stock_expert === 'string' ? stored.stock_expert.slice(0, 4000) : '',
+  }
+}
+
 export const useChatStore = defineStore('chat', () => {
-  const messagesByRole = ref<Record<RoleId, ChatMessage[]>>({
-    default: [],
-    stock_expert: [],
-  })
+  const messagesByRole = ref<Record<RoleId, ChatMessage[]>>(readStoredMessages())
+  const draftsByRole = ref<Record<RoleId, string>>(readStoredDrafts())
   const activeRole = ref<RoleId>('default')
   const requestRoleById = ref<Record<string, RoleId>>({})
   const messages = computed(() => messagesByRole.value[activeRole.value])
   const bubbleVisible = ref(false)
+
+  function persistMessages() {
+    const persistRole = (roleId: RoleId) => messagesByRole.value[roleId]
+      .filter((message) => (
+        message.type === 'text' && !message.streaming
+      ) || (
+        message.type === 'thought' && message.complete
+      ))
+      .slice(-HISTORY_LIMIT)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify({
+      default: persistRole('default'),
+      stock_expert: persistRole('stock_expert'),
+    }))
+  }
+
+  function setDraft(roleId: RoleId, text: string) {
+    draftsByRole.value[normalizeRoleId(roleId)] = text.slice(0, 4000)
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(draftsByRole.value))
+  }
+
+  function clearDraft(roleId: RoleId) {
+    setDraft(roleId, '')
+  }
 
   // backward-compat: last assistant bubble
   const chatBubble = computed(() => {
@@ -94,6 +185,7 @@ export const useChatStore = defineStore('chat', () => {
       timestamp: Date.now(),
       type: 'text',
     })
+    persistMessages()
   }
 
   function findThought(requestId: string) {
@@ -135,11 +227,15 @@ export const useChatStore = defineStore('chat', () => {
     if (!thought) return
     thought.complete = true
     thought.collapsed = true
+    persistMessages()
   }
 
   function toggleThought(requestId: string) {
     const thought = findThought(requestId)
-    if (thought) thought.collapsed = !thought.collapsed
+    if (thought) {
+      thought.collapsed = !thought.collapsed
+      if (thought.complete) persistMessages()
+    }
   }
 
   function showStatusMessage(
@@ -195,6 +291,7 @@ export const useChatStore = defineStore('chat', () => {
   function finishChatStream(requestId: string) {
     const msg = roleMessages(requestId).find((m) => m.id === requestId)
     if (msg?.type === 'text') msg.streaming = false
+    persistMessages()
   }
 
   function showChatMessage(text: string, requestId?: string) {
@@ -207,6 +304,7 @@ export const useChatStore = defineStore('chat', () => {
       timestamp: Date.now(),
       type: 'text',
     })
+    persistMessages()
   }
 
   function addEmojiMessage(base64: string, description: string, requestId?: string) {
@@ -228,6 +326,7 @@ export const useChatStore = defineStore('chat', () => {
   return {
     messages,
     messagesByRole,
+    draftsByRole,
     activeRole,
     requestRoleById,
     bubbleVisible,
@@ -247,5 +346,11 @@ export const useChatStore = defineStore('chat', () => {
     toggleThought,
     showStatusMessage,
     getRequestText,
+    setDraft,
+    clearDraft,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useChatStore, import.meta.hot))
+}
