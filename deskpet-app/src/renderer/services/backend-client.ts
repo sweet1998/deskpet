@@ -6,6 +6,7 @@ const BACKEND_URL_KEY = 'deskpet/backend-url'
 const BACKEND_TOKEN_KEY = 'deskpet/backend-token'
 const DEVICE_ID_KEY = 'deskpet/device-id'
 const MARKET_SOURCE_KEY = 'deskpet/market-source'
+const DESKTOP_BACKEND_URL = 'http://127.0.0.1:18540'
 
 export type MarketSource = 'backend' | 'opend'
 
@@ -28,19 +29,21 @@ function storageGet(key: string, fallback = ''): string {
 }
 
 export function getBackendUrl(): string {
-  return storageGet(BACKEND_URL_KEY, 'http://127.0.0.1:18540').replace(/\/$/, '')
+  try { localStorage.setItem(BACKEND_URL_KEY, DESKTOP_BACKEND_URL) } catch { /* localStorage blocked */ }
+  return DESKTOP_BACKEND_URL
 }
 
-export function setBackendUrl(value: string): void {
-  localStorage.setItem(BACKEND_URL_KEY, value.trim().replace(/\/$/, ''))
+export function setBackendUrl(_value: string): void {
+  localStorage.setItem(BACKEND_URL_KEY, DESKTOP_BACKEND_URL)
 }
 
 export function getBackendToken(): string {
-  return storageGet(BACKEND_TOKEN_KEY)
+  try { localStorage.removeItem(BACKEND_TOKEN_KEY) } catch { /* localStorage blocked */ }
+  return ''
 }
 
-export function setBackendToken(value: string): void {
-  localStorage.setItem(BACKEND_TOKEN_KEY, value.trim())
+export function setBackendToken(_value: string): void {
+  localStorage.removeItem(BACKEND_TOKEN_KEY)
 }
 
 export function getDeviceId(): string {
@@ -54,11 +57,12 @@ export function getDeviceId(): string {
 }
 
 export function getMarketSource(): MarketSource {
-  return storageGet(MARKET_SOURCE_KEY) === 'opend' ? 'opend' : 'backend'
+  try { localStorage.setItem(MARKET_SOURCE_KEY, 'backend') } catch { /* localStorage blocked */ }
+  return 'backend'
 }
 
-export function setMarketSource(value: MarketSource): void {
-  localStorage.setItem(MARKET_SOURCE_KEY, value)
+export function setMarketSource(_value: MarketSource): void {
+  localStorage.setItem(MARKET_SOURCE_KEY, 'backend')
 }
 
 function backendHeaders(): Record<string, string> {
@@ -187,11 +191,11 @@ export async function streamBackendChat(
 export async function testBackendConnection(): Promise<{ ok: boolean; message: string }> {
   try {
     const response = await fetch(`${getBackendUrl()}/health`)
-    const data = await response.json() as { ok?: boolean; modelConfigured?: boolean }
+    const data = await response.json() as { ok?: boolean }
     if (!response.ok || !data.ok) throw new Error(`HTTP ${response.status}`)
     return {
       ok: true,
-      message: data.modelConfigured ? '后端和模型均已连接' : '后端可用，但尚未配置模型',
+      message: '本地研究服务可用',
     }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : '后端连接失败' }

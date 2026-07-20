@@ -1,11 +1,19 @@
 {
   "name": "maibot-deskpet",
   "version": "0.3.0",
-  "description": "MaiBot 桌面宠物 - Live2D Deskpet",
+  "description": "麦麦 AI 桌宠 - macOS Live2D 桌面助手",
+  "author": "sweet1998 and contributors",
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/sweet1998/deskpet",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "backend:build": "bash scripts/build-backend.sh",
+    "release:assets": "node scripts/generate-mac-icon.mjs && node scripts/check-release-assets.mjs",
+    "dist:mac:unsigned": "npm run release:assets && npm run backend:build && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
+    "dist:mac": "node scripts/check-release-env.mjs && npm run release:assets && npm run backend:build && npm run build && electron-builder --mac dmg && npm run release:verify",
+    "release:verify": "bash scripts/verify-mac-release.sh",
     "preview": "electron-vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -23,12 +31,51 @@
     "vue": "^3.5.13"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@vitejs/plugin-vue": "^5.2.0",
     "electron": "^34.5.8",
+    "electron-builder": "25.1.8",
     "electron-vite": "^2.3.0",
     "jsdom": "25.0.1",
     "typescript": "^5.7.0",
     "vitest": "2.1.9",
     "vue-tsc": "^2.2.0"
+  },
+  "build": {
+    "appId": "com.sweet1998.deskpet",
+    "productName": "麦麦 AI 桌宠",
+    "artifactName": "MaiMai-DeskPet-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/deskpet-backend",
+        "to": "backend"
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE.txt"
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "麦麦 AI 桌宠 ${version}",
+      "sign": true
+    },
+    "afterSign": "scripts/notarize.cjs"
   }
 }

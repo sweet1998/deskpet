@@ -1,6 +1,8 @@
 node_modules/
 out/
 dist/
+backend/build/
+deskpet-app/build/icon.png
 __pycache__/
 .pytest_cache/
 *.pyc

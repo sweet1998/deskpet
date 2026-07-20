@@ -1,11 +1,19 @@
 import json
+import sys
 from pathlib import Path
 from typing import Dict
 
 from .models import RoleId, RoleProfile
 
 
-ROLE_FILE = Path(__file__).resolve().parents[2] / "deskpet-app" / "src" / "shared" / "role-profiles.json"
+def _role_file() -> Path:
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        return Path(bundle_root) / "deskpet-app" / "src" / "shared" / "role-profiles.json"
+    return Path(__file__).resolve().parents[2] / "deskpet-app" / "src" / "shared" / "role-profiles.json"
+
+
+ROLE_FILE = _role_file()
 
 
 def load_roles(path: Path = ROLE_FILE) -> Dict[RoleId, RoleProfile]:

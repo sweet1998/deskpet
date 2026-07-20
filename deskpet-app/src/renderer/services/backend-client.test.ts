@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getMarketSource, parseSSEBlock, streamResearchPreparation } from './backend-client'
+import {
+  getBackendToken,
+  getBackendUrl,
+  getMarketSource,
+  parseSSEBlock,
+  streamResearchPreparation,
+} from './backend-client'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -9,6 +15,16 @@ describe('backend SSE parser', () => {
   it('uses the install-free backend market source by default', () => {
     localStorage.clear()
     expect(getMarketSource()).toBe('backend')
+  })
+
+  it('migrates legacy backend settings to the bundled local service', () => {
+    localStorage.setItem('deskpet/backend-url', 'https://legacy.example.com')
+    localStorage.setItem('deskpet/backend-token', 'legacy-token')
+
+    expect(getBackendUrl()).toBe('http://127.0.0.1:18540')
+    expect(getBackendToken()).toBe('')
+    expect(localStorage.getItem('deskpet/backend-url')).toBe('http://127.0.0.1:18540')
+    expect(localStorage.getItem('deskpet/backend-token')).toBeNull()
   })
 
   it('parses named events and JSON data', () => {

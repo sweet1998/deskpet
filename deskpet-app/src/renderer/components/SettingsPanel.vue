@@ -19,34 +19,23 @@
         <div class="settings-body">
           <div class="section provider-section">
             <div class="section-title">AI 服务</div>
-            <label>服务商</label>
-            <select v-model="aiProvider" @change="changeAiProvider">
-              <option value="doubao">豆包（火山方舟）</option>
-              <option value="maibot">MaiBot</option>
-              <option value="backend">桌宠后端（推荐）</option>
-            </select>
-            <template v-if="aiProvider === 'doubao'">
-              <label>API Key</label>
-              <input
-                v-model="doubaoApiKey"
-                type="password"
-                :placeholder="doubaoHasApiKey ? '已保存，留空则保持不变' : '填写火山方舟 API Key'"
-                autocomplete="off"
-              />
-              <label>模型 / Endpoint ID</label>
-              <input v-model="doubaoModel" placeholder="例如 ep-2024xxxxxxxx" />
-              <label>API 地址</label>
-              <input :value="doubaoBaseUrl" readonly />
-              <div class="button-row">
-                <button type="button" :disabled="doubaoBusy" @click="saveDoubao">保存</button>
-                <button type="button" :disabled="doubaoBusy" @click="testDoubao">测试连接</button>
-              </div>
-              <p v-if="doubaoStatus" class="status" :class="doubaoStatusKind">{{ doubaoStatus }}</p>
-              <p class="hint">API Key 仅保存在本机应用数据目录，不会写入网页存储。</p>
-            </template>
-            <template v-if="aiProvider === 'backend'">
-              <p class="hint">后端连接在下方“行情数据”中配置，角色、行情和模型密钥均由后端统一管理。</p>
-            </template>
+            <label>豆包 API Key</label>
+            <input
+              v-model="doubaoApiKey"
+              type="password"
+              :placeholder="doubaoHasApiKey ? '已保存，留空则保持不变' : '填写火山方舟 API Key'"
+              autocomplete="off"
+            />
+            <label>模型 / Endpoint ID</label>
+            <input v-model="doubaoModel" placeholder="例如 ep-2024xxxxxxxx" />
+            <label>API 地址</label>
+            <input :value="doubaoBaseUrl" readonly />
+            <div class="button-row">
+              <button type="button" :disabled="doubaoBusy" @click="saveDoubao">保存</button>
+              <button type="button" :disabled="doubaoBusy" @click="testDoubao">测试连接</button>
+            </div>
+            <p v-if="doubaoStatus" class="status" :class="doubaoStatusKind">{{ doubaoStatus }}</p>
+            <p class="hint">当前交付版本统一使用豆包。API Key 仅保存在本机应用数据目录。</p>
           </div>
           <div class="section role-section">
             <div class="section-title">角色</div>
@@ -57,48 +46,11 @@
             </select>
             <p class="hint">对话栏可随时切换；长期记忆共享，对话历史按角色隔离。</p>
           </div>
-          <div class="section market-section">
-            <div class="section-title">行情数据</div>
-            <label>行情来源</label>
-            <select v-model="marketSource" @change="changeMarketSource">
-              <option value="backend">桌宠后端（免安装，推荐）</option>
-              <option value="opend">本地富途 OpenD（高级）</option>
-            </select>
-            <template v-if="marketSource === 'backend'">
-              <label>后端地址</label>
-              <input v-model="backendUrl" placeholder="http://127.0.0.1:18540" />
-              <label>访问令牌</label>
-              <input v-model="backendToken" type="password" placeholder="与 DESKPET_API_TOKEN 一致" autocomplete="off" />
-              <div class="button-row">
-                <button type="button" :disabled="backendBusy" @click="saveBackend">保存</button>
-                <button type="button" :disabled="backendBusy" @click="testBackend">测试连接</button>
-              </div>
-              <p v-if="backendStatus" class="status" :class="backendStatusKind">{{ backendStatus }}</p>
-              <p class="hint">默认通过后端获取腾讯行情，用户无需安装 OpenD。</p>
-            </template>
-            <template v-else>
-              <label>OpenD Host</label>
-              <input v-model="marketOpenDHost" placeholder="127.0.0.1" />
-              <label>OpenD Port</label>
-              <input v-model.number="marketOpenDPort" type="number" min="1" max="65535" placeholder="11111" />
-              <label>行情桥地址</label>
-              <input v-model="marketBridgeUrl" placeholder="http://127.0.0.1:18531" />
-              <div class="button-row">
-                <button type="button" :disabled="marketBusy" @click="saveMarket">保存</button>
-                <button type="button" :disabled="marketBusy" @click="testMarket">测试连接</button>
-              </div>
-              <p v-if="marketStatus" class="status" :class="marketStatusKind">{{ marketStatus }}</p>
-              <p class="hint">高级数据源，仅适用于已安装并登录 OpenD 的用户。</p>
-            </template>
-          </div>
-          <!-- MaiBot 连接 -->
-          <div v-if="aiProvider === 'maibot'" class="section">
-            <div class="section-title">MaiBot 连接</div>
-            <label>WS 地址</label>
-            <input :value="wsUrl" @change="setWsUrl($event)" placeholder="ws://127.0.0.1:8523/ws" />
-            <label>WS Token</label>
-            <input :value="wsToken" @change="setWsToken($event)" placeholder="留空不验证" />
-            <p class="hint">修改后需刷新页面生效</p>
+          <div class="section research-service-section">
+            <div class="section-title">本地研究服务</div>
+            <p class="hint">应用启动时会自动运行内置后端，为炒股专家提供行情和研究数据。</p>
+            <button type="button" :disabled="backendBusy" @click="testBackend">检查服务状态</button>
+            <p v-if="backendStatus" class="status" :class="backendStatusKind">{{ backendStatus }}</p>
           </div>
           <!-- 显示 -->
           <div class="section">
@@ -124,15 +76,6 @@
             <input type="number" :value="vadThreshold" @change="setVadThreshold($event)" min="0.005" max="0.1" step="0.005" placeholder="0.02" />
             <label>静音判定秒数</label>
             <input type="number" :value="vadSilence" @change="setVadSilence($event)" min="0.5" max="5" step="0.5" placeholder="1.5" />
-          </div>
-          <!-- 截图 -->
-          <div class="section">
-            <div class="section-title">截图</div>
-            <p class="hint">托盘菜单 → 截图识图（手动）</p>
-            <p class="hint">托盘菜单 → 自动截图（定期截屏发给 MaiBot）</p>
-            <label>自动截图间隔（秒）</label>
-            <input type="number" :value="autoSsInterval" @change="setAutoSsInterval($event)" min="10" step="5" placeholder="60" />
-            <p class="hint">修改后即时生效，需先开启托盘"自动截图"</p>
           </div>
           <div class="section">
             <div class="section-title">记忆与主动陪伴</div>
@@ -168,19 +111,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useAgentStore } from '@/stores/agent'
-import { getAiProvider, setAiProvider } from '@/services/ai-provider'
-import type { AiProvider } from '../../shared/doubao'
-import type { MarketBridgeConfig } from '../../shared/market'
-import {
-  getBackendToken,
-  getBackendUrl,
-  getMarketSource,
-  setBackendToken,
-  setBackendUrl,
-  setMarketSource,
-  testBackendConnection,
-  type MarketSource,
-} from '@/services/backend-client'
+import { testBackendConnection } from '@/services/backend-client'
 
 defineProps<{
   open: boolean
@@ -194,15 +125,11 @@ defineEmits<{ close: [] }>()
 function get(k: string, fallback = '') { try { return localStorage.getItem(k) || fallback } catch { return fallback } }
 function set(k: string, v: string) { try { localStorage.setItem(k, v) } catch { /* */ } }
 
-const wsUrl = ref(get('deskpet/ws-url', 'ws://127.0.0.1:8523/ws'))
-const wsToken = ref(get('deskpet/ws-token'))
 const sttUrl = ref(get('deskpet/stt-url', 'http://127.0.0.1:18530/stt'))
 const modelPath = ref(get('deskpet/model-path', ''))
-const autoSsInterval = ref(get('deskpet/auto-screenshot-interval', '60'))
 const vadThreshold = ref(get('deskpet/vad-threshold', '0.02'))
 const vadSilence = ref(get('deskpet/vad-silence', '1.5'))
 const desktopOnly = ref(false)
-const aiProvider = ref<AiProvider>(getAiProvider())
 const doubaoApiKey = ref('')
 const doubaoModel = ref('')
 const doubaoBaseUrl = ref('https://ark.cn-beijing.volces.com/api/v3')
@@ -210,18 +137,9 @@ const doubaoHasApiKey = ref(false)
 const doubaoBusy = ref(false)
 const doubaoStatus = ref('')
 const doubaoStatusKind = ref<'success' | 'error'>('success')
-const marketOpenDHost = ref('127.0.0.1')
-const marketOpenDPort = ref(11111)
-const marketBridgeUrl = ref('http://127.0.0.1:18531')
-const marketBusy = ref(false)
-const marketStatus = ref('')
-const marketStatusKind = ref<'success' | 'error'>('success')
-const backendUrl = ref(getBackendUrl())
-const backendToken = ref(getBackendToken())
 const backendBusy = ref(false)
 const backendStatus = ref('')
 const backendStatusKind = ref<'success' | 'error'>('success')
-const marketSource = ref<MarketSource>(getMarketSource())
 const agent = useAgentStore()
 const newMemory = ref('')
 let unsubscribeDesktopOnly: (() => void) | null = null
@@ -234,8 +152,6 @@ onMounted(async () => {
     doubaoBaseUrl.value = config.baseUrl
     doubaoHasApiKey.value = config.hasApiKey
   }
-  const marketConfig = await window.electronAPI?.getMarketConfig()
-  if (marketConfig) applyMarketConfig(marketConfig)
   unsubscribeDesktopOnly = window.electronAPI?.onDesktopOnlyChanged((flag) => {
     desktopOnly.value = flag
   }) ?? null
@@ -246,14 +162,8 @@ onUnmounted(() => {
   unsubscribeDesktopOnly = null
 })
 
-function setWsUrl(e: Event) { const v = (e.target as HTMLInputElement).value; wsUrl.value = v; set('deskpet/ws-url', v) }
-function setWsToken(e: Event) { const v = (e.target as HTMLInputElement).value; wsToken.value = v; set('deskpet/ws-token', v) }
 function setSttUrl(e: Event) { const v = (e.target as HTMLInputElement).value; sttUrl.value = v; set('deskpet/stt-url', v) }
 function setModelPath(e: Event) { const v = (e.target as HTMLInputElement).value; modelPath.value = v; set('deskpet/model-path', v) }
-function setAutoSsInterval(e: Event) {
-  const v = (e.target as HTMLInputElement).value; autoSsInterval.value = v; set('deskpet/auto-screenshot-interval', v)
-  window.electronAPI?.setAutoScreenshotInterval(parseInt(v) || 60)
-}
 function setVadThreshold(e: Event) {
   const v = (e.target as HTMLInputElement).value; vadThreshold.value = v; set('deskpet/vad-threshold', v)
 }
@@ -264,15 +174,6 @@ function setDesktopOnly(e: Event) {
   const enabled = (e.target as HTMLInputElement).checked
   desktopOnly.value = enabled
   void window.electronAPI?.setDesktopOnly(enabled)
-}
-function changeAiProvider() {
-  setAiProvider(aiProvider.value)
-  doubaoStatus.value = aiProvider.value === 'doubao'
-    ? '已切换为豆包，保存配置后即可对话。'
-    : aiProvider.value === 'maibot'
-      ? '已切换为 MaiBot，刷新应用后建立 WebSocket 连接。'
-      : '已切换为桌宠后端，保存地址后即可使用。'
-  doubaoStatusKind.value = 'success'
 }
 async function saveDoubao() {
   doubaoBusy.value = true
@@ -321,60 +222,7 @@ function addMemory() {
   newMemory.value = ''
 }
 
-function currentMarketConfig(): MarketBridgeConfig {
-  return {
-    openDHost: marketOpenDHost.value.trim(),
-    openDPort: Number(marketOpenDPort.value),
-    bridgeUrl: marketBridgeUrl.value.trim(),
-  }
-}
-function applyMarketConfig(config: MarketBridgeConfig) {
-  marketOpenDHost.value = config.openDHost
-  marketOpenDPort.value = config.openDPort
-  marketBridgeUrl.value = config.bridgeUrl
-}
-async function saveMarket() {
-  marketBusy.value = true
-  marketStatus.value = ''
-  try {
-    const saved = await window.electronAPI?.saveMarketConfig(currentMarketConfig())
-    if (!saved) throw new Error('保存失败')
-    applyMarketConfig(saved)
-    marketStatus.value = '行情配置已保存'
-    marketStatusKind.value = 'success'
-  } catch (error) {
-    marketStatus.value = error instanceof Error ? error.message : '保存失败'
-    marketStatusKind.value = 'error'
-  } finally {
-    marketBusy.value = false
-  }
-}
-async function testMarket() {
-  await saveMarket()
-  if (marketStatusKind.value === 'error') return
-  marketBusy.value = true
-  marketStatus.value = '正在连接 OpenD…'
-  try {
-    const result = await window.electronAPI?.testMarketConnection()
-    if (!result?.ok) throw new Error(result?.message || '连接失败')
-    marketStatus.value = result.message
-    marketStatusKind.value = 'success'
-  } catch (error) {
-    marketStatus.value = error instanceof Error ? error.message : '连接失败'
-    marketStatusKind.value = 'error'
-  } finally {
-    marketBusy.value = false
-  }
-}
-function saveBackend() {
-  setBackendUrl(backendUrl.value)
-  setBackendToken(backendToken.value)
-  backendUrl.value = getBackendUrl()
-  backendStatus.value = '后端配置已保存'
-  backendStatusKind.value = 'success'
-}
 async function testBackend() {
-  saveBackend()
   backendBusy.value = true
   backendStatus.value = '正在连接桌宠后端…'
   try {
@@ -384,11 +232,6 @@ async function testBackend() {
   } finally {
     backendBusy.value = false
   }
-}
-function changeMarketSource() {
-  setMarketSource(marketSource.value)
-  marketStatus.value = ''
-  backendStatus.value = ''
 }
 </script>
 

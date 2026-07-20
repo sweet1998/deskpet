@@ -7,6 +7,7 @@ import { buildPetContextMenuTemplate } from './pet-context-menu'
 import { requestDoubao, normalizeDoubaoConfig, type StoredDoubaoConfig } from './doubao-client'
 import { DOUBAO_BASE_URL, type DoubaoChatRequest, type DoubaoConfigInput } from '../shared/doubao'
 import { MarketBridgeManager, normalizeMarketConfig } from './market-bridge'
+import { BackendManager } from './backend-manager'
 import type { MarketBridgeConfig } from '../shared/market'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
@@ -158,6 +159,7 @@ let settingsPanelScreenBounds: WindowBoundsState | null = null
 let settingsWindowScreenBounds: WindowBoundsState | null = null
 const doubaoRequests = new Map<string, AbortController>()
 let marketBridge: MarketBridgeManager | null = null
+let backendManager: BackendManager | null = null
 
 function getDoubaoConfigPath(): string {
   return path.join(app.getPath('userData'), 'doubao-config.json')
@@ -507,8 +509,6 @@ function createTray(): void {
     { label: '置顶', type: 'checkbox', checked: alwaysOnTop, click: (mi) => { setAlwaysOnTopState(mi.checked) } },
     { label: lockLabel, type: 'checkbox', checked: clickThroughLocked, click: (mi) => { setClickThroughLocked(mi.checked) } },
     { label: `悬停淡化模型 (${formatShortcut(SHORTCUTS.toggleHoverFade)})`, type: 'checkbox', checked: hoverFadeEnabled, click: (mi) => { setHoverFadeEnabled(mi.checked) } },
-    { label: '截图识图', click: () => { captureScreen() } },
-    { label: '自动截图', type: 'checkbox', checked: false, click: (mi) => { setAutoScreenshot(mi.checked) } },
     { label: '重置模型位置', click: () => { mainWindow?.webContents.send('reset-model-view') } },
     { label: '重置窗口位置', click: () => { resetWindowPosition() } },
     { label: '重置全部布局', click: () => { resetAllLayout() } },
@@ -520,6 +520,12 @@ function createTray(): void {
 
 app.whenReady().then(() => {
   marketBridge = new MarketBridgeManager(readMarketConfig, app.getAppPath())
+  backendManager = new BackendManager({
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+  }, path.join(app.getPath('userData'), 'logs', 'backend.log'))
+  void backendManager.ensureStarted()
   createWindow()
   createTray()
   registerGlobalShortcuts()
@@ -726,6 +732,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  backendManager?.stop()
+  backendManager = null
   marketBridge?.stop()
   marketBridge = null
   stopGlobalCursorPolling()
