@@ -61,6 +61,7 @@ interface ElectronAPI {
   testMarketConnection: () => Promise<import('../shared/market').MarketBridgeHealth>
   getMarketContext: (query: string) => Promise<import('../shared/market').MarketContextResult>
   saveAgentResult: (value: { title: string; content: string }) => Promise<boolean>
+  exportConversation: (value: { title: string; content: string }) => Promise<boolean>
 }
 
 interface Window {

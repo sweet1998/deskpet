@@ -20,6 +20,21 @@ STOP_WORDS = (
     "风险", "原因", "为什么", "对比", "比较", "多少钱", "表现", "营收", "利润", "现金流", "负债",
     "成长性", "市盈率", "市净率", "贵不贵", "便宜", "支撑", "压力", "展望", "的",
 )
+KNOWN_SECTORS: Dict[str, List[Dict[str, str]]] = {
+    "industry": [
+        {"kind": "industry_ths", "code": "881273", "name": "白酒"},
+    ],
+    "concept": [],
+}
+KNOWN_SECTOR_BASKETS: Dict[str, List[Tuple[str, str]]] = {
+    "白酒": [
+        ("SH.600519", "贵州茅台"),
+        ("SZ.000858", "五粮液"),
+        ("SZ.000568", "泸州老窖"),
+        ("SH.600809", "山西汾酒"),
+        ("SZ.000596", "古井贡酒"),
+    ],
+}
 
 
 def market_state(now: datetime) -> str:
@@ -95,6 +110,11 @@ class MarketService:
         self.cache = cache
         self._sector_scan_lock = asyncio.Lock()
         self._sector_scan_progress_listeners: List[ProgressCallback] = []
+        self._sector_catalog_memory: Dict[str, List[Dict[str, str]]] = {}
+        self._sector_catalog_locks = {
+            "industry": asyncio.Lock(),
+            "concept": asyncio.Lock(),
+        }
 
     @staticmethod
     def _has_data(value: Any) -> bool:
@@ -344,17 +364,32 @@ class MarketService:
                 error=str(error)[:500],
             )
 
-    async def resolve_sector(self, query: str) -> Tuple[Optional[Dict[str, str]], List[Dict[str, str]]]:
-        matches: Dict[str, Dict[str, str]] = {}
-        for category in ("industry", "concept"):
+    async def _sector_catalog(self, category: str) -> List[Dict[str, str]]:
+        async with self._sector_catalog_locks[category]:
             try:
                 rows, _, _ = await self._cached_fetch(
                     f"market:v2:sector-catalog:{category}",
                     86400,
-                    lambda category=category: self._fetch("sector_catalog", category),
+                    lambda: self._fetch("sector_catalog", category),
                 )
+                if rows:
+                    self._sector_catalog_memory[category] = rows
             except Exception:
-                continue
+                rows = self._sector_catalog_memory.get(category, [])
+
+            output = [dict(row) for row in rows]
+            names = {str(row.get("name") or "") for row in output}
+            output.extend(
+                dict(row)
+                for row in KNOWN_SECTORS.get(category, [])
+                if row["name"] not in names
+            )
+            return output
+
+    async def resolve_sector(self, query: str) -> Tuple[Optional[Dict[str, str]], List[Dict[str, str]]]:
+        matches: Dict[str, Dict[str, str]] = {}
+        for category in ("industry", "concept"):
+            rows = await self._sector_catalog(category)
             exact = [row for row in rows if row["name"] in query]
             for row in exact:
                 matches[f"{row['kind']}:{row['code']}"] = row
@@ -371,14 +406,7 @@ class MarketService:
         return None, []
 
     async def resolve_sector_names(self, names: List[str]) -> List[Dict[str, str]]:
-        try:
-            rows, _, _ = await self._cached_fetch(
-                "market:v2:sector-catalog:industry",
-                86400,
-                lambda: self._fetch("sector_catalog", "industry"),
-            )
-        except Exception:
-            return []
+        rows = await self._sector_catalog("industry")
         by_name = {str(row.get("name") or ""): row for row in rows}
         return [by_name[name] for name in names if name in by_name]
 
@@ -700,6 +728,51 @@ class MarketService:
         snapshot, snapshot_source, snapshot_warning = snapshot_result
         bars, bars_source, bars_warning = bars_result
         constituents, constituents_source, constituents_warning = constituents_result
+        proxy_warning = None
+        if not snapshot and not constituents and name in KNOWN_SECTOR_BASKETS:
+            proxy_provider = self.fallback_provider or self.provider
+            proxy_results = []
+            for code, _ in KNOWN_SECTOR_BASKETS[name]:
+                try:
+                    proxy_results.append(await proxy_provider.snapshot(code))
+                except Exception as error:
+                    proxy_results.append(error)
+            constituents = [
+                {
+                    "code": code,
+                    "name": item.get("name") or fallback_name,
+                    "price": item.get("price"),
+                    "changePercent": item.get("changePercent"),
+                    "dataTime": item.get("dataTime"),
+                }
+                for (code, fallback_name), item in zip(KNOWN_SECTOR_BASKETS[name], proxy_results)
+                if isinstance(item, dict) and item.get("changePercent") is not None
+            ]
+            proxy_changes = [float(item["changePercent"]) for item in constituents]
+            if proxy_changes:
+                sorted_proxy = sorted(
+                    constituents,
+                    key=lambda item: float(item["changePercent"]),
+                    reverse=True,
+                )
+                snapshot = {
+                    "changePercent": round(sum(proxy_changes) / len(proxy_changes), 4),
+                    "advancers": sum(value > 0 for value in proxy_changes),
+                    "decliners": sum(value < 0 for value in proxy_changes),
+                    "leader": sorted_proxy[0]["name"],
+                    "leaderPrice": sorted_proxy[0].get("price"),
+                    "leaderChangePercent": sorted_proxy[0]["changePercent"],
+                    "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                    "proxy": True,
+                    "sampleSize": len(constituents),
+                }
+                snapshot_source = f"{proxy_provider.name}-sector-proxy"
+                constituents_source = snapshot_source
+                proxy_warning = (
+                    f"{name}板块官方快照不可用，当前涨跌为 {len(constituents)} 只代表性成分股的等权估算"
+                )
+            else:
+                proxy_warning = f"{name}板块官方快照和代表性成分股行情均不可用"
         if category.endswith("_ths"):
             snapshot_source = "akshare-ths" if snapshot_source == self.provider.name else snapshot_source
             bars_source = "akshare-ths" if bars_source == self.provider.name else bars_source
@@ -715,7 +788,7 @@ class MarketService:
         )
         warnings = [
             warning
-            for warning in (snapshot_warning, bars_warning, constituents_warning)
+            for warning in (snapshot_warning, bars_warning, constituents_warning, proxy_warning)
             if warning
         ]
         if not sorted_constituents and snapshot.get("leader"):

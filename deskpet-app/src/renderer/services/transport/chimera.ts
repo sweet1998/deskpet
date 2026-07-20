@@ -14,6 +14,7 @@ import {
   type BackendEvent,
 } from '@/services/backend-client'
 import { isAgentState } from '@/services/agent-protocol'
+import { marketCardFromResearch } from '@/services/market-card'
 
 const REASONING_STEP_INTERVAL_MS = 220
 
@@ -78,6 +79,10 @@ export function useChimeraTransport(): DeskpetTransport {
       })
     } else if (event.event === 'reasoning') {
       await presentReasoning(requestId, roleId, String(data.text || ''))
+    } else if (event.event === 'research') {
+      const prepared = data as unknown as ResearchPrepareResult
+      const marketCard = marketCardFromResearch(prepared)
+      if (marketCard) chat.showMarketCard(requestId, marketCard)
     } else if (event.event === 'delta' || event.event === 'result') {
       finishReasoning(requestId)
       chat.appendChatText(String(data.text || ''), requestId)
@@ -94,7 +99,7 @@ export function useChimeraTransport(): DeskpetTransport {
     const controller = new AbortController()
     backendRequests.get(requestId)?.abort()
     backendRequests.set(requestId, controller)
-    const history = chat.messagesByRole[roleId]
+    const history = chat.getRequestMessages(requestId)
       .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
         ? [{ role: message.role, content: message.text }]
         : [])
@@ -102,6 +107,7 @@ export function useChimeraTransport(): DeskpetTransport {
     try {
       await streamBackendChat({
         requestId,
+        conversationId: chat.getRequestConversationId(requestId),
         roleId,
         text,
         userName: agent.userName,
@@ -144,7 +150,12 @@ export function useChimeraTransport(): DeskpetTransport {
     return lines.join('\n')
   }
 
-  function buildDoubaoMessages(roleId: RoleId, prepared?: ResearchPrepareResult): DoubaoMessage[] {
+  function buildDoubaoMessages(
+    roleId: RoleId,
+    requestId: string,
+    userText: string,
+    prepared?: ResearchPrepareResult,
+  ): DoubaoMessage[] {
     const profile = getRoleProfile(roleId)
     const identity = [
       profile.systemPrompt,
@@ -153,14 +164,19 @@ export function useChimeraTransport(): DeskpetTransport {
       agent.memories.length ? `你需要记住这些信息：${agent.memories.join('；')}` : '',
       roleId === 'stock_expert' ? researchInstruction(prepared) : '',
     ].filter(Boolean).join('\n')
-    const history = chat.messagesByRole[roleId]
-      .filter((message) => message.type === 'text')
+    const history = chat.getRequestMessages(requestId)
+      .filter((message) => message.type === 'text' && message.id !== `user-${requestId}`)
       .slice(-12)
       .map((message) => ({ role: message.role, content: message.text }) as DoubaoMessage)
-    return [{ role: 'system', content: identity }, ...history]
+    return [{ role: 'system', content: identity }, ...history, { role: 'user', content: userText }]
   }
 
-  async function requestDoubao(requestId: string, roleId: RoleId, prepared?: ResearchPrepareResult): Promise<void> {
+  async function requestDoubao(
+    requestId: string,
+    roleId: RoleId,
+    userText: string,
+    prepared?: ResearchPrepareResult,
+  ): Promise<void> {
     let receivedDelta = false
     const unsubscribe = window.electronAPI?.onDoubaoChatDelta(({ requestId: eventRequestId, delta }) => {
       if (eventRequestId !== requestId || !delta) return
@@ -175,7 +191,7 @@ export function useChimeraTransport(): DeskpetTransport {
     try {
       const result = await window.electronAPI?.doubaoChat({
         requestId,
-        messages: buildDoubaoMessages(roleId, prepared),
+        messages: buildDoubaoMessages(roleId, requestId, userText, prepared),
       })
       if (!result?.ok || !result.text) {
         finishReasoning(requestId)
@@ -219,11 +235,12 @@ export function useChimeraTransport(): DeskpetTransport {
     }
   }
 
-  function roleHistory(roleId: RoleId, requestId: string) {
-    return chat.messagesByRole[roleId]
-      .filter((message) => message.type === 'text' && message.id !== `user-${requestId}`)
+  function roleHistory(requestId: string) {
+    return chat.getRequestMessages(requestId)
+      .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
+        ? [{ role: message.role, content: message.text }]
+        : [])
       .slice(-6)
-      .map((message) => ({ role: message.role, content: message.text }))
   }
 
   function completeLocalReply(requestId: string, roleId: RoleId, text: string): void {
@@ -246,7 +263,7 @@ export function useChimeraTransport(): DeskpetTransport {
         prepared = await streamResearchPreparation({
           text,
           roleId,
-          history: roleHistory(roleId, requestId),
+          history: roleHistory(requestId),
         }, async (thought) => {
           if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
           await presentReasoning(requestId, roleId, thought)
@@ -281,6 +298,8 @@ export function useChimeraTransport(): DeskpetTransport {
           }
         }
       }
+      const marketCard = marketCardFromResearch(prepared)
+      if (marketCard) chat.showMarketCard(requestId, marketCard)
     }
     if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
     if (getAiProvider() === 'maibot') {
@@ -290,14 +309,16 @@ export function useChimeraTransport(): DeskpetTransport {
       }
       return
     }
-    await requestDoubao(requestId, roleId, prepared)
+    await requestDoubao(requestId, roleId, text, prepared)
   }
 
   function unsupportedDoubaoTask(requestId: string, task: string): boolean {
+    const message = `${task}暂时需要切换到 MaiBot；豆包直连当前支持文字和语音对话。`
+    chat.showStatusMessage(requestId, message, 'service', false)
     agent.applyState({
       requestId,
       state: 'error',
-      error: `${task}暂时需要切换到 MaiBot；豆包直连当前支持文字和语音对话。`,
+      error: message,
     })
     return true
   }

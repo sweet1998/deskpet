@@ -719,6 +719,26 @@ app.whenReady().then(() => {
     return true
   })
 
+  ipcMain.handle('export-conversation', async (event, value: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow || !value || typeof value !== 'object') return false
+    const input = value as { title?: unknown; content?: unknown }
+    if (typeof input.content !== 'string' || !input.content || input.content.length > 4_000_000) return false
+    const title = typeof input.title === 'string' && input.title.trim()
+      ? input.title.trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)
+      : '麦麦对话'
+    const options = {
+      title: '导出对话',
+      defaultPath: `${title}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }, { name: '文本', extensions: ['txt'] }],
+    }
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return false
+    await fs.promises.writeFile(result.filePath, `${input.content.trim()}\n`, 'utf-8')
+    return true
+  })
+
   ipcMain.handle('close-window', () => {
     mainWindow?.close()
   })

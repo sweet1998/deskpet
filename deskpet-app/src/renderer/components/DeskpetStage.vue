@@ -20,7 +20,7 @@
       :pet-y="petModelY || lastH / 2"
       :pet-width="petViewportWidth"
       :pet-height="petViewportHeight"
-      @submit="submitUserText"
+      @submit="submitUserMessage"
       @voice-start="startVoiceInput"
       @voice-stop="stopVoiceInput"
       @interrupt="interruptAgent"
@@ -71,6 +71,7 @@ import AgentTaskPanel from './AgentTaskPanel.vue'
 import { useDeskpetStore } from '@/stores/deskpet'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore } from '@/stores/chat'
+import type { ChatAttachment, ChatReplyReference } from '@/stores/chat'
 import { useChimeraTransport } from '@/services/transport/chimera'
 import { useLive2DAnimation } from '@/composables/useLive2DAnimation'
 import { useWindowDrag } from '@/composables/useWindowDrag'
@@ -516,19 +517,25 @@ function startTextRequestTimer(requestId: string): void {
   }, TEXT_REQUEST_TIMEOUT_MS))
 }
 
-function submitUserText(text: string): void {
+function followUpPrompt(text: string, replyTo?: ChatReplyReference): string {
+  if (!replyTo) return text
+  return `请基于本会话中这段回答继续回应。回答摘录：“${replyTo.preview}”\n用户追问：${text}`
+}
+
+function submitUserText(text: string, replyTo?: ChatReplyReference): void {
   const value = text.trim()
   if (!value || agent.interruptible) return
+  const requestText = followUpPrompt(value, replyTo)
   const requestId = createRequestId()
   const memoryMatch = value.match(/^(?:请)?记住[：:\s]*(.+)$/)
   if (memoryMatch?.[1]) agent.addMemory(memoryMatch[1])
-  chat.addUserMessage(value, requestId, agent.currentRole)
+  chat.addUserMessage(value, requestId, agent.currentRole, [], replyTo)
   agent.beginRequest(requestId, value)
   agent.taskPanelOpen = false
   agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
   agent.chatOpen = true
   startTextRequestTimer(requestId)
-  if (!transport.sendUserText(value, requestId)) {
+  if (!transport.sendUserText(requestText, requestId)) {
     clearTextRequestTimer(requestId)
     chat.finishThought(requestId)
     chat.showStatusMessage(requestId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
@@ -536,10 +543,76 @@ function submitUserText(text: string): void {
   }
 }
 
+function attachmentMetadata(file: File): ChatAttachment {
+  return {
+    id: `${file.name}-${file.size}-${file.lastModified}`,
+    name: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    size: file.size,
+  }
+}
+
+function submitUserMessage(payload: { text: string; attachments: File[]; replyTo?: ChatReplyReference }): void {
+  if (!payload.attachments.length) {
+    submitUserText(payload.text, payload.replyTo)
+    return
+  }
+  void submitUserFiles(payload.text, payload.attachments, payload.replyTo)
+}
+
+async function submitUserFiles(
+  text: string,
+  files: File[],
+  replyTo?: ChatReplyReference,
+): Promise<void> {
+  if (agent.interruptible || !files.length) return
+  const displayText = text.trim() || '请总结附件，提取关键结论和可执行事项。'
+  const prompt = followUpPrompt(displayText, replyTo)
+  const firstRequestId = createRequestId()
+  chat.addUserMessage(
+    text.trim() || `请处理附件：${files.map((file) => file.name).join('、')}`,
+    firstRequestId,
+    agent.currentRole,
+    files.map(attachmentMetadata),
+    replyTo,
+  )
+  agent.chatOpen = true
+
+  for (const [index, file] of files.entries()) {
+    const requestId = index === 0 ? firstRequestId : createRequestId()
+    if (index > 0) chat.bindRequest(requestId, agent.currentRole)
+    agent.beginRequest(requestId, prompt, file.name)
+    agent.taskPanelOpen = true
+    agent.applyState({
+      requestId,
+      state: 'planning',
+      progress: 15,
+      step: files.length > 1 ? `正在提交附件 ${index + 1}/${files.length}` : '正在制定处理计划',
+      interruptible: true,
+    })
+    try {
+      const base64 = await readFileAsBase64(file)
+      const sent = transport.sendFile({
+        requestId,
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+        base64,
+        prompt,
+      })
+      if (!sent) throw new Error('not connected')
+    } catch {
+      chat.showStatusMessage(requestId, `附件“${file.name}”提交失败，请检查 AI 接入设置。`, 'network')
+      agent.applyState({ requestId, state: 'error', error: '附件提交失败，请检查 AI 接入设置' })
+      break
+    }
+  }
+}
+
 function retryRequest(requestId: string): void {
   if (agent.interruptible) return
   const text = chat.getRequestText(requestId)
-  if (text) submitUserText(text)
+  if (text) submitUserText(text, chat.getRequestReplyTo(requestId))
 }
 
 async function startVoiceInput(): Promise<void> {

@@ -12,6 +12,7 @@ export type MarketSource = 'backend' | 'opend'
 
 export interface BackendChatInput {
   requestId: string
+  conversationId?: string
   roleId: RoleId
   text: string
   userName: string

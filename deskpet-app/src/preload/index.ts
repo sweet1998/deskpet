@@ -110,4 +110,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMarketContext: (query: string) => ipcRenderer.invoke('get-market-context', query),
   saveAgentResult: (value: { title: string; content: string }): Promise<boolean> =>
     ipcRenderer.invoke('save-agent-result', value),
+  exportConversation: (value: { title: string; content: string }): Promise<boolean> =>
+    ipcRenderer.invoke('export-conversation', value),
 })

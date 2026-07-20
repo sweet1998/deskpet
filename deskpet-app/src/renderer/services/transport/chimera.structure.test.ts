@@ -17,6 +17,8 @@ describe('stock expert research routing', () => {
     expect(source).toContain('compactResearchContext')
     expect(source).toContain('onDoubaoChatDelta')
     expect(source).toContain("chat.appendChatText(delta, requestId)")
+    expect(source).toContain('message.id !== `user-${requestId}`')
+    expect(source).toContain("{ role: 'user', content: userText }")
     expect(source).not.toContain("chat.appendThought(requestId, '正在识别问题意图和分析目标')")
     expect(source).not.toContain("chat.appendThought(requestId, '正在整理事实、分析依据、主要风险和观察条件')")
     expect(source).not.toContain('for (const thought of prepared.thoughts)')

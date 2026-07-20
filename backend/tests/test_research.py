@@ -225,6 +225,76 @@ async def test_sector_and_index_complexity_routing():
 
 
 @pytest.mark.asyncio
+async def test_today_sector_and_market_queries_use_simple_snapshots():
+    sector, sector_market = await prepare("今天白酒行情怎么样")
+    market, market_service = await prepare("今天行情怎么样")
+
+    assert sector.scope == "in_scope"
+    assert sector.intent == "sector_snapshot"
+    assert sector.targetKind == "sector"
+    assert sector.targets[0].name == "白酒"
+    assert sector.requiresResearch is False
+    assert sector.thoughts == []
+    assert ("sector", "白酒") in sector_market.calls
+
+    assert market.scope == "in_scope"
+    assert market.intent == "market_snapshot"
+    assert market.targetKind == "market"
+    assert market.requiresResearch is False
+    assert market.thoughts == []
+    assert ("market", "A股") in market_service.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "今天盘面如何",
+    "A股今天表现怎么样",
+    "今天股市涨跌情况",
+])
+async def test_colloquial_market_snapshot_queries_default_to_a_share(query):
+    result, _ = await prepare(query)
+
+    assert result.intent == "market_snapshot"
+    assert result.targetKind == "market"
+    assert result.requiresResearch is False
+
+
+@pytest.mark.asyncio
+async def test_target_first_routing_distinguishes_sector_and_security_snapshots():
+    sector, _ = await prepare("白酒板块今天表现如何")
+    security_result, _ = await prepare("今天茅台行情怎么样")
+    sector_research, _ = await prepare("为什么今天白酒大涨")
+
+    assert sector.intent == "sector_snapshot"
+    assert sector.targets[0].name == "白酒"
+    assert security_result.intent == "security_quote"
+    assert security_result.targets[0].code == "SH.600519"
+    assert sector_research.intent == "sector"
+    assert sector_research.requiresResearch is True
+
+
+@pytest.mark.asyncio
+async def test_elliptical_today_follow_up_inherits_previous_sector():
+    result, _ = await prepare("那今天呢", [
+        ChatMessage(role="user", content="白酒最近趋势怎么样"),
+        ChatMessage(role="assistant", content="白酒板块近期波动较大。"),
+    ])
+
+    assert result.intent == "sector_snapshot"
+    assert result.targets[0].name == "白酒"
+    assert result.requiresResearch is False
+
+
+@pytest.mark.asyncio
+async def test_recent_market_query_keeps_research_workflow():
+    result, _ = await prepare("最近大盘为什么走弱")
+
+    assert result.intent == "market"
+    assert result.requiresResearch is True
+    assert any("全市场" in thought for thought in result.thoughts)
+
+
+@pytest.mark.asyncio
 async def test_technology_theme_aggregates_standard_sectors_without_clarification():
     market = FakeResearchMarket()
     progress = []

@@ -31,6 +31,7 @@ interface ExposedElectronAPI {
     callback: (command: PetContextMenuCommand) => void,
   ) => () => void
   onDoubaoChatDelta: (callback: (event: DoubaoStreamDelta) => void) => () => void
+  exportConversation: (value: { title: string; content: string }) => Promise<boolean>
 }
 
 const electronAPI = electronMocks.exposeInMainWorld.mock.calls[0][1] as ExposedElectronAPI
@@ -92,5 +93,13 @@ describe('pet context menu preload API', () => {
 
     unsubscribe()
     expect(electronMocks.removeListener).toHaveBeenCalledWith('doubao-chat-delta', listener)
+  })
+
+  it('forwards conversation exports to the main process', () => {
+    const value = { title: '一段会话', content: '# 一段会话' }
+
+    electronAPI.exportConversation(value)
+
+    expect(electronMocks.invoke).toHaveBeenCalledWith('export-conversation', value)
   })
 })

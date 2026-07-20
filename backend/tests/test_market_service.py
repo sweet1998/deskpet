@@ -87,6 +87,22 @@ class SlowSectorProvider(FakeProvider):
         return await super().sector_bars(category, name, count)
 
 
+class FailingSectorCatalogProvider(FakeProvider):
+    async def sector_catalog(self, category):
+        raise RuntimeError("sector catalog failed")
+
+
+class FailingSectorDataProvider(FakeProvider):
+    async def sector_snapshot(self, category, code, name):
+        raise RuntimeError("sector snapshot failed")
+
+    async def sector_bars(self, category, name, count):
+        raise RuntimeError("sector bars failed")
+
+    async def sector_constituents(self, category, code, name):
+        raise RuntimeError("sector constituents failed")
+
+
 def test_a_share_code_mapping():
     assert map_symbol("600519") == "SH.600519"
     assert map_symbol("000001") == "SZ.000001"
@@ -131,6 +147,31 @@ async def test_resolve_sector_names_uses_standard_industry_catalog():
         {"kind": "industry", "code": "BK1036", "name": "半导体"},
         {"kind": "industry", "code": "BK0737", "name": "软件开发"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_known_sector_resolves_when_remote_catalog_is_unavailable():
+    service = MarketService(FailingSectorCatalogProvider(), TTLCache())
+
+    result, candidates = await service.resolve_sector("今天白酒行情怎么样")
+
+    assert result == {"kind": "industry_ths", "code": "881273", "name": "白酒"}
+    assert candidates == []
+
+
+@pytest.mark.asyncio
+async def test_known_sector_uses_disclosed_constituent_proxy_when_board_data_fails():
+    fallback = FakeProvider()
+    service = MarketService(FailingSectorDataProvider(), TTLCache(), fallback)
+
+    result = await service.sector_context("industry_ths", "881273", "白酒")
+
+    assert result["status"] == "ok"
+    assert result["snapshot"]["proxy"] is True
+    assert result["snapshot"]["sampleSize"] == 5
+    assert result["snapshot"]["changePercent"] == 1.2
+    assert result["dataSources"]["snapshot"] == "fake-market-sector-proxy"
+    assert any("代表性成分股的等权估算" in warning for warning in result["warnings"])
 
 
 @pytest.mark.asyncio

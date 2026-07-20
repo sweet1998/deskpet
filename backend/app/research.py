@@ -2,7 +2,7 @@ import asyncio
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from .market.service import CODE_PATTERN, MarketService
+from .market.service import CODE_PATTERN, MarketService, search_terms
 from .models import (
     ResearchPrepareRequest,
     ResearchPrepareResponse,
@@ -26,6 +26,10 @@ EDUCATION_KEYWORDS = (
 )
 EDUCATION_QUESTION_WORDS = ("什么是", "是什么意思", "怎么理解", "如何理解", "含义", "区别", "解释一下")
 MARKET_KEYWORDS = ("大盘", "a股市场", "全市场", "涨跌家数", "市场情绪", "市场宽度", "两市成交")
+GENERIC_MARKET_KEYWORDS = (
+    "行情", "盘面", "股市", "市场表现", "市场涨跌", "市场怎么样", "a股", "两市",
+)
+GENERIC_MARKET_TARGETS = ("行情", "盘面", "股市", "市场", "大盘", "a股", "两市")
 SECTOR_SCAN_KEYWORDS = (
     "哪些板块", "什么板块", "哪个板块", "板块排名", "板块排行", "板块筛选", "领涨板块", "走强板块",
     "哪些行业", "什么行业", "哪个行业", "行业排名", "行业排行", "行业筛选", "领涨行业", "走强行业",
@@ -38,8 +42,21 @@ VALUATION_KEYWORDS = ("估值", "市盈率", "市净率", "pe", "pb", "贵不贵
 TREND_KEYWORDS = (
     "趋势", "走势", "近期", "最近", "分析", "为什么", "原因", "风险", "展望", "技术面", "支撑", "压力",
 )
+RESEARCH_DEPTH_KEYWORDS = TREND_KEYWORDS + (
+    "持续", "后续", "未来", "逻辑", "驱动", "影响", "怎么看", "值得关注", "机会", "对比", "比较",
+)
+SNAPSHOT_KEYWORDS = (
+    "今天", "今日", "当日", "现在", "当前", "盘中", "收盘", "行情", "盘面", "表现", "涨跌", "怎么样", "如何",
+)
+ROUTING_NOISE_TERMS = (
+    GENERIC_MARKET_TARGETS + RESEARCH_DEPTH_KEYWORDS + SNAPSHOT_KEYWORDS
+    + GENERIC_SCAN_MOVES + GENERIC_SCAN_QUESTIONS
+    + ("走弱", "走低", "下行", "震荡", "情况", "怎样")
+)
 QUOTE_KEYWORDS = ("多少钱", "当前价格", "现在价格", "股价", "涨跌幅", "现价", "当前点位", "现在点位")
-REFERENCE_WORDS = ("它", "那只", "这只", "该股", "这个板块", "该板块", "这个指数", "其")
+REFERENCE_WORDS = (
+    "它", "那", "那么", "那只", "这只", "该股", "这个板块", "该板块", "这个指数", "其", "今天呢", "现在呢",
+)
 COMPARISON_WORDS = ("对比", "比较", "相比", "vs", "VS")
 
 SECTOR_THEMES: Dict[str, Tuple[str, ...]] = {
@@ -88,9 +105,36 @@ def _intent_for_security(text: str, target_count: int) -> StockIntent:
         return "fundamental"
     if _contains(text, VALUATION_KEYWORDS):
         return "valuation"
-    if _contains(text, TREND_KEYWORDS) or "怎么样" in text or "如何" in text:
+    if _contains(text, RESEARCH_DEPTH_KEYWORDS):
         return "security_trend"
     return "security_quote"
+
+
+def _intent_for_sector(text: str) -> StockIntent:
+    return "sector" if _contains(text, RESEARCH_DEPTH_KEYWORDS) else "sector_snapshot"
+
+
+def _intent_for_market(text: str) -> StockIntent:
+    return "market" if _contains(text, RESEARCH_DEPTH_KEYWORDS) else "market_snapshot"
+
+
+def _named_target_terms(text: str) -> List[str]:
+    return [
+        term
+        for term in search_terms(text)
+        if not _contains(term, ROUTING_NOISE_TERMS)
+    ]
+
+
+def _is_generic_market_query(text: str) -> bool:
+    if CODE_PATTERN.search(text) or _index_target(text):
+        return False
+    if _named_target_terms(text):
+        return False
+    return _contains(text, MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS) and (
+        _contains(text, SNAPSHOT_KEYWORDS + TREND_KEYWORDS)
+        or any(word in text for word in ("怎样", "情况", "涨吗", "跌吗"))
+    )
 
 
 def _is_sector_scan_query(text: str) -> bool:
@@ -109,7 +153,7 @@ def _is_sector_scan_query(text: str) -> bool:
 
 def _requires_research(intent: StockIntent, text: str) -> bool:
     if intent == "index":
-        return _contains(text, TREND_KEYWORDS) or "怎么样" in text or "如何" in text
+        return _contains(text, RESEARCH_DEPTH_KEYWORDS)
     return intent in {
         "security_trend", "fundamental", "valuation", "comparison", "sector", "sector_scan", "market",
     }
@@ -337,14 +381,25 @@ class ResearchService:
                 f"60日最大回撤 {_number(technical.get('maxDrawdown60d'), '%') or '数据不足'}"
             )
         elif intent == "market":
-            records.append(
-                f"全市场：{context.get('advancers', 0)} 家上涨、{context.get('decliners', 0)} 家下跌，"
-                f"中位涨跌 {_number(context.get('medianChangePercent'), '%') or '暂无'}"
-            )
-            records.append(
-                f"两市成交额 {_market_cap(context.get('totalAmount')) or '暂无'}；"
-                f"领涨 {('、'.join(item.get('name', '') for item in (context.get('leaders') or [])[:3]) or '暂无')}"
-            )
+            indices = context.get("indices") or []
+            if isinstance(context.get("advancers"), (int, float)):
+                records.append(
+                    f"全市场：{context.get('advancers', 0)} 家上涨、{context.get('decliners', 0)} 家下跌，"
+                    f"中位涨跌 {_number(context.get('medianChangePercent'), '%') or '暂无'}"
+                )
+            elif indices:
+                records.append("主要指数：" + "，".join(
+                    f"{item.get('name') or item.get('code')} {_number(item.get('changePercent'), '%') or '暂无'}"
+                    for item in indices[:4]
+                ))
+            details = []
+            if _market_cap(context.get("totalAmount")):
+                details.append(f"两市成交额 {_market_cap(context.get('totalAmount'))}")
+            leaders = "、".join(item.get("name", "") for item in (context.get("leaders") or [])[:3])
+            if leaders:
+                details.append(f"领涨 {leaders}")
+            if details:
+                records.append("；".join(details))
 
         for warning in list(dict.fromkeys(_warning_note(item) for item in warnings if item))[:3]:
             records.append(f"数据说明：{warning}")
@@ -381,6 +436,53 @@ class ResearchService:
             context=context,
         )
 
+    async def _market_response(
+        self,
+        text: str,
+        progress: Optional[ProgressCallback] = None,
+    ) -> ResearchPrepareResponse:
+        intent = _intent_for_market(text)
+        requires = _requires_research(intent, text)
+        if requires:
+            await self._report(progress, "正在获取全市场涨跌、成交额和市场宽度数据")
+        context = compact_research_context(await self.market.market_overview())
+        thoughts = self._analysis_records("market", context) if requires else []
+        await self._report_records(progress, thoughts)
+        return ResearchPrepareResponse(
+            scope="in_scope",
+            intent=intent,
+            requiresResearch=requires,
+            targetKind="market",
+            targets=[ResearchTarget(kind="market", name="A 股市场")],
+            thoughts=thoughts,
+            context=context,
+        )
+
+    async def _sector_response(
+        self,
+        text: str,
+        sector: Dict[str, str],
+        progress: Optional[ProgressCallback] = None,
+    ) -> ResearchPrepareResponse:
+        intent = _intent_for_sector(text)
+        requires = _requires_research(intent, text)
+        if requires:
+            await self._report(progress, f"正在获取{sector['name']}板块的行情、成分股和历史数据")
+        context = compact_research_context(
+            await self.market.sector_context(sector["kind"], sector["code"], sector["name"]),
+        )
+        thoughts = self._analysis_records("sector", context) if requires else []
+        await self._report_records(progress, thoughts)
+        return ResearchPrepareResponse(
+            scope="in_scope",
+            intent=intent,
+            requiresResearch=requires,
+            targetKind="sector",
+            targets=[ResearchTarget(kind="sector", name=sector["name"], code=sector["code"])],
+            thoughts=thoughts,
+            context=context,
+        )
+
     async def prepare(
         self,
         request: ResearchPrepareRequest,
@@ -398,11 +500,14 @@ class ResearchService:
         reference_query = self._reference_query(request)
         has_explicit_stock_signal = bool(CODE_PATTERN.search(reference_query)) or _contains(
             reference_query,
-            EDUCATION_KEYWORDS + MARKET_KEYWORDS + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
+            EDUCATION_KEYWORDS + MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS
+            + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
         ) or _index_target(reference_query) is not None
         has_stock_signal = bool(CODE_PATTERN.search(reference_query)) or _contains(
             reference_query,
-            EDUCATION_KEYWORDS + MARKET_KEYWORDS + TREND_KEYWORDS + QUOTE_KEYWORDS + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
+            EDUCATION_KEYWORDS + MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS
+            + TREND_KEYWORDS + QUOTE_KEYWORDS
+            + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
         ) or _index_target(reference_query) is not None
         if _contains(text, OUT_OF_SCOPE_KEYWORDS) and not has_explicit_stock_signal:
             return self._out_of_scope(text)
@@ -424,22 +529,6 @@ class ResearchService:
                 intent=intent,
                 requiresResearch=requires,
                 targetKind="index",
-                targets=targets,
-                thoughts=thoughts,
-                context=context,
-            )
-
-        if _contains(reference_query, MARKET_KEYWORDS):
-            await self._report(progress, "正在获取全市场涨跌、成交额和市场宽度数据")
-            context = compact_research_context(await self.market.market_overview())
-            targets = [ResearchTarget(kind="market", name="A 股市场")]
-            thoughts = self._analysis_records("market", context)
-            await self._report_records(progress, thoughts)
-            return ResearchPrepareResponse(
-                scope="in_scope",
-                intent="market",
-                requiresResearch=True,
-                targetKind="market",
                 targets=targets,
                 thoughts=thoughts,
                 context=context,
@@ -531,22 +620,8 @@ class ResearchService:
                 context=context,
             )
 
-        security_resolved = False
-        explicit_sector = _contains(reference_query, ("板块", "行业", "概念"))
-        if not CODE_PATTERN.search(reference_query) and not explicit_sector:
-            securities, candidates, _ = await self.market.resolve_securities(reference_query)
-            if candidates:
-                choices = "、".join(f"{item['name']}（{item['code']}）" for item in candidates)
-                return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
-            security_resolved = bool(securities)
-            if security_resolved:
-                intent = _intent_for_security(text, len(securities))
-                if _requires_research(intent, text):
-                    names = "、".join(item["name"] for item in securities)
-                    await self._report(progress, f"正在获取{names}的行情、财务和历史数据")
-                market_context = await self.market.context(reference_query, 120)
-                if market_context.status == "ok":
-                    return await self._security_response(text, market_context, progress)
+        if _is_generic_market_query(reference_query):
+            return await self._market_response(text, progress)
 
         sector = None
         sector_candidates: List[Dict[str, str]] = []
@@ -556,22 +631,22 @@ class ResearchService:
             names = "、".join(item["name"] for item in sector_candidates)
             return self._clarification(f"找到多个可能的板块：{names}。请补充更准确的板块名称。")
         if sector:
-            await self._report(progress, f"正在获取{sector['name']}板块的行情、成分股和历史数据")
-            context = compact_research_context(
-                await self.market.sector_context(sector["kind"], sector["code"], sector["name"]),
-            )
-            targets = [ResearchTarget(kind="sector", name=sector["name"], code=sector["code"])]
-            thoughts = self._analysis_records("sector", context)
-            await self._report_records(progress, thoughts)
-            return ResearchPrepareResponse(
-                scope="in_scope",
-                intent="sector",
-                requiresResearch=True,
-                targetKind="sector",
-                targets=targets,
-                thoughts=thoughts,
-                context=context,
-            )
+            return await self._sector_response(text, sector, progress)
+
+        explicit_sector = _contains(reference_query, ("板块", "行业", "概念"))
+        if not CODE_PATTERN.search(reference_query) and not explicit_sector:
+            securities, candidates, _ = await self.market.resolve_securities(reference_query)
+            if candidates:
+                choices = "、".join(f"{item['name']}（{item['code']}）" for item in candidates)
+                return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
+            if securities:
+                intent = _intent_for_security(text, len(securities))
+                if _requires_research(intent, text):
+                    names = "、".join(item["name"] for item in securities)
+                    await self._report(progress, f"正在获取{names}的行情、财务和历史数据")
+                market_context = await self.market.context(reference_query, 120)
+                if market_context.status == "ok":
+                    return await self._security_response(text, market_context, progress)
 
         target_count = max(1, len(CODE_PATTERN.findall(reference_query)))
         likely_intent = _intent_for_security(text, target_count)

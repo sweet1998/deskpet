@@ -22,6 +22,12 @@ class TencentProvider(EastmoneyProvider):
     name = "tencent-public"
     QUOTE_URL = "https://qt.gtimg.cn/q="
     KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    MARKET_INDEXES = (
+        ("sh000001", "上证指数"),
+        ("sz399001", "深证成指"),
+        ("sz399006", "创业板指"),
+        ("sh000300", "沪深300"),
+    )
 
     async def snapshot(self, code: str) -> Dict[str, Any]:
         symbol = tencent_symbol(code)
@@ -120,3 +126,35 @@ class TencentProvider(EastmoneyProvider):
             for parts in rows[-count:]
             if isinstance(parts, list) and len(parts) >= 6
         ]
+
+    async def market_overview(self) -> Dict[str, Any]:
+        symbols = ",".join(symbol for symbol, _ in self.MARKET_INDEXES)
+        response = await self.client.get(f"{self.QUOTE_URL}{symbols}")
+        response.raise_for_status()
+        text = response.content.decode("gbk", errors="replace")
+        names = {symbol[-6:]: name for symbol, name in self.MARKET_INDEXES}
+        indexes = []
+        for line in text.splitlines():
+            if '="' not in line:
+                continue
+            values = line.split('="', 1)[1].rsplit('"', 1)[0].split("~")
+            code = _field(values, 2)
+            if code not in names:
+                continue
+            indexes.append({
+                "code": code,
+                "name": _field(values, 1) or names[code],
+                "price": _number(_field(values, 3)),
+                "change": _number(_field(values, 31)),
+                "changePercent": _number(_field(values, 32)),
+                "open": _number(_field(values, 5)),
+                "high": _number(_field(values, 33)),
+                "low": _number(_field(values, 34)),
+                "dataTime": _field(values, 30),
+            })
+        if not indexes:
+            raise RuntimeError("腾讯行情没有返回主要指数快照")
+        return {
+            "asOf": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "indices": indexes,
+        }
