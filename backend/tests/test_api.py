@@ -17,3 +17,9 @@ def test_request_validation_rejects_long_daily_count():
             "dailyCount": 121,
         })
     assert response.status_code == 422
+
+
+def test_sector_scan_validation_rejects_large_limit():
+    with TestClient(app) as client:
+        response = client.post("/v1/market/sector-scan", json={"limit": 11})
+    assert response.status_code == 422

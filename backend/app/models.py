@@ -11,6 +11,7 @@ StockIntent = Literal[
     "valuation",
     "comparison",
     "sector",
+    "sector_scan",
     "index",
     "market",
     "education",
@@ -40,6 +41,13 @@ class MarketContextRequest(BaseModel):
         max_length=6,
     )
     dailyCount: int = Field(default=120, ge=1, le=120)
+
+
+class SectorScanRequest(BaseModel):
+    universe: Literal["industry"] = "industry"
+    trend: Literal["steady_up"] = "steady_up"
+    windowDays: Literal[20, 60] = 60
+    limit: int = Field(default=5, ge=1, le=10)
 
 
 class MarketCandidate(BaseModel):

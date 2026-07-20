@@ -1,7 +1,7 @@
 import pytest
 
 from app.agent.service import AgentService
-from app.models import AgentChatRequest, MarketContextResponse, SecurityContext
+from app.models import AgentChatRequest, MarketContextResponse, ResearchPrepareRequest, SecurityContext
 
 
 class FakeMarket:
@@ -18,9 +18,13 @@ class FakeMarket:
                 price=1500,
                 dataTime="2026-07-17T10:00:00+08:00",
                 marketStatus="trading",
+                dailyBars=[
+                    {"time": "2026-07-16", "close": 1490},
+                    {"time": "2026-07-17", "close": 1500},
+                ],
                 profile={"industry": "白酒"},
                 financial={"reportDate": "2026-03-31", "roe": 12.5},
-                technical={"return20d": 3.2, "ma20": 1488},
+                technical={"return20d": 3.2, "ma20": 1488, "maxDrawdown60d": -6.5},
                 dataSources={"snapshot": "akshare-eastmoney", "financial": "akshare-eastmoney"},
             )],
         )
@@ -51,18 +55,34 @@ async def test_stock_agent_injects_market_and_streams_events():
     events = [event async for event in service.stream(request)]
 
     event_names = [event.splitlines()[0].removeprefix("event: ") for event in events]
+    assert event_names.index("reasoning") < event_names.index("research")
     assert event_names.index("research") < event_names.index("delta") < event_names.index("done")
     assert any("event: research" in event for event in events)
-    assert any("event: reasoning" in event and "快照" in event for event in events)
-    assert any("event: reasoning" in event and "最大回撤" in event for event in events)
+    assert any("event: reasoning" in event and "现价" in event for event in events)
+    assert any("event: reasoning" in event and "最大回撤 -6.50%" in event for event in events)
     assert any("event: delta" in event and "结论" in event for event in events)
     system = model.messages[0]["content"]
     assert "test-provider" in system
     assert "akshare-eastmoney" in system
     assert "return20d" in system
+    assert "dailyBars" not in system
+    assert '"points":2' in system
     assert "风险偏好较低" in system
     assert "不得承诺收益" in system
-    assert "不得套用固定章节" in system
+    assert "不要默认使用标题、编号" in system
+
+
+@pytest.mark.asyncio
+async def test_research_prepare_stream_emits_progress_before_result():
+    service = AgentService(FakeMarket(), FakeModel())
+    events = [event async for event in service.stream_prepare(ResearchPrepareRequest(
+        text="分析 600519 近期趋势",
+        roleId="stock_expert",
+    ))]
+
+    event_names = [event.splitlines()[0].removeprefix("event: ") for event in events]
+    assert event_names[0] == "reasoning"
+    assert event_names[-1] == "result"
 
 
 class NoCallModel(FakeModel):

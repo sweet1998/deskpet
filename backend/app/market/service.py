@@ -13,6 +13,7 @@ from .providers.eastmoney import map_symbol
 
 
 CODE_PATTERN = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+ProgressCallback = Callable[[str], Awaitable[None]]
 STOP_WORDS = (
     "请", "帮我", "分析一下", "分析", "看看", "研究", "怎么样", "如何", "走势", "股票", "A股",
     "最近", "近期", "当前", "现在", "今天", "行情", "趋势", "价格", "股价", "基本面", "财报", "估值",
@@ -92,6 +93,8 @@ class MarketService:
         self.provider = provider
         self.fallback_provider = fallback_provider
         self.cache = cache
+        self._sector_scan_lock = asyncio.Lock()
+        self._sector_scan_progress_listeners: List[ProgressCallback] = []
 
     @staticmethod
     def _has_data(value: Any) -> bool:
@@ -366,6 +369,294 @@ class MarketService:
                 return industry[0], []
             return None, values[:10]
         return None, []
+
+    async def resolve_sector_names(self, names: List[str]) -> List[Dict[str, str]]:
+        try:
+            rows, _, _ = await self._cached_fetch(
+                "market:v2:sector-catalog:industry",
+                86400,
+                lambda: self._fetch("sector_catalog", "industry"),
+            )
+        except Exception:
+            return []
+        by_name = {str(row.get("name") or ""): row for row in rows}
+        return [by_name[name] for name in names if name in by_name]
+
+    @staticmethod
+    def _breadth_ratio(snapshot: Dict[str, Any]) -> float:
+        advancers = float(snapshot.get("advancers") or 0)
+        decliners = float(snapshot.get("decliners") or 0)
+        total = advancers + decliners
+        return advancers / total if total else 0.5
+
+    @staticmethod
+    async def _report(progress: Optional[ProgressCallback], text: str) -> None:
+        if progress:
+            await progress(text)
+
+    async def _publish_sector_scan_progress(self, text: str) -> None:
+        if not self._sector_scan_progress_listeners:
+            return
+        await asyncio.gather(
+            *(listener(text) for listener in tuple(self._sector_scan_progress_listeners)),
+            return_exceptions=True,
+        )
+
+    async def _build_sector_scan(
+        self,
+        window_days: int,
+        progress: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        try:
+            snapshots, snapshot_source, snapshot_warning = await self._fetch(
+                "sector_scan_snapshot",
+                "industry",
+            )
+        except Exception as error:
+            return {
+                "kind": "sector_scan",
+                "status": "unavailable",
+                "universe": "industry",
+                "asOf": now.isoformat(),
+                "sectors": [],
+                "warnings": [f"行业板块批量快照获取失败：{str(error)[:180]}"],
+            }
+
+        valid = [row for row in snapshots if row.get("name") and row.get("code")]
+        await self._report(progress, f"已获取 {len(valid)} 个行业板块的行情快照")
+        candidate_map: Dict[str, Dict[str, Any]] = {}
+
+        def add_candidates(rows: List[Dict[str, Any]], count: int) -> None:
+            for row in rows[:count]:
+                candidate_map.setdefault(str(row["code"]), row)
+
+        add_candidates(sorted(
+            valid,
+            key=lambda item: item.get("changePercent") if item.get("changePercent") is not None else -math.inf,
+            reverse=True,
+        ), 5)
+        add_candidates(sorted(
+            valid,
+            key=lambda item: item.get("change5d") if item.get("change5d") is not None else -math.inf,
+            reverse=True,
+        ), 6)
+        add_candidates(sorted(
+            valid,
+            key=lambda item: item.get("change10d") if item.get("change10d") is not None else -math.inf,
+            reverse=True,
+        ), 6)
+        add_candidates(sorted(
+            valid,
+            key=lambda item: self._breadth_ratio(item),
+            reverse=True,
+        ), 4)
+        add_candidates(sorted(
+            valid,
+            key=lambda item: item.get("netInflow10d") if item.get("netInflow10d") is not None else -math.inf,
+            reverse=True,
+        ), 4)
+        candidates = list(candidate_map.values())[:20]
+        await self._report(
+            progress,
+            f"根据当日、5 日和 10 日表现筛出 {len(candidates)} 个候选，开始计算 {window_days} 日趋势",
+        )
+        semaphore = asyncio.Semaphore(4)
+
+        async def enrich(snapshot: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+            async with semaphore:
+                bars, bars_source, bars_warning = await self._optional_fetch(
+                    f"market:v3:sector-scan-kline:{snapshot['kind']}:{snapshot['code']}",
+                    900,
+                    "sector_bars",
+                    f"{snapshot['name']}板块日 K",
+                    snapshot["kind"],
+                    snapshot["name"],
+                    max(90, window_days + 1),
+                )
+            if not bars:
+                return None, bars_warning
+            technical = technical_summary(bars)
+            if technical.get("return20d") is None:
+                return None, f"{snapshot['name']}历史样本不足 20 个交易日"
+            ma5 = technical.get("ma5")
+            ma20 = technical.get("ma20")
+            ma60 = technical.get("ma60")
+            ma_aligned = all(value is not None for value in (ma5, ma20, ma60)) and ma5 > ma20 > ma60
+            return5 = technical.get("return5d") if technical.get("return5d") is not None else 0
+            return20 = technical.get("return20d") if technical.get("return20d") is not None else 0
+            return60 = technical.get("return60d") if technical.get("return60d") is not None else 0
+            volatility = technical.get("volatility20d") if technical.get("volatility20d") is not None else 40
+            drawdown = technical.get("maxDrawdown60d") if technical.get("maxDrawdown60d") is not None else -30
+            breadth_ratio = self._breadth_ratio(snapshot)
+            strict_match = bool(
+                ma_aligned
+                and return20 > 0
+                and return60 > 0
+                and drawdown >= -15
+            )
+            near_match = bool(
+                return20 > 0
+                and ma5 is not None
+                and ma20 is not None
+                and ma5 >= ma20
+            )
+            score = (
+                return5 * 0.15
+                + return20 * 0.45
+                + return60 * 0.25
+                + (3 if ma_aligned else 0)
+                + (breadth_ratio - 0.5) * 4
+                + drawdown * 0.05
+                - volatility * 0.03
+            )
+            is_ths = str(snapshot.get("kind") or "").endswith("_ths")
+            snapshot_source_name = snapshot.get("source") or (
+                "akshare-ths" if is_ths and snapshot_source == self.provider.name else snapshot_source
+            )
+            source = (
+                "akshare-ths" if is_ths and bars_source == self.provider.name else bars_source
+            )
+            return {
+                "category": snapshot["kind"],
+                "code": snapshot["code"],
+                "name": snapshot["name"],
+                "score": round(score, 4),
+                "matchLevel": "strict" if strict_match else "near" if near_match else "watch",
+                "snapshot": {
+                    key: snapshot.get(key)
+                    for key in (
+                        "price", "changePercent", "amount", "marketCap", "turnoverRate",
+                        "netInflow", "change5d", "netInflow5d", "change10d",
+                        "netInflow10d", "advancers", "decliners", "averagePrice",
+                        "leader", "leaderPrice", "leaderChangePercent", "dataTime",
+                    )
+                    if snapshot.get(key) is not None
+                },
+                "breadthRatio": round(breadth_ratio, 4),
+                "technical": technical,
+                "history": {
+                    "points": len(bars),
+                    "from": bars[0].get("time"),
+                    "to": bars[-1].get("time"),
+                },
+                "dataSources": {
+                    "snapshot": snapshot_source_name,
+                    **({"dailyKline": source, "technical": source} if source else {}),
+                },
+            }, bars_warning
+
+        pending = [asyncio.create_task(enrich(candidate)) for candidate in candidates]
+        results = []
+        for completed, task in enumerate(asyncio.as_completed(pending), start=1):
+            results.append(await task)
+            if completed == len(pending) or completed % 4 == 0:
+                await self._report(
+                    progress,
+                    f"已完成 {completed}/{len(pending)} 个候选板块的历史趋势计算",
+                )
+        enriched = [item for item, _ in results if item]
+        strict = sorted(
+            (item for item in enriched if item["matchLevel"] == "strict"),
+            key=lambda item: item["score"],
+            reverse=True,
+        )
+        near = sorted(
+            (item for item in enriched if item["matchLevel"] == "near"),
+            key=lambda item: item["score"],
+            reverse=True,
+        )
+        watch = sorted(
+            (item for item in enriched if item["matchLevel"] == "watch"),
+            key=lambda item: item["score"],
+            reverse=True,
+        )
+        ranked = (strict + near + watch)[:10]
+        for index, item in enumerate(ranked, start=1):
+            item["rank"] = index
+
+        warnings = [warning for _, warning in results if warning]
+        output_warnings = []
+        if snapshot_warning:
+            output_warnings.append(snapshot_warning)
+        if len(strict) < min(5, len(ranked)):
+            output_warnings.append("严格趋势条件命中较少，结果中包含接近条件的观察项")
+        failed_count = len(candidates) - len(enriched)
+        if failed_count:
+            output_warnings.append(f"{failed_count} 个候选板块因历史数据缺失未参与排名")
+        if warnings and not failed_count:
+            output_warnings.append("部分候选板块历史数据使用了降级来源")
+        result_sources = ranked[0].get("dataSources", {}) if ranked else {}
+        if ranked:
+            leaders = "、".join(item["name"] for item in ranked[:5])
+            await self._report(
+                progress,
+                f"趋势排名已生成，当前前列候选为：{leaders}",
+            )
+        else:
+            await self._report(progress, "趋势计算完成，但没有取得可用于排名的候选板块")
+        return {
+            "kind": "sector_scan",
+            "status": "ok" if ranked else "unavailable",
+            "universe": "industry",
+            "asOf": now.isoformat(),
+            "marketStatus": market_state(now),
+            "criteria": {
+                "trend": "steady_up",
+                "windowDays": window_days,
+                "description": "优先选择 MA5 > MA20 > MA60、20/60 日收益为正且 60 日最大回撤不超过 15% 的行业",
+                "universeCount": len(valid),
+                "candidateCount": len(candidates),
+                "scannedCount": len(enriched),
+                "strictMatchCount": len(strict),
+            },
+            "sectors": ranked,
+            "dataSources": {
+                "snapshot": result_sources.get("snapshot", snapshot_source),
+                "dailyKline": result_sources.get("dailyKline", self.provider.name),
+            },
+            "warnings": list(dict.fromkeys(output_warnings)),
+        }
+
+    async def scan_sectors(
+        self,
+        limit: int = 5,
+        window_days: int = 60,
+        progress: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
+        safe_limit = max(1, min(10, limit))
+        safe_window = 20 if window_days == 20 else 60
+        cache_key = f"market:v3:sector-scan:industry:{safe_window}"
+        if progress:
+            self._sector_scan_progress_listeners.append(progress)
+        try:
+            cached = await self.cache.get(cache_key)
+            if isinstance(cached, dict) and cached.get("kind") == "sector_scan":
+                await self._report(
+                    progress,
+                    f"已读取最近一次行业扫描结果，共覆盖 {(cached.get('criteria') or {}).get('universeCount', 0)} 个行业",
+                )
+                return {**cached, "sectors": list(cached.get("sectors") or [])[:safe_limit]}
+            async with self._sector_scan_lock:
+                cached = await self.cache.get(cache_key)
+                if isinstance(cached, dict) and cached.get("kind") == "sector_scan":
+                    await self._report(
+                        progress,
+                        f"已读取刚完成的行业扫描结果，共覆盖 {(cached.get('criteria') or {}).get('universeCount', 0)} 个行业",
+                    )
+                    return {**cached, "sectors": list(cached.get("sectors") or [])[:safe_limit]}
+                result = await self._build_sector_scan(
+                    safe_window,
+                    self._publish_sector_scan_progress,
+                )
+                await self.cache.set(cache_key, result, 900)
+                return {**result, "sectors": list(result.get("sectors") or [])[:safe_limit]}
+        finally:
+            if progress:
+                try:
+                    self._sector_scan_progress_listeners.remove(progress)
+                except ValueError:
+                    pass
 
     async def sector_context(
         self,

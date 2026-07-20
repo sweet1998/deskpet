@@ -26,6 +26,9 @@ class MarketProvider(ABC):
     async def sector_catalog(self, category: str) -> List[Dict[str, Any]]:
         return []
 
+    async def sector_scan_snapshot(self, category: str) -> List[Dict[str, Any]]:
+        return []
+
     async def sector_snapshot(self, category: str, code: str, name: str) -> Dict[str, Any]:
         return {}
 

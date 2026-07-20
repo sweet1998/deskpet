@@ -8,4 +8,5 @@ def test_role_registry_is_server_controlled():
     assert "不得承诺收益" in stock.systemPrompt
     assert "固定章节" in stock.systemPrompt
     assert "a_share_sector" in stock.capabilities
+    assert "a_share_sector_scan" in stock.capabilities
     assert "请切换到麦麦" in stock.outOfScopeMessage

@@ -6,7 +6,9 @@ describe('role profiles', () => {
     expect(ROLE_IDS).toEqual(['default', 'stock_expert'])
     expect(getRoleProfile('stock_expert').riskNotice).toContain('不构成投资建议')
     expect(getRoleProfile('stock_expert').capabilities).toContain('a_share_sector')
-    expect(getRoleProfile('stock_expert').systemPrompt).toContain('绝不能机械套用固定章节')
+    expect(getRoleProfile('stock_expert').capabilities).toContain('a_share_sector_scan')
+    expect(getRoleProfile('stock_expert').systemPrompt).toContain('不默认使用标题、编号')
+    expect(getRoleProfile('stock_expert').responseStyle).toContain('不写研报模板')
   })
 
   it('falls back to default for an untrusted role id', () => {

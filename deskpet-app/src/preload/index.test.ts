@@ -3,6 +3,7 @@ import type {
   PetContextMenuCommand,
   PetContextMenuRequest,
 } from '../shared/pet-context-menu'
+import type { DoubaoStreamDelta } from '../shared/doubao'
 
 const electronMocks = vi.hoisted(() => ({
   exposeInMainWorld: vi.fn(),
@@ -29,6 +30,7 @@ interface ExposedElectronAPI {
   onPetContextMenuCommand: (
     callback: (command: PetContextMenuCommand) => void,
   ) => () => void
+  onDoubaoChatDelta: (callback: (event: DoubaoStreamDelta) => void) => () => void
 }
 
 const electronAPI = electronMocks.exposeInMainWorld.mock.calls[0][1] as ExposedElectronAPI
@@ -78,5 +80,17 @@ describe('pet context menu preload API', () => {
       'pet-context-command',
       listener,
     )
+  })
+
+  it('forwards and removes the Doubao stream listener', () => {
+    const callback = vi.fn()
+    const unsubscribe = electronAPI.onDoubaoChatDelta(callback)
+    const listener = electronMocks.on.mock.calls[0][1] as (event: unknown, value: DoubaoStreamDelta) => void
+
+    listener({}, { requestId: 'req-1', delta: '第一段' })
+    expect(callback).toHaveBeenCalledWith({ requestId: 'req-1', delta: '第一段' })
+
+    unsubscribe()
+    expect(electronMocks.removeListener).toHaveBeenCalledWith('doubao-chat-delta', listener)
   })
 })

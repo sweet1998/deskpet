@@ -4,7 +4,7 @@ import {
   type PetContextMenuCommand,
   type PetContextMenuRequest,
 } from '../shared/pet-context-menu'
-import type { DoubaoChatRequest, DoubaoConfigInput } from '../shared/doubao'
+import type { DoubaoChatRequest, DoubaoConfigInput, DoubaoStreamDelta } from '../shared/doubao'
 import type { MarketBridgeConfig } from '../shared/market'
 
 interface GlobalCursorPosition {
@@ -98,6 +98,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveDoubaoConfig: (input: DoubaoConfigInput) => ipcRenderer.invoke('save-doubao-config', input),
   testDoubaoConnection: (input: DoubaoConfigInput) => ipcRenderer.invoke('test-doubao-connection', input),
   doubaoChat: (input: DoubaoChatRequest) => ipcRenderer.invoke('doubao-chat', input),
+  onDoubaoChatDelta: (callback: (event: DoubaoStreamDelta) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: DoubaoStreamDelta) => callback(value)
+    ipcRenderer.on('doubao-chat-delta', listener)
+    return () => ipcRenderer.removeListener('doubao-chat-delta', listener)
+  },
   cancelDoubaoChat: (requestId: string): Promise<boolean> => ipcRenderer.invoke('cancel-doubao-chat', requestId),
   getMarketConfig: (): Promise<MarketBridgeConfig> => ipcRenderer.invoke('get-market-config'),
   saveMarketConfig: (input: MarketBridgeConfig): Promise<MarketBridgeConfig> => ipcRenderer.invoke('save-market-config', input),

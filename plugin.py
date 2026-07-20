@@ -107,7 +107,7 @@ def _load_role_profiles() -> Dict[str, Dict[str, Any]]:
             },
             "stock_expert": {
                 "systemPrompt": "你是严格的 A 股研究助手，只回答 A 股个股、板块、指数、大盘和股票知识问题。无关问题必须拒绝。不得承诺收益、交易或编造数据。",
-                "responseStyle": "围绕当前问题自由组织答案，不得机械套用固定章节；简单问题直接回答。",
+                "responseStyle": "像研究同事聊天一样先直接回答，不复述问题，不默认使用标题、编号或固定章节，不使用总结套话。",
                 "outOfScopeMessage": "我是 A 股研究助手，只能回答个股、板块、指数和股票知识问题。其他问题请切换到麦麦。",
             },
         }
@@ -175,11 +175,15 @@ def _sanitize_market_context(value: Any) -> Optional[Dict[str, Any]]:
 
 ALLOWED_RESEARCH_INTENTS = {
     "security_quote", "security_trend", "fundamental", "valuation", "comparison",
-    "sector", "index", "market", "education", "clarification", "out_of_scope",
+    "sector", "sector_scan", "index", "market", "education", "clarification", "out_of_scope",
 }
 ALLOWED_RESEARCH_KEYS = {
     "kind", "status", "category", "code", "name", "asOf", "marketStatus", "source", "error",
-    "snapshot", "dailyBars", "technical", "breadth", "leaders", "laggards", "dataSources", "warnings",
+    "snapshot", "history", "points", "from", "to", "technical", "breadth", "leaders", "laggards", "dataSources", "warnings",
+    "universe", "criteria", "sectors", "rank", "score", "matchLevel", "breadthRatio", "trend", "windowDays",
+    "description", "universeCount", "candidateCount", "scannedCount", "strictMatchCount", "netInflow",
+    "change5d", "netInflow5d", "change10d", "netInflow10d", "averagePrice",
+    "leader", "leaderPrice", "leaderChangePercent",
     "market", "securities", "candidates", "profile", "financial", "price", "changePercent", "change",
     "dataTime", "stale", "peRatio", "pbRatio", "marketCap", "open", "high", "low", "close", "volume",
     "amount", "turnoverRate", "time", "industry", "listingDate", "totalShares", "floatShares",
@@ -198,11 +202,20 @@ def _sanitize_research_value(value: Any, depth: int = 0) -> Any:
     if isinstance(value, list):
         return [_sanitize_research_value(item, depth + 1) for item in value[:120]]
     if isinstance(value, dict):
-        return {
+        clean = {
             key: _sanitize_research_value(item, depth + 1)
             for key, item in value.items()
             if key in ALLOWED_RESEARCH_KEYS
         }
+        bars = value.get("dailyBars")
+        if isinstance(bars, list):
+            rows = [item for item in bars if isinstance(item, dict)]
+            clean["history"] = {
+                "points": len(rows),
+                **({"from": str(rows[0].get("time") or "")[:20]} if rows else {}),
+                **({"to": str(rows[-1].get("time") or "")[:20]} if rows else {}),
+            }
+        return clean
     return None
 
 
@@ -250,10 +263,16 @@ def _build_role_instruction(role_id: str, research: Any = None) -> str:
     if role_id == "stock_expert":
         prepared = _sanitize_research(research)
         if prepared and prepared.get("scope") == "in_scope":
-            lines.append(f"本次问题意图：{prepared.get('intent')}。根据当前问题自由组织答案，不得套用固定章节。")
+            lines.append(
+                f"本次问题意图：{prepared.get('intent')}。先回应用户真正问的点；短问题短答，"
+                "不要复述问题，不要默认使用标题、编号、固定章节或“综合来看”等总结套话。"
+            )
             context = prepared.get("context")
             if context:
-                lines.append("以下是服务端准备的结构化研究数据。只使用相关字段，说明数据时间、来源和缺失项，不得补造数据。")
+                lines.append(
+                    "以下是精简后的研究事实。只使用相关字段；时效影响判断时再自然说明时间和来源，"
+                    "缺失项只有影响答案时才提，不得补造数据。"
+                )
                 lines.append(json.dumps(context, ensure_ascii=False, separators=(",", ":"))[:60000])
         else:
             lines.append(str(profile.get("outOfScopeMessage") or "该问题不属于 A 股研究范围，必须拒绝。")[:500])

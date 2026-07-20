@@ -8,11 +8,28 @@ describe('agent store', () => {
     setActivePinia(createPinia())
   })
 
-  it('tracks a task lifecycle and opens the task panel', () => {
+  it('does not open the task panel for conversational execution', () => {
     const store = useAgentStore()
-    store.beginRequest('req-1', '总结文件', 'report.pdf')
+    store.beginRequest('req-1', '分析板块趋势')
     store.applyState({
       requestId: 'req-1',
+      state: 'executing',
+      progress: 35,
+      step: '正在计算趋势',
+      interruptible: true,
+    })
+
+    expect(store.taskPanelOpen).toBe(false)
+    expect(store.progress).toBe(35)
+    expect(store.currentStep).toContain('趋势')
+  })
+
+  it('keeps an explicitly opened file task panel visible', () => {
+    const store = useAgentStore()
+    store.beginRequest('req-file', '总结文件', 'report.pdf')
+    store.taskPanelOpen = true
+    store.applyState({
+      requestId: 'req-file',
       state: 'executing',
       progress: 35,
       step: '正在阅读 report.pdf',
@@ -20,8 +37,6 @@ describe('agent store', () => {
     })
 
     expect(store.taskPanelOpen).toBe(true)
-    expect(store.progress).toBe(35)
-    expect(store.currentStep).toContain('report.pdf')
   })
 
   it('records request activity for the inactivity watchdog', () => {

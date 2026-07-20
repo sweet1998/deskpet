@@ -23,6 +23,11 @@ export interface DoubaoChatRequest {
   messages: DoubaoMessage[]
 }
 
+export interface DoubaoStreamDelta {
+  requestId: string
+  delta: string
+}
+
 export interface DoubaoResult {
   ok: boolean
   text?: string

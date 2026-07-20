@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from typing import AsyncIterator, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -20,6 +21,7 @@ from .models import (
     MemoryRecord,
     ResearchPrepareRequest,
     ResearchPrepareResponse,
+    SectorScanRequest,
 )
 from .rate_limit import SlidingWindowRateLimiter
 
@@ -57,6 +59,16 @@ def create_services():
     return market, AgentService(market, model)
 
 
+async def maintain_sector_scan_cache(market: MarketService) -> None:
+    await asyncio.sleep(3)
+    while True:
+        try:
+            await market.scan_sectors(limit=10, window_days=60)
+        except Exception:
+            pass
+        await asyncio.sleep(900)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     market, agent = create_services()
@@ -65,7 +77,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.memories = MemoryRepository(settings.database_url)
     await app.state.memories.start()
     app.state.rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute)
+    sector_scan_task = asyncio.create_task(maintain_sector_scan_cache(market))
     yield
+    sector_scan_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await sector_scan_task
     await agent.close()
     await market.close()
     await app.state.memories.close()
@@ -123,6 +139,15 @@ async def market_context(
     return await request.app.state.market.context(body.query, body.dailyCount)
 
 
+@app.post("/v1/market/sector-scan")
+async def sector_scan(
+    body: SectorScanRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await request.app.state.market.scan_sectors(body.limit, body.windowDays)
+
+
 @app.post("/v1/agent/chat")
 async def agent_chat(
     body: AgentChatRequest,
@@ -151,6 +176,22 @@ async def prepare_research(
     _identity: str = Depends(authorize),
 ) -> ResearchPrepareResponse:
     return await request.app.state.agent.research.prepare(body)
+
+
+@app.post("/v1/research/prepare/stream")
+async def prepare_research_stream(
+    body: ResearchPrepareRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> StreamingResponse:
+    return StreamingResponse(
+        request.app.state.agent.stream_prepare(body),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/v1/memories", response_model=list[MemoryRecord])

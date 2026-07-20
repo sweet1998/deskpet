@@ -109,7 +109,6 @@ export const useAgentStore = defineStore('agent', () => {
     interruptible.value = event.interruptible ?? false
     error.value = event.error ?? ''
     touchRequest(event.requestId || activeRequestId.value)
-    if (event.state === 'planning' || event.state === 'executing') taskPanelOpen.value = true
   }
 
   function setResult(result: AgentTaskResult) {

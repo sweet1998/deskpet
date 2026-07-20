@@ -98,6 +98,37 @@ export async function prepareResearch(input: ResearchPrepareInput): Promise<Rese
   return await response.json() as ResearchPrepareResult
 }
 
+export async function streamResearchPreparation(
+  input: ResearchPrepareInput,
+  onReasoning: (text: string) => void | Promise<void>,
+  signal?: AbortSignal,
+): Promise<ResearchPrepareResult> {
+  const response = await fetch(`${getBackendUrl()}/v1/research/prepare/stream`, {
+    method: 'POST',
+    headers: backendHeaders(),
+    body: JSON.stringify(input),
+    signal,
+  })
+  if (!response.ok) throw new Error(`研究准备失败（HTTP ${response.status}）`)
+  if (!response.body) throw new Error('研究准备服务没有返回流式响应')
+
+  let prepared: ResearchPrepareResult | undefined
+  let streamError = ''
+  await consumeSSE(response, async (event) => {
+    if (event.event === 'reasoning') {
+      const text = String(event.data.text || '').trim()
+      if (text) await onReasoning(text)
+    } else if (event.event === 'result') {
+      prepared = event.data as unknown as ResearchPrepareResult
+    } else if (event.event === 'error') {
+      streamError = String(event.data.message || '研究准备失败')
+    }
+  })
+  if (streamError) throw new Error(streamError)
+  if (!prepared) throw new Error('研究准备服务没有返回结果')
+  return prepared
+}
+
 export function parseSSEBlock(block: string): BackendEvent | null {
   let event = 'message'
   const data: string[] = []
@@ -113,9 +144,32 @@ export function parseSSEBlock(block: string): BackendEvent | null {
   }
 }
 
+async function consumeSSE(
+  response: Response,
+  onEvent: (event: BackendEvent) => void | Promise<void>,
+): Promise<void> {
+  if (!response.body) throw new Error('服务没有返回流式响应')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() || ''
+    for (const block of blocks) {
+      const event = parseSSEBlock(block)
+      if (event) await onEvent(event)
+    }
+    if (done) break
+  }
+  const finalEvent = parseSSEBlock(buffer)
+  if (finalEvent) await onEvent(finalEvent)
+}
+
 export async function streamBackendChat(
   input: BackendChatInput,
-  onEvent: (event: BackendEvent) => void,
+  onEvent: (event: BackendEvent) => void | Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(`${getBackendUrl()}/v1/agent/chat`, {
@@ -127,22 +181,7 @@ export async function streamBackendChat(
   if (!response.ok) throw new Error(`桌宠后端请求失败（HTTP ${response.status}）`)
   if (!response.body) throw new Error('桌宠后端没有返回流式响应')
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    const blocks = buffer.split(/\r?\n\r?\n/)
-    buffer = blocks.pop() || ''
-    for (const block of blocks) {
-      const event = parseSSEBlock(block)
-      if (event) onEvent(event)
-    }
-    if (done) break
-  }
-  const finalEvent = parseSSEBlock(buffer)
-  if (finalEvent) onEvent(finalEvent)
+  await consumeSSE(response, onEvent)
 }
 
 export async function testBackendConnection(): Promise<{ ok: boolean; message: string }> {

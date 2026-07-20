@@ -54,6 +54,7 @@ interface ElectronAPI {
   saveDoubaoConfig: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoConfigView>
   testDoubaoConnection: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoResult>
   doubaoChat: (input: import('../shared/doubao').DoubaoChatRequest) => Promise<import('../shared/doubao').DoubaoResult>
+  onDoubaoChatDelta: (callback: (event: import('../shared/doubao').DoubaoStreamDelta) => void) => () => void
   cancelDoubaoChat: (requestId: string) => Promise<boolean>
   getMarketConfig: () => Promise<import('../shared/market').MarketBridgeConfig>
   saveMarketConfig: (input: import('../shared/market').MarketBridgeConfig) => Promise<import('../shared/market').MarketBridgeConfig>

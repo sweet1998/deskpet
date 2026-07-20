@@ -19,7 +19,7 @@
             <img v-if="msg.type === 'emoji'" :src="'data:image/png;base64,' + msg.base64" class="emoji-img" />
             <template v-else-if="msg.type === 'text'">{{ msg.text }}<span v-if="msg.streaming" class="msg-cursor">|</span></template>
             <template v-else-if="msg.type === 'status'">{{ msg.text }}</template>
-            <template v-else>{{ msg.complete ? '思考过程' : '正在思考' }}</template>
+            <template v-else>{{ msg.complete ? '分析记录' : '正在分析' }}</template>
           </div>
         </div>
         <div v-if="messages.length === 0" class="msg-empty">暂无消息</div>

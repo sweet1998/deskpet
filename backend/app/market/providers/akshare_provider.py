@@ -265,6 +265,110 @@ class AkshareProvider(MarketProvider):
             if _text(row.get(code_key)) and _text(row.get(name_key))
         ]
 
+    async def sector_scan_snapshot(self, category: str) -> List[Dict[str, Any]]:
+        if category != "industry":
+            raise RuntimeError("首版板块筛选仅支持行业板块")
+        eastmoney_error: Optional[Exception] = None
+        try:
+            fund_flow_function = getattr(self.ak, "stock_sector_fund_flow_rank", None)
+            periods = ("今日", "5日", "10日") if fund_flow_function else ()
+            results = await asyncio.gather(
+                self._call(self.ak.stock_board_industry_name_em),
+                *(
+                    self._call(
+                        fund_flow_function,
+                        indicator=period,
+                        sector_type="行业资金流",
+                    )
+                    for period in periods
+                ),
+                return_exceptions=True,
+            )
+            if isinstance(results[0], Exception):
+                raise results[0]
+            summary_frame = results[0]
+            period_funds = {
+                period: {
+                    str(row.get("名称") or "").strip(): row
+                    for row in _records(frame)
+                    if _text(row.get("名称"))
+                }
+                for period, frame in zip(periods, results[1:])
+                if not isinstance(frame, Exception)
+            }
+            output = []
+            for row in _records(summary_frame):
+                code = _text(row.get("板块代码"))
+                name = _text(row.get("板块名称"))
+                if not code or not name:
+                    continue
+                today_fund = period_funds.get("今日", {}).get(name, {})
+                five_day_fund = period_funds.get("5日", {}).get(name, {})
+                ten_day_fund = period_funds.get("10日", {}).get(name, {})
+                output.append({
+                    "kind": "industry",
+                    "code": code,
+                    "name": name,
+                    "price": _number(row.get("最新价")),
+                    "changePercent": _number(row.get("涨跌幅")),
+                    "marketCap": _number(row.get("总市值")),
+                    "turnoverRate": _number(row.get("换手率")),
+                    "netInflow": _number(today_fund.get("今日主力净流入-净额")),
+                    "change5d": _number(five_day_fund.get("5日涨跌幅")),
+                    "netInflow5d": _number(five_day_fund.get("5日主力净流入-净额")),
+                    "change10d": _number(ten_day_fund.get("10日涨跌幅")),
+                    "netInflow10d": _number(ten_day_fund.get("10日主力净流入-净额")),
+                    "advancers": _number(row.get("上涨家数")),
+                    "decliners": _number(row.get("下跌家数")),
+                    "leader": _text(row.get("领涨股票")),
+                    "leaderChangePercent": _number(row.get("领涨股票-涨跌幅")),
+                    "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                    "source": "akshare-eastmoney",
+                })
+            if output:
+                return output
+            raise RuntimeError("东方财富没有返回行业板块批量快照")
+        except Exception as error:
+            eastmoney_error = error
+
+        try:
+            summary_frame, catalog_frame = await asyncio.gather(
+                self._call(self.ak.stock_board_industry_summary_ths),
+                self._call(self.ak.stock_board_industry_name_ths),
+            )
+            codes = {
+                str(row.get("name") or "").strip(): str(row.get("code") or "").strip()
+                for row in _records(catalog_frame)
+            }
+            output = []
+            for row in _records(summary_frame):
+                name = _text(row.get("板块"))
+                if not name or not codes.get(name):
+                    continue
+                output.append({
+                    "kind": "industry_ths",
+                    "code": codes[name],
+                    "name": name,
+                    "changePercent": _number(row.get("涨跌幅")),
+                    "amount": _number(row.get("总成交额")),
+                    "netInflow": _number(row.get("净流入")),
+                    "advancers": _number(row.get("上涨家数")),
+                    "decliners": _number(row.get("下跌家数")),
+                    "averagePrice": _number(row.get("均价")),
+                    "leader": _text(row.get("领涨股")),
+                    "leaderPrice": _number(row.get("领涨股-最新价")),
+                    "leaderChangePercent": _number(row.get("领涨股-涨跌幅")),
+                    "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                    "source": "akshare-ths",
+                })
+            if output:
+                return output
+            raise RuntimeError("同花顺没有返回行业板块批量快照")
+        except Exception as ths_error:
+            raise RuntimeError(
+                f"东方财富：{eastmoney_error}；同花顺：{ths_error}"
+            ) from ths_error
+
     async def sector_snapshot(self, category: str, code: str, name: str) -> Dict[str, Any]:
         if category.endswith("_ths"):
             function = (

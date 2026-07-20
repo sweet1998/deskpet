@@ -42,4 +42,28 @@ describe('doubao client', () => {
     expect(result.ok).toBe(false)
     expect(fetchImpl).not.toHaveBeenCalled()
   })
+
+  it('streams Ark SSE deltas as they arrive', async () => {
+    const encoder = new TextEncoder()
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"贵州"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"茅台"}}]}\n\ndata: [DONE]\n\n'))
+        controller.close()
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    const fetchImpl = vi.fn().mockResolvedValue(response)
+    const onDelta = vi.fn()
+
+    const result = await requestDoubao(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'user', content: '分析茅台' }],
+      { fetchImpl: fetchImpl as unknown as typeof fetch, onDelta },
+    )
+
+    expect(result).toEqual({ ok: true, text: '贵州茅台' })
+    expect(onDelta.mock.calls.map(([delta]) => delta)).toEqual(['贵州', '茅台'])
+    const request = fetchImpl.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(request.body))).toMatchObject({ stream: true })
+  })
 })

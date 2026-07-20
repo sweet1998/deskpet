@@ -82,7 +82,41 @@ class FakeAkshare:
         ])
 
     def stock_board_industry_name_em(self):
-        return FakeFrame([{"板块代码": "BK0896", "板块名称": "白酒"}])
+        return FakeFrame([{
+            "板块代码": "BK0896", "板块名称": "白酒", "最新价": 1234.5,
+            "涨跌幅": 1.8, "总市值": 1_000_000_000_000, "换手率": 2.5,
+            "上涨家数": 18, "下跌家数": 2, "领涨股票": "贵州茅台",
+            "领涨股票-涨跌幅": 2.1,
+        }])
+
+    def stock_sector_fund_flow_rank(self, **kwargs):
+        assert kwargs["sector_type"] == "行业资金流"
+        values = {
+            "今日": {"今日主力净流入-净额": 12},
+            "5日": {"5日涨跌幅": 3.5, "5日主力净流入-净额": 30},
+            "10日": {"10日涨跌幅": 6.8, "10日主力净流入-净额": 50},
+        }
+        return FakeFrame([{"名称": "白酒", **values[kwargs["indicator"]]}])
+
+    def stock_board_industry_name_ths(self):
+        return FakeFrame([
+            {"code": "881273", "name": "白酒"},
+            {"code": "881121", "name": "半导体"},
+        ])
+
+    def stock_board_industry_summary_ths(self):
+        return FakeFrame([
+            {
+                "板块": "白酒", "涨跌幅": 1.8, "总成交额": 300, "净流入": 12,
+                "上涨家数": 18, "下跌家数": 2, "均价": 80,
+                "领涨股": "贵州茅台", "领涨股-最新价": 1500, "领涨股-涨跌幅": 2.1,
+            },
+            {
+                "板块": "半导体", "涨跌幅": 2.5, "总成交额": 500, "净流入": 20,
+                "上涨家数": 40, "下跌家数": 10, "均价": 35,
+                "领涨股": "中芯国际", "领涨股-最新价": 100, "领涨股-涨跌幅": 5.2,
+            },
+        ])
 
     def stock_board_industry_spot_em(self, symbol):
         assert symbol == "BK0896"
@@ -198,6 +232,7 @@ async def test_akshare_maps_sector_index_and_market_overview():
     provider = AkshareProvider(timeout=1, ak_module=FakeAkshare())
     try:
         catalog = await provider.sector_catalog("industry")
+        scan_snapshot = await provider.sector_scan_snapshot("industry")
         snapshot = await provider.sector_snapshot("industry", "BK0896", "白酒")
         bars = await provider.sector_bars("industry", "白酒", 60)
         constituents = await provider.sector_constituents("industry", "BK0896", "白酒")
@@ -208,6 +243,11 @@ async def test_akshare_maps_sector_index_and_market_overview():
         await provider.close()
 
     assert catalog == [{"kind": "industry", "code": "BK0896", "name": "白酒"}]
+    assert scan_snapshot[0]["code"] == "BK0896"
+    assert scan_snapshot[0]["netInflow"] == 12
+    assert scan_snapshot[0]["change5d"] == 3.5
+    assert scan_snapshot[0]["change10d"] == 6.8
+    assert scan_snapshot[0]["source"] == "akshare-eastmoney"
     assert snapshot["changePercent"] == 1.8
     assert len(bars) == 60
     assert constituents[0]["code"] == "SH.600519"
@@ -222,7 +262,10 @@ async def test_akshare_sector_catalog_falls_back_to_ths():
     provider = AkshareProvider(timeout=1, ak_module=FakeAkshareWithThsFallback())
     try:
         catalog = await provider.sector_catalog("industry")
+        scan_snapshot = await provider.sector_scan_snapshot("industry")
     finally:
         await provider.close()
 
     assert catalog == [{"kind": "industry_ths", "code": "881273", "name": "白酒"}]
+    assert scan_snapshot[0]["kind"] == "industry_ths"
+    assert scan_snapshot[0]["source"] == "akshare-ths"

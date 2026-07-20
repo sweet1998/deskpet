@@ -10,6 +10,10 @@ interface DoubaoApiResponse {
   error?: { message?: string }
 }
 
+interface DoubaoStreamChunk {
+  choices?: Array<{ delta?: { content?: string } }>
+}
+
 export function normalizeDoubaoConfig(
   input: unknown,
   current: StoredDoubaoConfig = { apiKey: '', model: '' },
@@ -32,6 +36,7 @@ export async function requestDoubao(
     signal?: AbortSignal
     maxTokens?: number
     fetchImpl?: typeof fetch
+    onDelta?: (delta: string) => void
   } = {},
 ): Promise<DoubaoResult> {
   if (!config.apiKey) return { ok: false, error: '请先在设置中填写豆包 API Key' }
@@ -41,6 +46,7 @@ export async function requestDoubao(
   }
 
   try {
+    const streaming = typeof options.onDelta === 'function'
     const response = await (options.fetchImpl ?? fetch)(`${DOUBAO_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -52,14 +58,53 @@ export async function requestDoubao(
         messages: messages.slice(-20),
         temperature: 0.7,
         max_tokens: options.maxTokens ?? 1200,
+        stream: streaming,
       }),
       signal: options.signal,
     })
-    const body = await response.json() as DoubaoApiResponse
     if (!response.ok) {
+      const body = await response.json() as DoubaoApiResponse
       return { ok: false, error: body.error?.message || `豆包请求失败（HTTP ${response.status}）` }
     }
-    const text = body.choices?.[0]?.message?.content?.trim()
+    if (!streaming) {
+      const body = await response.json() as DoubaoApiResponse
+      const text = body.choices?.[0]?.message?.content?.trim()
+      return text
+        ? { ok: true, text }
+        : { ok: false, error: '豆包没有返回文字内容' }
+    }
+    if (!response.body) return { ok: false, error: '豆包没有返回流式响应' }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let answer = ''
+
+    const consume = (block: string) => {
+      for (const line of block.split(/\r?\n/)) {
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload || payload === '[DONE]') continue
+        try {
+          const chunk = JSON.parse(payload) as DoubaoStreamChunk
+          const delta = chunk.choices?.[0]?.delta?.content
+          if (!delta) continue
+          answer += delta
+          options.onDelta?.(delta)
+        } catch { /* ignore malformed SSE chunks */ }
+      }
+    }
+
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const blocks = buffer.split(/\r?\n\r?\n/)
+      buffer = blocks.pop() || ''
+      blocks.forEach(consume)
+      if (done) break
+    }
+    if (buffer.trim()) consume(buffer)
+    const text = answer.trim()
     return text
       ? { ok: true, text }
       : { ok: false, error: '豆包没有返回文字内容' }

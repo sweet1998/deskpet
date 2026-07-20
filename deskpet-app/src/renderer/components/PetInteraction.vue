@@ -46,13 +46,13 @@
               <ChevronDown :size="17" />
             </button>
           </header>
-          <div class="message-list">
+          <div ref="messageListRef" class="message-list">
             <div v-if="chat.messages.length === 0" class="empty">还没有对话</div>
             <div v-for="message in chat.messages" :key="message.id" :class="['message', message.role, message.type]">
               <template v-if="message.type === 'thought'">
                 <button class="thought-toggle" type="button" @click="chat.toggleThought(message.requestId)">
                   <BrainCircuit :size="14" />
-                  <span>{{ message.complete ? '思考过程' : '正在思考' }}</span>
+                  <span>{{ message.complete ? '分析记录' : '正在分析' }}</span>
                   <ChevronRight v-if="message.collapsed" :size="14" />
                   <ChevronDown v-else :size="14" />
                 </button>
@@ -153,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { BrainCircuit, ChartCandlestick, Check, ChevronDown, ChevronRight, CircleAlert, GripHorizontal, Keyboard, MessagesSquare, Mic, RotateCcw, Send, Sparkles, Square, X } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore } from '@/stores/chat'
@@ -182,6 +182,7 @@ const roleMenuOpen = ref(false)
 const inputText = ref('')
 const inputRef = ref<HTMLInputElement>()
 const controlsRef = ref<HTMLDivElement>()
+const messageListRef = ref<HTMLElement>()
 const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const controlsOffset = ref<{ x: number; y: number } | null>(null)
@@ -259,6 +260,20 @@ const stateLabels: Record<string, string> = {
 const stateLabel = computed(() => stateLabels[agent.state] || '')
 const currentProfile = computed(() => ROLE_PROFILES[agent.currentRole])
 const roleOptions = ROLE_IDS.map((roleId) => ROLE_PROFILES[roleId])
+const messageActivity = computed(() => chat.messages.map((message) => (
+  message.type === 'thought'
+    ? `${message.id}:${message.steps.length}:${message.collapsed}`
+    : `${message.id}:${message.type === 'text' ? message.text.length : 0}`
+)).join('|'))
+
+watch(messageActivity, async () => {
+  const list = messageListRef.value
+  if (!list || !agent.conversationOpen) return
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 56
+  await nextTick()
+  if (nearBottom) list.scrollTop = list.scrollHeight
+})
+
 const bubbleText = computed(() => {
   if (agent.proactiveMessage) return agent.proactiveMessage
   if (agent.state === 'listening') return '我在听。'

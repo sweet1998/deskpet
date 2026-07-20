@@ -28,6 +28,7 @@
     />
 
     <AgentTaskPanel
+      v-if="agent.sourceName || agent.confirmation || agent.taskResult"
       @interrupt="interruptAgent"
       @confirm="respondToConfirmation"
       @save="saveTaskResult"
@@ -479,6 +480,7 @@ function submitUserText(text: string): void {
   if (memoryMatch?.[1]) agent.addMemory(memoryMatch[1])
   chat.addUserMessage(value, requestId, agent.currentRole)
   agent.beginRequest(requestId, value)
+  agent.taskPanelOpen = false
   agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
   agent.interactionOpen = true
   startTextRequestTimer(requestId)

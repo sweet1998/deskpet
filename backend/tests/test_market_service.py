@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app.cache import TTLCache
@@ -11,6 +13,7 @@ class FakeProvider(MarketProvider):
 
     def __init__(self):
         self.snapshot_calls = 0
+        self.sector_bars_calls = 0
 
     async def search(self, query):
         if query == "平安":
@@ -37,6 +40,36 @@ class FakeProvider(MarketProvider):
     async def daily_bars(self, code, count):
         return [{"time": "2026-07-16", "close": 1480.0}]
 
+    async def sector_scan_snapshot(self, category):
+        assert category == "industry"
+        return [
+            {
+                "kind": "industry_ths",
+                "code": f"88{index:04d}",
+                "name": f"行业{letter}",
+                "changePercent": 3 - index * 0.3,
+                "netInflow": 20 - index,
+                "advancers": 20 - index,
+                "decliners": 2 + index,
+            }
+            for index, letter in enumerate("ABCDEF")
+        ]
+
+    async def sector_catalog(self, category):
+        assert category == "industry"
+        return [
+            {"kind": "industry", "code": "BK1036", "name": "半导体"},
+            {"kind": "industry", "code": "BK0737", "name": "软件开发"},
+        ]
+
+    async def sector_bars(self, category, name, count):
+        self.sector_bars_calls += 1
+        slope = {"行业A": 1.0, "行业B": 0.8, "行业C": 0.6, "行业D": 0.3, "行业E": -0.1, "行业F": -0.3}[name]
+        return [
+            {"time": f"day-{index:03d}", "close": 100 + index * slope}
+            for index in range(count)
+        ]
+
 
 class FailingProvider(FakeProvider):
     name = "failing-primary"
@@ -46,6 +79,12 @@ class FailingProvider(FakeProvider):
 
     async def daily_bars(self, code, count):
         raise RuntimeError("bars failed")
+
+
+class SlowSectorProvider(FakeProvider):
+    async def sector_bars(self, category, name, count):
+        await asyncio.sleep(0.01)
+        return await super().sector_bars(category, name, count)
 
 
 def test_a_share_code_mapping():
@@ -83,6 +122,18 @@ async def test_ambiguous_name_requires_confirmation():
 
 
 @pytest.mark.asyncio
+async def test_resolve_sector_names_uses_standard_industry_catalog():
+    service = MarketService(FakeProvider(), TTLCache())
+
+    result = await service.resolve_sector_names(["半导体", "软件开发", "不存在"])
+
+    assert result == [
+        {"kind": "industry", "code": "BK1036", "name": "半导体"},
+        {"kind": "industry", "code": "BK0737", "name": "软件开发"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_market_uses_fallback_per_data_section():
     service = MarketService(FailingProvider(), TTLCache(), FakeProvider())
     result = await service.context("600519", 120)
@@ -115,3 +166,48 @@ def test_technical_summary_requires_enough_history():
     assert complete["ma60"] is not None
     assert complete["volatility20d"] is not None
     assert complete["maxDrawdown60d"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_sector_scan_ranks_trends_and_reuses_cache():
+    provider = FakeProvider()
+    service = MarketService(provider, TTLCache())
+    progress = []
+
+    async def report(text):
+        progress.append(text)
+
+    first = await service.scan_sectors(limit=3, window_days=60, progress=report)
+    calls_after_first = provider.sector_bars_calls
+    first_progress_count = len(progress)
+    second = await service.scan_sectors(limit=2, window_days=60, progress=report)
+
+    assert first["status"] == "ok"
+    assert [item["name"] for item in first["sectors"]] == ["行业A", "行业B", "行业C"]
+    assert first["sectors"][0]["matchLevel"] == "strict"
+    assert first["criteria"]["universeCount"] == 6
+    assert "dailyBars" not in str(first)
+    assert [item["name"] for item in second["sectors"]] == ["行业A", "行业B"]
+    assert provider.sector_bars_calls == calls_after_first
+    assert any("已获取 6 个行业板块" in item for item in progress[:first_progress_count])
+    assert any("已完成 4/6" in item for item in progress[:first_progress_count])
+    assert any("趋势排名已生成" in item for item in progress[:first_progress_count])
+    assert progress[first_progress_count:] == ["已读取最近一次行业扫描结果，共覆盖 6 个行业"]
+
+
+@pytest.mark.asyncio
+async def test_sector_scan_broadcasts_inflight_background_progress_to_waiting_request():
+    service = MarketService(SlowSectorProvider(), TTLCache())
+    background = asyncio.create_task(service.scan_sectors(limit=3, window_days=60))
+    await asyncio.sleep(0)
+    progress = []
+
+    async def report(text):
+        progress.append(text)
+
+    foreground = await service.scan_sectors(limit=3, window_days=60, progress=report)
+    await background
+
+    assert foreground["status"] == "ok"
+    assert any("已完成" in item for item in progress)
+    assert any("趋势排名已生成" in item for item in progress)

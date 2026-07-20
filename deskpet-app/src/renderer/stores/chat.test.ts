@@ -27,12 +27,12 @@ describe('chat store roles', () => {
     expect(chat.bubbleVisible).toBe(false)
   })
 
-  it('stores a collapsible thought summary before the formal answer', () => {
+  it('stores a collapsible analysis record before the formal answer', () => {
     const chat = useChatStore()
     chat.bindRequest('req-thought', 'stock_expert')
-    chat.appendThought('req-thought', '正在获取行情')
-    chat.appendThought('req-thought', '正在获取行情')
-    chat.appendThought('req-thought', '正在整理风险依据')
+    chat.appendThought('req-thought', '贵州茅台：现价 1500 元')
+    chat.appendThought('req-thought', '贵州茅台：现价 1500 元')
+    chat.appendThought('req-thought', '近20日上涨 3.2%')
     chat.finishThought('req-thought')
 
     const thought = chat.messagesByRole.stock_expert[0]

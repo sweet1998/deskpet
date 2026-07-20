@@ -639,7 +639,14 @@ app.whenReady().then(() => {
     doubaoRequests.get(input.requestId)?.abort()
     doubaoRequests.set(input.requestId, controller)
     try {
-      return await requestDoubao(readDoubaoConfig(), input.messages, { signal: controller.signal })
+      return await requestDoubao(readDoubaoConfig(), input.messages, {
+        signal: controller.signal,
+        onDelta: (delta) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('doubao-chat-delta', { requestId: input.requestId, delta })
+          }
+        },
+      })
     } finally {
       if (doubaoRequests.get(input.requestId) === controller) {
         doubaoRequests.delete(input.requestId)
