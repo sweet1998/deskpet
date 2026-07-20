@@ -25,6 +25,7 @@
       @voice-stop="stopVoiceInput"
       @interrupt="interruptAgent"
       @retry="retryRequest"
+      @chat-after-leave="onChatAfterLeave"
     />
 
     <AgentTaskPanel
@@ -121,9 +122,10 @@ const settingsPanelWidth = ref(SETTINGS_PANEL_WIDTH)
 const settingsPanelHeight = ref(SETTINGS_PANEL_HEIGHT)
 const modelError = ref('')
 const fileDragActive = ref(false)
+const chatLayoutOpen = ref(agent.chatOpen)
 const textRequestTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const expandedUiOpen = computed(() => Boolean(
-  showSettings.value || agent.workspaceOpen || chat.chatBubble.visible,
+  showSettings.value || chatLayoutOpen.value || agent.workspaceOpen || chat.chatBubble.visible,
 ))
 
 let animFrameId = 0
@@ -143,6 +145,7 @@ const petModelX = ref(0)
 const petModelY = ref(0)
 let layoutRequestGeneration = 0
 let pointerDownScreenPosition: { x: number; y: number } | null = null
+let compactLayoutPending = false
 
 onMounted(async () => {
   unsubscribePetContextCommand = window.electronAPI?.onPetContextMenuCommand(
@@ -255,6 +258,14 @@ watch([expandedUiOpen, showSettings], async () => {
   }
 }, { flush: 'post' })
 
+watch(() => agent.chatOpen, (open) => {
+  if (open) chatLayoutOpen.value = true
+}, { flush: 'sync' })
+
+function onChatAfterLeave(): void {
+  if (!agent.chatOpen) chatLayoutOpen.value = false
+}
+
 const { onWheel } = useModelZoom(
   store,
   () => ({ x: mouseX, y: mouseY }),
@@ -356,15 +367,24 @@ function updatePetViewportFromModel(): void {
 async function syncPetWindowLayout(): Promise<void> {
   if (!petViewportWidth.value || !petViewportHeight.value) return
   const generation = ++layoutRequestGeneration
+  const mode = expandedUiOpen.value ? 'settings' : 'compact'
+  if (mode === 'compact') compactLayoutPending = true
   const result = await window.electronAPI?.setPetWindowLayout({
-    mode: expandedUiOpen.value ? 'settings' : 'compact',
+    mode,
     petWidth: petViewportWidth.value,
     petHeight: petViewportHeight.value,
     settingsWidth: showSettings.value ? SETTINGS_PANEL_WIDTH : AGENT_PANEL_WIDTH,
     settingsHeight: showSettings.value ? SETTINGS_PANEL_HEIGHT : AGENT_PANEL_HEIGHT,
   })
-  if (!result || generation !== layoutRequestGeneration) return
+  if (!result || generation !== layoutRequestGeneration) {
+    if (generation === layoutRequestGeneration && mode === 'compact') compactLayoutPending = false
+    return
+  }
   applyPetWindowLayoutResult(result)
+  if (mode === 'compact') {
+    compactLayoutPending = false
+    renderPetFrame()
+  }
 }
 
 function applyPetWindowLayoutResult(result: PetWindowLayoutResult): void {
@@ -375,16 +395,40 @@ function applyPetWindowLayoutResult(result: PetWindowLayoutResult): void {
   settingsPanelWidth.value = result.settingsWidth || SETTINGS_PANEL_WIDTH
   settingsPanelHeight.value = result.settingsHeight || SETTINGS_PANEL_HEIGHT
   positionModelForCurrentLayout(window.innerWidth, window.innerHeight)
+  renderPetFrame()
   schedulePointerInteractiveSync()
 }
 
 function positionModelForCurrentLayout(width: number, height: number): void {
   const model = store.live2dModel
   if (!model) return
+  if (compactLayoutPending) {
+    model.position.set(width / 2, height / 2)
+    return
+  }
   model.position.set(
     petModelX.value || width / 2,
     petModelY.value || height / 2,
   )
+}
+
+function renderPetFrame(): void {
+  const app = store.pixiApp
+  if (app) app.renderer.render(app.stage)
+}
+
+function syncPixiViewportToWindow(): void {
+  if (!store.live2dModel || !store.pixiApp) return
+  const width = window.innerWidth
+  const height = window.innerHeight
+  if (width === lastW && height === lastH) return
+  store.pixiApp.renderer.resize(width * 2, height * 2)
+  store.pixiApp.stage.scale.set(2)
+  lastW = width
+  lastH = height
+  positionModelForCurrentLayout(width, height)
+  renderPetFrame()
+  schedulePointerInteractiveSync()
 }
 
 function syncPointerInteractive(clientX: number, clientY: number): void {
@@ -686,12 +730,7 @@ function startAnimationPoll() {
       const cw = window.innerWidth
       const ch = window.innerHeight
       if (cw !== lastW || ch !== lastH) {
-        store.pixiApp!.renderer.resize(cw * 2, ch * 2)
-        store.pixiApp!.stage.scale.set(2)
-        lastW = cw
-        lastH = ch
-        positionModelForCurrentLayout(cw, ch)
-        schedulePointerInteractiveSync()
+        syncPixiViewportToWindow()
       }
       if (store.modelZoom !== lastZoom) {
         lastZoom = store.modelZoom
@@ -722,8 +761,13 @@ function onMouseMove(e: MouseEvent) {
   syncPointerInteractive(mouseX, mouseY)
 }
 
+function onWindowResize() {
+  syncPixiViewportToWindow()
+  schedulePointerInteractiveSync()
+}
+
 window.addEventListener('mousemove', onMouseMove)
-window.addEventListener('resize', schedulePointerInteractiveSync)
+window.addEventListener('resize', onWindowResize)
 onUnmounted(() => {
   for (const timer of textRequestTimers.values()) clearTimeout(timer)
   textRequestTimers.clear()
@@ -752,7 +796,7 @@ onUnmounted(() => {
   stopPendingAnimationWatch()
   idleScheduler.stop()
   window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('resize', schedulePointerInteractiveSync)
+  window.removeEventListener('resize', onWindowResize)
   void window.electronAPI?.setPetHitTestInteractive(true)
   if (store.pixiApp) {
     const canvas = store.pixiApp.view as HTMLCanvasElement

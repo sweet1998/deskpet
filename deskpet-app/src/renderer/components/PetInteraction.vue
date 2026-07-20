@@ -17,7 +17,7 @@
       </div>
     </Transition>
 
-    <Transition name="toolbar-pop">
+    <Transition name="toolbar-pop" @after-leave="$emit('chat-after-leave')">
       <div
         v-if="agent.chatOpen"
         ref="controlsRef"
@@ -48,7 +48,7 @@
               >
                 <Square :size="15" />
               </button>
-              <button class="icon-button" type="button" title="收起对话" @click="agent.chatOpen = false">
+              <button class="icon-button" type="button" title="收起对话" @click="closeChat">
                 <X :size="17" />
               </button>
             </div>
@@ -155,6 +155,7 @@ const emit = defineEmits<{
   'voice-stop': []
   interrupt: []
   retry: [requestId: string]
+  'chat-after-leave': []
 }>()
 
 const agent = useAgentStore()
@@ -364,6 +365,12 @@ function submit() {
   if (!value || agent.interruptible) return
   emit('submit', value)
   chat.clearDraft(agent.currentRole)
+}
+
+function closeChat() {
+  roleMenuOpen.value = false
+  chat.hideChatBubble()
+  agent.chatOpen = false
 }
 
 async function selectRole(roleId: RoleId) {
