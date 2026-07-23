@@ -6,7 +6,11 @@ import {
   shouldPlanNativeTools,
 } from './native-intent'
 
-const NOW = new Date('2026-07-21T10:00:00+08:00')
+function localDate(year: number, month: number, day: number, hour: number): Date {
+  return new Date(year, month - 1, day, hour, 0, 0, 0)
+}
+
+const NOW = localDate(2026, 7, 21, 10)
 
 describe('native intent router', () => {
   it('parses relative and calendar reminders', () => {
@@ -16,7 +20,7 @@ describe('native intent router', () => {
     })
     expect(parseReminder('明天下午3点提醒我交周报', NOW)).toMatchObject({
       body: '交周报',
-      dueAt: new Date('2026-07-22T15:00:00+08:00').getTime(),
+      dueAt: localDate(2026, 7, 22, 15).getTime(),
     })
   })
 
@@ -27,11 +31,11 @@ describe('native intent router', () => {
     })
     expect(parseReminder('下周一上午9点提醒我开周会', NOW)).toMatchObject({
       body: '开周会',
-      dueAt: new Date('2026-07-27T09:00:00+08:00').getTime(),
+      dueAt: localDate(2026, 7, 27, 9).getTime(),
     })
     expect(parseReminder('晚上8点提醒我关窗', NOW)).toMatchObject({
       body: '关窗',
-      dueAt: new Date('2026-07-21T20:00:00+08:00').getTime(),
+      dueAt: localDate(2026, 7, 21, 20).getTime(),
     })
     expect(parseReminder('今天上午9点提醒我开会', NOW)).toBeNull()
   })
