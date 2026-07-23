@@ -16,6 +16,7 @@ describe('normalizePetContextMenuRequest', () => {
     expect(result.emotions).toEqual(['happy'])
     expect(result.actions).toHaveLength(32)
     expect(result.actions[0]).toBe('action-0')
+    expect(result.currentRole).toBe('default')
   })
 
   it('bounds raw array scanning and string normalization work', () => {
@@ -27,7 +28,7 @@ describe('normalizePetContextMenuRequest', () => {
       actions: sparseActions,
     })
 
-    expect(result).toEqual({ emotions: [], actions: [] })
+    expect(result).toEqual({ emotions: [], actions: [], currentRole: 'default' })
   })
 
   it('ignores inherited capability fields', () => {
@@ -39,6 +40,7 @@ describe('normalizePetContextMenuRequest', () => {
     expect(normalizePetContextMenuRequest(input)).toEqual({
       emotions: [],
       actions: [],
+      currentRole: 'default',
     })
   })
 })
@@ -46,6 +48,8 @@ describe('normalizePetContextMenuRequest', () => {
 describe('pet context menu commands', () => {
   it('accepts only known command shapes', () => {
     expect(isPetContextMenuCommand({ type: 'settings' })).toBe(true)
+    expect(isPetContextMenuCommand({ type: 'role', id: 'stock_expert' })).toBe(true)
+    expect(isPetContextMenuCommand({ type: 'role', id: 'other' })).toBe(false)
     expect(isPetContextMenuCommand({ type: 'emotion', id: 'happy' })).toBe(true)
     expect(isPetContextMenuCommand({ type: 'action', id: 'jump' })).toBe(true)
     expect(isPetContextMenuCommand({ type: 'action', id: '../bad' })).toBe(false)

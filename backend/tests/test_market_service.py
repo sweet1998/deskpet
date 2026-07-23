@@ -194,6 +194,32 @@ async def test_market_is_unavailable_when_primary_and_fallback_snapshot_fail():
     assert "snapshot failed" in (result.error or "")
 
 
+@pytest.mark.asyncio
+async def test_market_uses_explicitly_stale_local_cache_when_all_live_sources_fail():
+    cache = TTLCache()
+    await cache.set("market:v2:snapshot:SH.600519", {
+        "value": {
+            "code": "SH.600519",
+            "name": "贵州茅台",
+            "market": "沪市",
+            "price": 1490.0,
+            "changePercent": -0.5,
+            "dataTime": "2026-07-21T14:00:00+08:00",
+        },
+        "source": "cached-market",
+        "warning": None,
+        "cachedAt": "2026-07-21T14:00:01+08:00",
+    }, 0)
+    service = MarketService(FailingProvider(), cache, FailingProvider())
+
+    result = await service.context("600519", 120)
+
+    assert result.status == "ok"
+    assert result.securities[0].price == 1490.0
+    assert result.securities[0].stale is True
+    assert any("本机最近一次成功缓存" in warning for warning in result.securities[0].warnings)
+
+
 def test_technical_summary_requires_enough_history():
     short = technical_summary([{"close": 10 + index} for index in range(5)])
     assert short["return5d"] is None

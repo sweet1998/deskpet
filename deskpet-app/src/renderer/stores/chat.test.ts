@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from './chat'
 
 describe('chat store roles', () => {
   beforeEach(() => {
     localStorage.clear()
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: undefined })
     setActivePinia(createPinia())
   })
 
@@ -165,5 +166,196 @@ describe('chat store roles', () => {
       type: 'text',
       replyTo: { messageId: 'answer-previous' },
     })
+  })
+
+  it('keeps native input kinds so retries use the original workflow', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('分析当前屏幕', 'req-screen', 'default', [], undefined, 'screenshot')
+    chat.addUserMessage('分析附件', 'req-file', 'default', [], undefined, 'file')
+
+    expect(chat.getRequestInputKind('req-screen')).toBe('screenshot')
+    expect(chat.canRetryRequest('req-screen')).toBe(true)
+    expect(chat.canRetryRequest('req-file')).toBe(true)
+
+    setActivePinia(createPinia())
+    const restored = useChatStore()
+    expect(restored.conversationsByRole.default[0].messages[0]).toMatchObject({ inputKind: 'screenshot' })
+  })
+
+  it('clears only the assistant output when regenerating a request', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('重新分析附件', 'req-retry', 'default', [{
+      id: 'file-retry', name: 'report.pdf', mimeType: 'application/pdf', size: 2048,
+    }], undefined, 'file')
+    chat.appendThought('req-retry', '正在读取附件')
+    chat.showMarketCard('req-retry', {
+      title: '附件数据',
+      items: [{ name: '示例', price: 1, changePercent: 0 }],
+    })
+    chat.appendChatText('旧回答', 'req-retry')
+    chat.finishChatStream('req-retry')
+    chat.showStatusMessage('req-retry', '旧错误', 'service')
+
+    expect(chat.resetRequestResponse('req-retry')).toBe(true)
+    expect(chat.messages).toEqual([
+      expect.objectContaining({
+        id: 'user-req-retry',
+        text: '重新分析附件',
+        attachments: [expect.objectContaining({ name: 'report.pdf' })],
+      }),
+    ])
+    expect(chat.resetRequestResponse('req-retry')).toBe(false)
+  })
+
+  it('uses an isolated non-persistent conversation in privacy mode', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('普通历史', 'req-normal')
+    chat.setPrivacyMode(true)
+    chat.addUserMessage('私人内容', 'req-private')
+
+    expect(chat.messages.some((message) => message.type === 'text' && message.text === '私人内容')).toBe(true)
+    expect(localStorage.getItem('deskpet/chat-conversations-v2')).not.toContain('私人内容')
+
+    chat.setPrivacyMode(false)
+    expect(chat.messages.some((message) => message.type === 'text' && message.text === '普通历史')).toBe(true)
+    expect(chat.messages.some((message) => message.type === 'text' && message.text === '私人内容')).toBe(false)
+  })
+
+  it('clears persisted conversations and drafts for every role', async () => {
+    const chat = useChatStore()
+    chat.addUserMessage('需要删除', 'req-delete')
+    chat.setDraft('stock_expert', '草稿')
+
+    await chat.clearAllConversations()
+
+    expect(chat.conversationsByRole.default[0].messages).toEqual([])
+    expect(chat.conversationsByRole.stock_expert[0].messages).toEqual([])
+    expect(localStorage.getItem('deskpet/chat-conversations-v2')).toBeNull()
+    expect(localStorage.getItem('deskpet/chat-conversation-drafts-v2')).toBeNull()
+  })
+
+  it('migrates plaintext conversation data only after encrypted persistence succeeds', async () => {
+    const writeSecureUserData = vi.fn().mockResolvedValue(true)
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        readSecureUserData: vi.fn().mockResolvedValue({ available: true, exists: false }),
+        writeSecureUserData,
+      },
+    })
+    const chat = useChatStore()
+    chat.addUserMessage('需要加密的内容', 'req-secure')
+
+    await expect(chat.hydrateSecureStorage()).resolves.toBe(true)
+
+    expect(chat.storageProtected).toBe(true)
+    expect(localStorage.getItem('deskpet/chat-conversations-v2')).toBeNull()
+    expect(writeSecureUserData).toHaveBeenCalledWith(
+      'chat',
+      expect.objectContaining({
+        version: 1,
+        conversations: expect.objectContaining({
+          default: expect.arrayContaining([
+            expect.objectContaining({ messages: expect.arrayContaining([
+              expect.objectContaining({ text: '需要加密的内容' }),
+            ]) }),
+          ]),
+        }),
+      }),
+    )
+  })
+
+  it('persists the normal snapshot when privacy mode replaces the visible conversation', async () => {
+    vi.useFakeTimers()
+    const writeSecureUserData = vi.fn().mockResolvedValue(true)
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        readSecureUserData: vi.fn().mockResolvedValue({ available: true, exists: false }),
+        writeSecureUserData,
+        clearSecureUserData: vi.fn().mockResolvedValue(true),
+      },
+    })
+    const chat = useChatStore()
+    await chat.hydrateSecureStorage()
+    writeSecureUserData.mockClear()
+
+    chat.addUserMessage('必须保留的正常历史', 'req-before-private')
+    chat.setPrivacyMode(true)
+    await vi.runAllTimersAsync()
+
+    expect(writeSecureUserData).toHaveBeenLastCalledWith(
+      'chat',
+      expect.objectContaining({
+        conversations: expect.objectContaining({
+          default: expect.arrayContaining([
+            expect.objectContaining({
+              messages: expect.arrayContaining([
+                expect.objectContaining({ text: '必须保留的正常历史' }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    )
+    vi.useRealTimers()
+  })
+
+  it('clears encrypted normal history even while privacy mode is active', async () => {
+    const clearSecureUserData = vi.fn().mockResolvedValue(true)
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        readSecureUserData: vi.fn().mockResolvedValue({ available: true, exists: false }),
+        writeSecureUserData: vi.fn().mockResolvedValue(true),
+        clearSecureUserData,
+      },
+    })
+    const chat = useChatStore()
+    await chat.hydrateSecureStorage()
+    chat.addUserMessage('清空后不可恢复', 'req-clear-private')
+    chat.setPrivacyMode(true)
+
+    await expect(chat.clearAllConversations()).resolves.toBe(true)
+    chat.setPrivacyMode(false)
+
+    expect(clearSecureUserData).toHaveBeenCalledWith('chat')
+    expect(chat.messages).toEqual([])
+  })
+
+  it('keeps encrypted normal history hidden when the app starts in privacy mode', async () => {
+    localStorage.setItem('deskpet/privacy-mode', 'true')
+    const stored = {
+      version: 1,
+      conversations: {
+        default: [{
+          id: 'normal-default', roleId: 'default', title: '正常历史', createdAt: 1, updatedAt: 1,
+          messages: [{
+            id: 'user-normal', role: 'user', text: '重启后仍需隐藏', streaming: false,
+            timestamp: 1, type: 'text', inputKind: 'text',
+          }],
+        }],
+        stock_expert: [{
+          id: 'normal-stock', roleId: 'stock_expert', title: '新对话', createdAt: 1, updatedAt: 1, messages: [],
+        }],
+      },
+      active: { default: 'normal-default', stock_expert: 'normal-stock' },
+      drafts: {},
+    }
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        readSecureUserData: vi.fn().mockResolvedValue({ available: true, exists: true, value: stored }),
+        writeSecureUserData: vi.fn().mockResolvedValue(true),
+        clearSecureUserData: vi.fn().mockResolvedValue(true),
+      },
+    })
+    const chat = useChatStore()
+
+    await chat.hydrateSecureStorage()
+    expect(chat.messages).toEqual([])
+
+    chat.setPrivacyMode(false)
+    expect(chat.messages).toEqual([expect.objectContaining({ text: '重启后仍需隐藏' })])
   })
 })

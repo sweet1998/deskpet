@@ -1,5 +1,5 @@
 import json
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
@@ -23,7 +23,7 @@ class OpenAICompatibleModel:
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(timeout=timeout)
 
-    async def stream(self, messages: List[Dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(self, messages: List[Dict[str, Any]]) -> AsyncIterator[str]:
         if not self.api_key or not self.model:
             raise ModelConfigurationError("后端尚未配置 MODEL_API_KEY 和 MODEL_NAME")
         async with self.client.stream(

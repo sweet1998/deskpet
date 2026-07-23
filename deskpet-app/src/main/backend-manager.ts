@@ -1,8 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { DESKTOP_BACKEND_URL } from '../shared/backend'
 
-const BACKEND_URL = 'http://127.0.0.1:18540'
+const BACKEND_TOKEN_PATTERN = /^[a-f0-9]{64}$/
 
 export interface BackendHealth {
   ok: boolean
@@ -23,6 +25,25 @@ export interface BackendLaunch {
   command: string
   args: string[]
   cwd: string
+}
+
+export function readOrCreateBackendToken(
+  filePath: string,
+  createToken = () => randomBytes(32).toString('hex'),
+): string {
+  try {
+    const existing = fs.readFileSync(filePath, 'utf-8').trim()
+    if (BACKEND_TOKEN_PATTERN.test(existing)) return existing
+  } catch { /* create below */ }
+
+  const token = createToken()
+  if (!BACKEND_TOKEN_PATTERN.test(token)) throw new Error('无法生成本地研究服务访问令牌')
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const temporary = `${filePath}.tmp`
+  fs.writeFileSync(temporary, `${token}\n`, { mode: 0o600 })
+  fs.renameSync(temporary, filePath)
+  fs.chmodSync(filePath, 0o600)
+  return token
 }
 
 export function resolveBackendLaunch(options: BackendLaunchOptions): BackendLaunch | null {
@@ -64,7 +85,7 @@ async function readHealth(timeoutMs = 1200): Promise<{ modelConfigured?: boolean
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(`${BACKEND_URL}/health`, { signal: controller.signal })
+    const response = await fetch(`${DESKTOP_BACKEND_URL}/health`, { signal: controller.signal })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     return await response.json() as { modelConfigured?: boolean }
   } finally {
@@ -79,6 +100,7 @@ export class BackendManager {
   constructor(
     private readonly launchOptions: BackendLaunchOptions,
     private readonly logPath: string,
+    private readonly accessToken: string,
   ) {}
 
   async health(): Promise<BackendHealth> {
@@ -132,8 +154,12 @@ export class BackendManager {
         env: {
           ...process.env,
           DESKPET_ENV: 'desktop',
-          DESKPET_API_TOKEN: '',
+          DESKPET_API_TOKEN: this.accessToken,
           DESKPET_CORS_ORIGINS: 'http://127.0.0.1:5173,http://localhost:5173,null',
+          MARKET_CACHE_PATH: process.env.MARKET_CACHE_PATH || path.join(
+            path.dirname(this.logPath),
+            'market-cache.sqlite3',
+          ),
           PYTHONUNBUFFERED: '1',
         },
         stdio: ['ignore', log, log],

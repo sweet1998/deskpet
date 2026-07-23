@@ -1,17 +1,40 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShortcut, desktopCapturer, dialog } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShortcut, desktopCapturer, powerMonitor, safeStorage, shell, systemPreferences } from 'electron'
 import path from 'path'
 import fs from 'fs'
-import http from 'http'
+import { execFile } from 'child_process'
 import { shouldIgnoreMouseEvents, shouldPublishCursorPosition } from './mouse-event-policy'
 import { buildPetContextMenuTemplate } from './pet-context-menu'
-import { requestDoubao, normalizeDoubaoConfig, type StoredDoubaoConfig } from './doubao-client'
-import { DOUBAO_BASE_URL, type DoubaoChatRequest, type DoubaoConfigInput } from '../shared/doubao'
 import { MarketBridgeManager, normalizeMarketConfig } from './market-bridge'
-import { BackendManager } from './backend-manager'
+import { BackendManager, readOrCreateBackendToken } from './backend-manager'
+import { DESKTOP_BACKEND_URL } from '../shared/backend'
 import type { MarketBridgeConfig } from '../shared/market'
+import { NativeReminderManager, openNativeUrl } from './native-tools'
+import { MacPersistentReminderScheduler } from './persistent-reminders'
+import { checkForUpdates, configureAutoUpdater, stopAutoUpdater } from './updater'
+import { NativeToolAuditStore } from './native-tool-audit'
+import {
+  FrontmostAppMonitor,
+  desktopVisibilityForBundle,
+} from './frontmost-app-monitor'
+import {
+  clearSecureUserData,
+  readSecureUserData,
+  writeSecureUserData,
+} from './secure-user-data'
+import type { SecureUserDataNamespace } from '../shared/secure-user-data'
+import { getMacosSpeechAuthorizationStatus, transcribeWithBridge, transcribeWithMacos } from './macos-stt'
+import { runElectronSmoke } from './e2e-smoke'
+import { appendDiagnosticEvent } from './diagnostics'
+import { resolveProductDocumentPath, type ProductDocumentKind } from './product-documents'
+import { DoubaoIpcController } from './doubao-ipc'
+import { NativeToolsIpcController } from './native-tools-ipc'
+import { ExportIpcController } from './export-ipc'
 
 app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('in-process-gpu')
+if (process.env.DESKPET_E2E_USER_DATA) {
+  app.setPath('userData', process.env.DESKPET_E2E_USER_DATA)
+}
 
 const MIN_WINDOW_WIDTH = 80
 const MIN_WINDOW_HEIGHT = 120
@@ -157,16 +180,34 @@ let compactWindowBounds: WindowBoundsState | null = null
 let activePetLayoutRequest: PetWindowLayoutRequest | null = null
 let settingsPanelScreenBounds: WindowBoundsState | null = null
 let settingsWindowScreenBounds: WindowBoundsState | null = null
-const doubaoRequests = new Map<string, AbortController>()
+let doubaoIpc: DoubaoIpcController | null = null
 let marketBridge: MarketBridgeManager | null = null
 let backendManager: BackendManager | null = null
+let backendAccessToken = ''
+let reminderManager: NativeReminderManager | null = null
+let nativeToolAudit: NativeToolAuditStore | null = null
+const frontmostAppMonitor = new FrontmostAppMonitor()
+const ownBundleIds = new Set(['com.sweet1998.deskpet', 'com.github.Electron'])
+let manuallyHidden = false
 
-function getDoubaoConfigPath(): string {
-  return path.join(app.getPath('userData'), 'doubao-config.json')
+function isMainWindowSender(event: Electron.IpcMainInvokeEvent): boolean {
+  return Boolean(mainWindow && BrowserWindow.fromWebContents(event.sender) === mainWindow)
+}
+
+function getSecureUserDataPath(namespace: SecureUserDataNamespace): string {
+  return path.join(app.getPath('userData'), `${namespace}-data.json`)
+}
+
+function isSecureUserDataNamespace(value: unknown): value is SecureUserDataNamespace {
+  return value === 'chat' || value === 'agent'
 }
 
 function getMarketConfigPath(): string {
   return path.join(app.getPath('userData'), 'market-config.json')
+}
+
+function getDiagnosticEventPath(): string {
+  return path.join(app.getPath('userData'), 'logs', 'diagnostic-events.jsonl')
 }
 
 function readMarketConfig(): MarketBridgeConfig {
@@ -182,29 +223,6 @@ function writeMarketConfig(input: unknown): MarketBridgeConfig {
   fs.mkdirSync(app.getPath('userData'), { recursive: true })
   fs.writeFileSync(getMarketConfigPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
   return config
-}
-
-function readDoubaoConfig(): StoredDoubaoConfig {
-  try {
-    return normalizeDoubaoConfig(JSON.parse(fs.readFileSync(getDoubaoConfigPath(), 'utf-8')))
-  } catch {
-    return { apiKey: '', model: '' }
-  }
-}
-
-function writeDoubaoConfig(input: DoubaoConfigInput): StoredDoubaoConfig {
-  const config = normalizeDoubaoConfig(input, readDoubaoConfig())
-  fs.mkdirSync(app.getPath('userData'), { recursive: true })
-  fs.writeFileSync(getDoubaoConfigPath(), JSON.stringify(config, null, 2), { mode: 0o600 })
-  return config
-}
-
-function getDoubaoConfigView(config = readDoubaoConfig()) {
-  return {
-    baseUrl: DOUBAO_BASE_URL,
-    model: config.model,
-    hasApiKey: Boolean(config.apiKey),
-  }
 }
 
 function isValidLayoutDimension(value: unknown): value is number {
@@ -306,9 +324,25 @@ function applyPetWindowLayout(request: PetWindowLayoutRequest): PetWindowLayoutR
 function setAlwaysOnTopState(flag: boolean): void {
   alwaysOnTop = flag
   mainWindow?.setAlwaysOnTop(flag, 'floating')
+  syncDesktopVisibilityMonitoring()
   mainWindow?.webContents.send('desktop-only-changed', !flag)
   saveWindowState()
   createTray()
+}
+
+function syncDesktopVisibilityMonitoring(): void {
+  frontmostAppMonitor.stop()
+  if (alwaysOnTop || process.platform !== 'darwin') {
+    if (!manuallyHidden) mainWindow?.showInactive()
+    return
+  }
+  frontmostAppMonitor.start((bundleId) => {
+    const window = mainWindow
+    if (!window || window.isDestroyed() || manuallyHidden) return
+    const visible = desktopVisibilityForBundle(bundleId, ownBundleIds)
+    if (visible === true && !window.isVisible()) window.showInactive()
+    if (visible === false && window.isVisible()) window.hide()
+  })
 }
 
 function applyMouseEventPolicy(): void {
@@ -409,17 +443,65 @@ function createWindow(): void {
 
   mainWindow.setAlwaysOnTop(alwaysOnTop, 'floating')
   applyMouseEventPolicy()
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openNativeUrl(url)
+    return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow?.webContents.getURL() || ''
+    if (!current) return
+    try {
+      const currentUrl = new URL(current)
+      const nextUrl = new URL(url)
+      if (
+        ['http:', 'https:'].includes(currentUrl.protocol)
+        && currentUrl.origin === nextUrl.origin
+      ) return
+      if (currentUrl.protocol === 'file:' && currentUrl.href === nextUrl.href) return
+    } catch { /* local file origins do not need navigation */ }
+    event.preventDefault()
+    void openNativeUrl(url)
+  })
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
-  }
-
-  mainWindow.webContents.once('did-finish-load', () => {
+  const handleInitialRendererLoad = () => {
     mainWindow?.webContents.send('set-hover-fade', hoverFadeEnabled)
     mainWindow?.webContents.send('desktop-only-changed', !alwaysOnTop)
+    const smokeOutput = process.env.DESKPET_E2E_OUTPUT
+    if (smokeOutput && mainWindow) {
+      void runElectronSmoke(mainWindow, smokeOutput).finally(() => app.exit())
+    }
+  }
+  const rendererLoad = process.env.ELECTRON_RENDERER_URL
+    ? mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    : mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+  void rendererLoad.then(handleInitialRendererLoad).catch((error) => {
+    appendDiagnosticEvent(getDiagnosticEventPath(), {
+      type: 'renderer-load-failed',
+      reason: error instanceof Error ? error.message : String(error),
+    })
+    const smokeOutput = process.env.DESKPET_E2E_OUTPUT
+    if (smokeOutput) {
+      fs.writeFileSync(smokeOutput, JSON.stringify({
+        ok: false,
+        phase: 'renderer-load',
+        checks: {},
+        error: error instanceof Error ? error.message : String(error),
+      }, null, 2), { mode: 0o600 })
+      app.exit(1)
+    }
   })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    appendDiagnosticEvent(getDiagnosticEventPath(), {
+      type: 'render-process-gone',
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+  })
+  mainWindow.on('unresponsive', () => {
+    appendDiagnosticEvent(getDiagnosticEventPath(), { type: 'window-unresponsive' })
+  })
+
+  syncDesktopVisibilityMonitoring()
 
   mainWindow.on('move', () => {
     if (petWindowLayoutMode === 'compact') {
@@ -463,19 +545,53 @@ function setAutoScreenshot(flag: boolean, intervalSec?: number): void {
   }
 }
 
-function captureScreen(): void {
-  // maxSize limits thumbnail to avoid WebSocket frame overflow
-  desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } }).then((sources) => {
-    if (sources.length === 0) return
-    const png = sources[0].thumbnail.toPNG()
-    const b64 = png.toString('base64')
-    mainWindow?.webContents.send('screenshot-captured', b64)
+async function captureScreenBase64(): Promise<string | null> {
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: 1280, height: 720 },
   })
+  if (!sources.length) return null
+  return sources[0].thumbnail.toPNG().toString('base64')
+}
+
+async function captureScreenRegionBase64(): Promise<string | null> {
+  if (process.platform !== 'darwin') return captureScreenBase64()
+  const target = path.join(app.getPath('temp'), `maimai-screen-${Date.now()}.png`)
+  return new Promise((resolve) => {
+    execFile('/usr/sbin/screencapture', ['-i', '-x', target], { timeout: 120_000 }, async (error) => {
+      try {
+        if (error || !fs.existsSync(target)) {
+          resolve(null)
+          return
+        }
+        const data = await fs.promises.readFile(target)
+        resolve(data.length ? data.toString('base64') : null)
+      } catch {
+        resolve(null)
+      } finally {
+        try { await fs.promises.rm(target, { force: true }) } catch { /* already absent */ }
+      }
+    })
+  })
+}
+
+function captureScreen(): void {
+  void captureScreenBase64()
+    .then((base64) => {
+      if (base64) mainWindow?.webContents.send('screenshot-captured', base64)
+    })
+    .catch((error) => console.warn('[deskpet] Screen capture failed:', error))
 }
 
 function toggleWindowVisible(): void {
   if (!mainWindow) return
-  mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show()
+  if (mainWindow.isVisible()) {
+    manuallyHidden = true
+    mainWindow.hide()
+    return
+  }
+  manuallyHidden = false
+  mainWindow.show()
 }
 
 function registerGlobalShortcuts(): void {
@@ -513,6 +629,8 @@ function createTray(): void {
     { label: '重置窗口位置', click: () => { resetWindowPosition() } },
     { label: '重置全部布局', click: () => { resetAllLayout() } },
     { type: 'separator' },
+    { label: `检查更新（当前 ${app.getVersion()}）`, click: () => { void checkForUpdates() } },
+    { type: 'separator' },
     { label: '退出', click: () => { app.quit() } }
   ]))
   tray.setToolTip(clickThroughLocked ? 'MaiBot 桌面宠物（已锁定穿透，请从托盘取消）' : 'MaiBot 桌面宠物')
@@ -520,19 +638,69 @@ function createTray(): void {
 
 app.whenReady().then(() => {
   marketBridge = new MarketBridgeManager(readMarketConfig, app.getAppPath())
+  backendAccessToken = readOrCreateBackendToken(path.join(app.getPath('userData'), 'backend-access-token'))
   backendManager = new BackendManager({
     appPath: app.getAppPath(),
     resourcesPath: process.resourcesPath,
     isPackaged: app.isPackaged,
-  }, path.join(app.getPath('userData'), 'logs', 'backend.log'))
-  void backendManager.ensureStarted()
-  createWindow()
-  createTray()
-  registerGlobalShortcuts()
-
+  }, path.join(app.getPath('userData'), 'logs', 'backend.log'), backendAccessToken)
+  doubaoIpc = new DoubaoIpcController({
+    userDataPath: app.getPath('userData'),
+    encryption: safeStorage,
+    getMainWindow: () => mainWindow,
+    e2eOutput: process.env.DESKPET_E2E_OUTPUT,
+    e2eModelUrl: process.env.DESKPET_E2E_MODEL_URL,
+  })
+  doubaoIpc.register(ipcMain)
+  if (!process.env.DESKPET_E2E_OUTPUT) void backendManager.ensureStarted()
+  reminderManager = new NativeReminderManager(
+    path.join(app.getPath('userData'), 'reminders.json'),
+    (reminder) => {
+      mainWindow?.webContents.send('native-reminder-triggered', reminder)
+    },
+    process.platform === 'darwin' && !process.env.DESKPET_E2E_OUTPUT
+      ? new MacPersistentReminderScheduler(
+          path.join(app.getPath('userData'), 'reminder-delivery'),
+          path.join(app.getPath('home'), 'Library', 'LaunchAgents'),
+        )
+      : undefined,
+  )
+  reminderManager.start()
+  nativeToolAudit = new NativeToolAuditStore(
+    path.join(app.getPath('userData'), 'native-tool-audit.json'),
+  )
+  new NativeToolsIpcController({
+    getMainWindow: () => mainWindow,
+    getReminderManager: () => reminderManager,
+    getAuditStore: () => nativeToolAudit,
+    getDoubaoConfig: () => doubaoIpc?.getConfig() ?? { apiKey: '', model: '' },
+    ocrPaths: {
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      tempPath: app.getPath('temp'),
+      isPackaged: app.isPackaged,
+    },
+    setAutoScreenshotInterval: (seconds) => {
+      autoScreenshotInterval = Math.max(1, Math.min(3600, seconds))
+      if (autoScreenshotTimer) setAutoScreenshot(true, autoScreenshotInterval)
+    },
+    captureScreen: captureScreenBase64,
+    captureScreenRegion: captureScreenRegionBase64,
+  }).register(ipcMain)
+  new ExportIpcController({
+    getMainWindow: () => mainWindow,
+    getBackendHealth: () => backendManager?.health() ?? Promise.resolve({
+      ok: false,
+      status: 'missing',
+      message: '未初始化',
+      owned: false,
+    }),
+    diagnosticEventPath: getDiagnosticEventPath(),
+    backendLogPath: path.join(app.getPath('userData'), 'logs', 'backend.log'),
+  }).register(ipcMain)
   ipcMain.handle('drag-window', (event, { dx, dy }: { dx: number; dy: number }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win) return
+    if (!win || win !== mainWindow) return
     if (
       petWindowLayoutMode === 'settings'
       && compactWindowBounds
@@ -556,18 +724,22 @@ app.whenReady().then(() => {
     return applyPetWindowLayout(request)
   })
 
-  ipcMain.handle('set-always-on-top', (_event, flag: boolean) => {
+  ipcMain.handle('set-always-on-top', (event, flag: boolean) => {
+    if (!isMainWindowSender(event) || typeof flag !== 'boolean') return
     setAlwaysOnTopState(flag)
   })
 
-  ipcMain.handle('get-desktop-only', () => !alwaysOnTop)
+  ipcMain.handle('get-desktop-only', (event) => (
+    isMainWindowSender(event) ? !alwaysOnTop : false
+  ))
 
-  ipcMain.handle('set-desktop-only', (_event, flag: boolean) => {
-    if (typeof flag !== 'boolean') return
+  ipcMain.handle('set-desktop-only', (event, flag: boolean) => {
+    if (!isMainWindowSender(event) || typeof flag !== 'boolean') return
     setAlwaysOnTopState(!flag)
   })
 
-  ipcMain.handle('set-click-through-locked', (_event, flag: boolean) => {
+  ipcMain.handle('set-click-through-locked', (event, flag: boolean) => {
+    if (!isMainWindowSender(event) || typeof flag !== 'boolean') return
     setClickThroughLocked(flag)
   })
 
@@ -592,90 +764,126 @@ app.whenReady().then(() => {
     Menu.buildFromTemplate(template).popup({ window: win })
   })
 
-  ipcMain.handle('minimize-window', () => {
+  ipcMain.handle('minimize-window', (event) => {
+    if (!isMainWindowSender(event)) return
     mainWindow?.minimize()
   })
 
-  ipcMain.handle('stt-transcribe', async (_event, audioBuffer: ArrayBuffer, url?: string) => {
-    const sttUrl = new URL(url || 'http://127.0.0.1:18530/stt')
-    const body = Buffer.from(audioBuffer)
-    return new Promise<string | null>((resolve) => {
-      const req = http.request({
-        hostname: sttUrl.hostname, port: sttUrl.port, path: sttUrl.pathname, method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': body.length },
-      }, (res) => {
-        let data = ''
-        res.on('data', (chunk: string) => data += chunk)
-        res.on('end', () => {
-          try { resolve(JSON.parse(data).text || null) } catch { resolve(null) }
-        })
-        res.on('error', () => resolve(null))
-      })
-      req.on('error', () => resolve(null))
-      req.write(body)
-      req.end()
-    })
-  })
-
-  ipcMain.handle('get-doubao-config', () => getDoubaoConfigView())
-
-  ipcMain.handle('save-doubao-config', (_event, input: DoubaoConfigInput) => {
-    return getDoubaoConfigView(writeDoubaoConfig(input))
-  })
-
-  ipcMain.handle('test-doubao-connection', async (_event, input: DoubaoConfigInput) => {
-    const config = writeDoubaoConfig(input)
-    return requestDoubao(
-      config,
-      [{ role: 'user', content: '只回复“连接成功”四个字。' }],
-      { maxTokens: 16 },
-    )
-  })
-
-  ipcMain.handle('doubao-chat', async (event, input: DoubaoChatRequest) => {
+  ipcMain.handle('stt-transcribe', async (event, audioBuffer: ArrayBuffer, url?: string) => {
     if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) {
       return { ok: false, error: '无效的调用来源' }
     }
-    if (
-      !input || typeof input.requestId !== 'string' || !input.requestId
-      || !Array.isArray(input.messages)
-    ) return { ok: false, error: '无效的豆包请求' }
-
-    const controller = new AbortController()
-    doubaoRequests.get(input.requestId)?.abort()
-    doubaoRequests.set(input.requestId, controller)
-    try {
-      return await requestDoubao(readDoubaoConfig(), input.messages, {
-        signal: controller.signal,
-        onDelta: (delta) => {
-          if (!event.sender.isDestroyed()) {
-            event.sender.send('doubao-chat-delta', { requestId: input.requestId, delta })
-          }
-        },
-      })
-    } finally {
-      if (doubaoRequests.get(input.requestId) === controller) {
-        doubaoRequests.delete(input.requestId)
-      }
+    const systemResult = process.platform === 'darwin'
+      ? await transcribeWithMacos(audioBuffer, {
+          appPath: app.getAppPath(),
+          resourcesPath: process.resourcesPath,
+          tempPath: app.getPath('temp'),
+          isPackaged: app.isPackaged,
+        })
+      : { ok: false, error: '内置语音识别当前仅支持 macOS' }
+    if (systemResult.ok || !url?.trim()) return systemResult
+    const bridgeResult = await transcribeWithBridge(audioBuffer, url.trim())
+    return bridgeResult.ok ? bridgeResult : {
+      ok: false,
+      error: `${systemResult.error || '系统语音识别失败'}；${bridgeResult.error || 'STT Bridge 不可用'}`,
     }
   })
 
-  ipcMain.handle('cancel-doubao-chat', (_event, requestId: unknown) => {
-    if (typeof requestId !== 'string') return false
-    const controller = doubaoRequests.get(requestId)
-    controller?.abort()
-    return Boolean(controller)
+  ipcMain.handle('get-voice-permission-status', async (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return null
+    if (process.platform !== 'darwin') {
+      return {
+        platformSupported: false,
+        helperAvailable: false,
+        microphone: 'unavailable',
+        speechRecognition: 'unavailable',
+      }
+    }
+    const speech = await getMacosSpeechAuthorizationStatus({
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      tempPath: app.getPath('temp'),
+      isPackaged: app.isPackaged,
+    })
+    return {
+      platformSupported: true,
+      helperAvailable: speech.helperAvailable,
+      microphone: systemPreferences.getMediaAccessStatus('microphone'),
+      speechRecognition: speech.status,
+    }
   })
 
-  ipcMain.handle('get-market-config', () => readMarketConfig())
+  ipcMain.handle('read-secure-user-data', (event, namespace: unknown) => {
+    if (
+      BrowserWindow.fromWebContents(event.sender) !== mainWindow
+      || !isSecureUserDataNamespace(namespace)
+    ) return { available: false, exists: false, error: '无效的调用来源' }
+    return readSecureUserData(getSecureUserDataPath(namespace), safeStorage)
+  })
 
-  ipcMain.handle('save-market-config', (_event, input: unknown) => {
+  ipcMain.handle('write-secure-user-data', (event, namespace: unknown, value: unknown) => {
+    if (
+      BrowserWindow.fromWebContents(event.sender) !== mainWindow
+      || !isSecureUserDataNamespace(namespace)
+    ) return false
+    try {
+      return writeSecureUserData(getSecureUserDataPath(namespace), value, safeStorage)
+    } catch (error) {
+      console.warn('[deskpet] Secure user data write failed:', error)
+      return false
+    }
+  })
+
+  ipcMain.handle('clear-secure-user-data', (event, namespace: unknown) => {
+    if (
+      BrowserWindow.fromWebContents(event.sender) !== mainWindow
+      || !isSecureUserDataNamespace(namespace)
+    ) return false
+    clearSecureUserData(getSecureUserDataPath(namespace))
+    return true
+  })
+
+  ipcMain.handle('get-app-version', (event) => (
+    isMainWindowSender(event) ? app.getVersion() : ''
+  ))
+  ipcMain.handle('open-product-document', async (event, kind: ProductDocumentKind) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow || !['privacy', 'terms'].includes(kind)) return false
+    const filePath = resolveProductDocumentPath(kind, {
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+    })
+    if (!filePath) return false
+    return (await shell.openPath(filePath)) === ''
+  })
+  ipcMain.handle('get-backend-access', (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return null
+    return { url: DESKTOP_BACKEND_URL, token: backendAccessToken }
+  })
+  ipcMain.handle('get-system-idle-time', (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return 0
+    return powerMonitor.getSystemIdleTime()
+  })
+  ipcMain.handle('check-for-updates', async (event) => {
+    if (!isMainWindowSender(event)) return false
+    try { return await checkForUpdates(true) } catch { return false }
+  })
+
+  ipcMain.handle('get-market-config', (event) => (
+    isMainWindowSender(event) ? readMarketConfig() : null
+  ))
+
+  ipcMain.handle('save-market-config', (event, input: unknown) => {
+    if (!isMainWindowSender(event)) return null
     const config = writeMarketConfig(input)
     marketBridge?.restartOwned()
     return config
   })
 
-  ipcMain.handle('test-market-connection', async () => {
+  ipcMain.handle('test-market-connection', async (event) => {
+    if (!isMainWindowSender(event)) {
+      return { ok: false, status: 'error', message: '无效的调用来源' }
+    }
     return marketBridge?.ensureStarted() ?? {
       ok: false,
       status: 'error',
@@ -694,54 +902,16 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle('set-auto-screenshot-interval', (_event, sec: number) => {
-    autoScreenshotInterval = sec
-    if (autoScreenshotTimer) setAutoScreenshot(true, sec)
-  })
-
-  ipcMain.handle('save-agent-result', async (_event, value: unknown) => {
-    if (!value || typeof value !== 'object') return false
-    const input = value as { title?: unknown; content?: unknown }
-    if (typeof input.content !== 'string' || !input.content || input.content.length > 2_000_000) return false
-    const title = typeof input.title === 'string' && input.title.trim()
-      ? input.title.trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)
-      : '麦麦任务结果'
-    const options = {
-      title: '保存 Agent 结果',
-      defaultPath: `${title}.md`,
-      filters: [{ name: 'Markdown', extensions: ['md'] }, { name: '文本', extensions: ['txt'] }],
-    }
-    const result = mainWindow
-      ? await dialog.showSaveDialog(mainWindow, options)
-      : await dialog.showSaveDialog(options)
-    if (result.canceled || !result.filePath) return false
-    await fs.promises.writeFile(result.filePath, `# ${title}\n\n${input.content}\n`, 'utf-8')
-    return true
-  })
-
-  ipcMain.handle('export-conversation', async (event, value: unknown) => {
-    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow || !value || typeof value !== 'object') return false
-    const input = value as { title?: unknown; content?: unknown }
-    if (typeof input.content !== 'string' || !input.content || input.content.length > 4_000_000) return false
-    const title = typeof input.title === 'string' && input.title.trim()
-      ? input.title.trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)
-      : '麦麦对话'
-    const options = {
-      title: '导出对话',
-      defaultPath: `${title}.md`,
-      filters: [{ name: 'Markdown', extensions: ['md'] }, { name: '文本', extensions: ['txt'] }],
-    }
-    const result = mainWindow
-      ? await dialog.showSaveDialog(mainWindow, options)
-      : await dialog.showSaveDialog(options)
-    if (result.canceled || !result.filePath) return false
-    await fs.promises.writeFile(result.filePath, `${input.content.trim()}\n`, 'utf-8')
-    return true
-  })
-
-  ipcMain.handle('close-window', () => {
+  ipcMain.handle('close-window', (event) => {
+    if (!isMainWindowSender(event)) return
     mainWindow?.close()
   })
+
+  createWindow()
+  createTray()
+  if (!process.env.DESKPET_E2E_OUTPUT) configureAutoUpdater(() => mainWindow)
+  registerGlobalShortcuts()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -752,11 +922,18 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  stopAutoUpdater()
+  doubaoIpc?.stop()
+  doubaoIpc = null
+  reminderManager?.stop()
+  reminderManager = null
+  nativeToolAudit = null
   backendManager?.stop()
   backendManager = null
   marketBridge?.stop()
   marketBridge = null
   stopGlobalCursorPolling()
+  frontmostAppMonitor.stop()
   globalShortcut.unregisterAll()
   if (tray) { tray.destroy(); tray = null }
 })

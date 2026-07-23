@@ -2,7 +2,7 @@ import { Application } from '@pixi/app'
 import { extensions } from '@pixi/extensions'
 import { Ticker, TickerPlugin } from '@pixi/ticker'
 import { Live2DModel, MotionPriority } from 'pixi-live2d-display/cubism4'
-import type { Cubism4ModelSettings } from 'pixi-live2d-display/cubism4'
+import type { DeskpetLive2DModel } from './types'
 
 Live2DModel.registerTicker(Ticker)
 extensions.add(TickerPlugin)
@@ -33,8 +33,11 @@ export async function createPixiApp(container: HTMLElement, width: number, heigh
   return app
 }
 
-export async function loadLive2DModel(modelPath: string, app: Application): Promise<Live2DModel<Cubism4ModelSettings>> {
-  const model = await Live2DModel.from(modelPath, { autoInteract: false, autoUpdate: true })
+export async function loadLive2DModel(modelPath: string, app: Application): Promise<DeskpetLive2DModel> {
+  const model = await Live2DModel.from(
+    modelPath,
+    { autoInteract: false, autoUpdate: true },
+  ) as DeskpetLive2DModel
   model.anchor.set(0.5, 0.5)
 
   const cw = app.view.width / RESOLUTION
@@ -50,7 +53,7 @@ export async function loadLive2DModel(modelPath: string, app: Application): Prom
   return model
 }
 
-export function playMotion(model: Live2DModel<Cubism4ModelSettings>, name: string, idx = 0) {
+export function playMotion(model: DeskpetLive2DModel, name: string, idx = 0) {
   try {
     model.motion(name, idx, MotionPriority.FORCE)
   } catch (err) {
@@ -58,7 +61,7 @@ export function playMotion(model: Live2DModel<Cubism4ModelSettings>, name: strin
   }
 }
 
-export function setExpression(model: Live2DModel<Cubism4ModelSettings>, id: string) {
+export function setExpression(model: DeskpetLive2DModel, id: string) {
   try {
     model.expression(id)
   } catch (err) {
@@ -67,10 +70,10 @@ export function setExpression(model: Live2DModel<Cubism4ModelSettings>, id: stri
 }
 
 export function applyParameters(
-  model: Live2DModel<Cubism4ModelSettings>,
+  model: DeskpetLive2DModel,
   parameters: Record<string, number>,
 ) {
-  const coreModel = (model as any).internalModel?.coreModel
+  const coreModel = model.internalModel?.coreModel
   if (!coreModel) return
 
   for (const [id, value] of Object.entries(parameters)) {
@@ -83,7 +86,7 @@ export function applyParameters(
 }
 
 export function resizeModel(
-  model: Live2DModel<Cubism4ModelSettings>,
+  model: DeskpetLive2DModel,
   cw: number, ch: number,
   zoom: number = 1.0,
   fx?: number, fy?: number,
@@ -106,7 +109,7 @@ export function resizeModel(
 }
 
 export function resizeModelFit(
-  model: Live2DModel<Cubism4ModelSettings>,
+  model: DeskpetLive2DModel,
   cw: number, ch: number,
   zoom: number = 1.0,
 ) {

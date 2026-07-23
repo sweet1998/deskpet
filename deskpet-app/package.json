@@ -5,41 +5,69 @@
   "author": "sweet1998 and contributors",
   "license": "GPL-3.0-only",
   "homepage": "https://github.com/sweet1998/deskpet",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "npm run native:build && electron-vite dev",
+    "build": "npm run native:build && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit",
+    "native:build": "bash scripts/build-native-tools.sh",
     "backend:build": "bash scripts/build-backend.sh",
     "release:assets": "node scripts/generate-mac-icon.mjs && node scripts/check-release-assets.mjs",
-    "dist:mac:unsigned": "npm run release:assets && npm run backend:build && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
-    "dist:mac": "node scripts/check-release-env.mjs && npm run release:assets && npm run backend:build && npm run build && electron-builder --mac dmg && npm run release:verify",
+    "dist:mac:unsigned": "npm run release:assets && npm run backend:build && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac && npm run release:verify:unsigned",
+    "dist:mac": "node scripts/check-release-env.mjs && node scripts/check-release-version.mjs && node scripts/check-release-git-state.mjs && npm run release:assets && npm run backend:build && npm run build && electron-builder --mac && npm run release:verify",
     "release:verify": "bash scripts/verify-mac-release.sh",
+    "release:verify:unsigned": "bash scripts/verify-unsigned-release.sh",
     "preview": "electron-vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:e2e": "node scripts/run-electron-smoke.mjs",
+    "test:watch": "vitest",
+    "audit:dependencies": "npm audit --registry=https://registry.npmjs.org",
+    "verify:lockfile": "node scripts/check-lockfile-registry.mjs"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
+    "exceljs": "^4.4.0",
+    "mammoth": "^1.12.0"
+  },
+  "devDependencies": {
     "@pixi/app": "^6.5.10",
     "@pixi/core": "^6.5.10",
     "@pixi/display": "^6.5.10",
     "@pixi/extensions": "^6.5.10",
     "@pixi/ticker": "^6.5.10",
+    "@electron/notarize": "^2.5.0",
+    "@vitejs/plugin-vue": "^6.0.8",
     "animejs": "^4.3.6",
+    "dompurify": "^3.4.12",
+    "electron": "41.7.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "^5.0.0",
+    "highlight.js": "^11.11.1",
+    "jsdom": "25.0.1",
+    "jszip": "^3.10.1",
     "lucide-vue-next": "^0.468.0",
+    "marked": "^15.0.12",
     "pinia": "^2.3.0",
     "pixi-live2d-display": "^0.4.0",
-    "vue": "^3.5.13"
-  },
-  "devDependencies": {
-    "@electron/notarize": "^2.5.0",
-    "@vitejs/plugin-vue": "^5.2.0",
-    "electron": "^34.5.8",
-    "electron-builder": "25.1.8",
-    "electron-vite": "^2.3.0",
-    "jsdom": "25.0.1",
     "typescript": "^5.7.0",
-    "vitest": "2.1.9",
+    "vite": "7.3.6",
+    "vitest": "3.2.6",
+    "vue": "^3.5.13",
     "vue-tsc": "^2.2.0"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    },
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.16"
+    },
+    "pixi-live2d-display": {
+      "gh-pages": "6.3.0"
+    }
   },
   "build": {
     "appId": "com.sweet1998.deskpet",
@@ -61,17 +89,47 @@
       {
         "from": "../LICENSE",
         "to": "LICENSE.txt"
+      },
+      {
+        "from": "../PRIVACY.md",
+        "to": "PRIVACY.md"
+      },
+      {
+        "from": "../TERMS.md",
+        "to": "TERMS.md"
+      },
+      {
+        "from": "build/native/deskpet-stt",
+        "to": "native/deskpet-stt"
+      },
+      {
+        "from": "build/native/deskpet-ocr",
+        "to": "native/deskpet-ocr"
       }
     ],
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "用于按住说话，将语音转换为文字后提交给麦麦。",
+        "NSSpeechRecognitionUsageDescription": "用于通过 macOS 系统语音识别将你的录音转换为文字。"
+      }
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sweet1998",
+        "repo": "deskpet"
+      }
+    ],
     "dmg": {
       "title": "麦麦 AI 桌宠 ${version}",
       "sign": true

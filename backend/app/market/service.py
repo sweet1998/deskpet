@@ -18,7 +18,8 @@ STOP_WORDS = (
     "请", "帮我", "分析一下", "分析", "看看", "研究", "怎么样", "如何", "走势", "股票", "A股",
     "最近", "近期", "当前", "现在", "今天", "行情", "趋势", "价格", "股价", "基本面", "财报", "估值",
     "风险", "原因", "为什么", "对比", "比较", "多少钱", "表现", "营收", "利润", "现金流", "负债",
-    "成长性", "市盈率", "市净率", "贵不贵", "便宜", "支撑", "压力", "展望", "的",
+    "成长性", "市盈率", "市净率", "贵不贵", "便宜", "支撑", "压力", "展望", "的", "好吗", "好不好",
+    "还好吗", "咋回事", "怎么了", "整体如何", "热不热", "弱不弱", "有啥变化", "什么情况",
 )
 KNOWN_SECTORS: Dict[str, List[Dict[str, str]]] = {
     "industry": [
@@ -151,11 +152,26 @@ class MarketService:
         cached = await self.cache.get(key)
         if isinstance(cached, dict) and "value" in cached and "source" in cached:
             return cached["value"], cached["source"], cached.get("warning")
-        value, source, warning = await loader()
+        try:
+            value, source, warning = await loader()
+        except Exception as error:
+            stale_max_age = min(max(ttl * 60, 60 * 60), 7 * 24 * 60 * 60)
+            stale = await self.cache.get_stale(key, stale_max_age)
+            if isinstance(stale, dict) and "value" in stale and "source" in stale:
+                cached_at = stale.get("cachedAt")
+                stale_warning = "实时数据源暂时不可用，已使用本机最近一次成功缓存；该数据不得视为实时行情"
+                if cached_at:
+                    stale_warning += f"（缓存时间 {cached_at}）"
+                previous = stale.get("warning")
+                return stale["value"], stale["source"], "；".join(
+                    item for item in (previous, stale_warning) if item
+                )
+            raise error
         await self.cache.set(key, {
             "value": value,
             "source": source,
             "warning": warning,
+            "cachedAt": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         }, ttl)
         return value, source, warning
 
@@ -317,7 +333,8 @@ class MarketService:
             "dataSources": data_sources,
             "warnings": warnings,
             "marketStatus": state,
-            "stale": self._is_stale(snapshot.get("dataTime", ""), now, state),
+            "stale": bool(snapshot_warning and "本机最近一次成功缓存" in snapshot_warning)
+            or self._is_stale(snapshot.get("dataTime", ""), now, state),
         })
         return SecurityContext.model_validate(snapshot)
 
@@ -677,6 +694,17 @@ class MarketService:
                     safe_window,
                     self._publish_sector_scan_progress,
                 )
+                if result.get("status") != "ok":
+                    stale = await self.cache.get_stale(cache_key, 24 * 60 * 60)
+                    if isinstance(stale, dict) and stale.get("status") == "ok":
+                        warnings = list(stale.get("warnings") or [])
+                        warnings.append("实时板块扫描失败，当前展示本机最近一次成功结果，不得视为实时排名")
+                        return {
+                            **stale,
+                            "stale": True,
+                            "warnings": list(dict.fromkeys(warnings)),
+                            "sectors": list(stale.get("sectors") or [])[:safe_limit],
+                        }
                 await self.cache.set(cache_key, result, 900)
                 return {**result, "sectors": list(result.get("sectors") or [])[:safe_limit]}
         finally:
@@ -835,6 +863,7 @@ class MarketService:
             "leaders": sorted_constituents[:5],
             "laggards": list(reversed(sorted_constituents[-5:])),
             "dataSources": data_sources,
+            "stale": any("本机最近一次成功缓存" in warning for warning in warnings),
             "warnings": warnings,
         }
 
@@ -884,6 +913,11 @@ class MarketService:
                 }.items()
                 if source
             },
+            "stale": any(
+                "本机最近一次成功缓存" in warning
+                for warning in (snapshot_warning, bars_warning)
+                if warning
+            ),
             "warnings": [warning for warning in (snapshot_warning, bars_warning) if warning],
         }
 
@@ -900,6 +934,7 @@ class MarketService:
                 "source": source,
                 "marketStatus": market_state(datetime.now(ZoneInfo("Asia/Shanghai"))),
                 **overview,
+                "stale": bool(warning and "本机最近一次成功缓存" in warning),
                 "warnings": [warning] if warning else [],
             }
         except Exception as error:

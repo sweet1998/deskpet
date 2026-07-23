@@ -3,18 +3,63 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 app_dir="$(cd "${script_dir}/.." && pwd)"
-app_path="$(find "${app_dir}/dist" -maxdepth 3 -type d -name '麦麦 AI 桌宠.app' -print -quit)"
-dmg_path="$(find "${app_dir}/dist" -maxdepth 1 -type f -name 'MaiMai-DeskPet-*.dmg' -print | sort | tail -n 1)"
+machine_arch="${DESKPET_RELEASE_ARCH:-$(uname -m)}"
+if [[ "${machine_arch}" == "x86_64" || "${machine_arch}" == "x64" ]]; then
+  artifact_arch="x64"
+  file_arch="x86_64"
+else
+  artifact_arch="arm64"
+  file_arch="arm64"
+fi
+find_app_for_arch() {
+  local candidate executable
+  while IFS= read -r candidate; do
+    executable="$(find "${candidate}/Contents/MacOS" -maxdepth 1 -type f -print -quit 2>/dev/null || true)"
+    if [[ -n "${executable}" ]] && file "${executable}" | grep -E "Mach-O 64-bit executable ${file_arch}" >/dev/null; then
+      echo "${candidate}"
+      return 0
+    fi
+  done < <(find "${app_dir}/dist" -maxdepth 3 -type d -name '麦麦 AI 桌宠.app' -print)
+  return 1
+}
+app_path="$(find_app_for_arch || true)"
+dmg_path="$(find "${app_dir}/dist" -maxdepth 1 -type f -name "MaiMai-DeskPet-*-${artifact_arch}.dmg" -print | sort | tail -n 1)"
+zip_path="$(find "${app_dir}/dist" -maxdepth 1 -type f -name "MaiMai-DeskPet-*-${artifact_arch}.zip" -print | sort | tail -n 1)"
+update_manifest="${app_dir}/dist/latest-mac.yml"
+stt_helper="${app_path}/Contents/Resources/native/deskpet-stt"
+ocr_helper="${app_path}/Contents/Resources/native/deskpet-ocr"
+backend="${app_path}/Contents/Resources/backend/deskpet-backend"
+asar="${app_path}/Contents/Resources/app.asar"
+privacy="${app_path}/Contents/Resources/PRIVACY.md"
+terms="${app_path}/Contents/Resources/TERMS.md"
 
-if [[ -z "${app_path}" || -z "${dmg_path}" ]]; then
-  echo "没有找到待验证的 .app 或 DMG。" >&2
+if [[ -z "${app_path}" || -z "${dmg_path}" || -z "${zip_path}" || ! -f "${update_manifest}" ]]; then
+  echo "没有找到待验证的 .app、DMG、ZIP 或 latest-mac.yml。" >&2
   exit 1
 fi
+
+require_executable() { [[ -x "$1" ]] || { echo "缺少可执行资源：$1" >&2; exit 1; }; }
+require_file() { [[ -f "$1" ]] || { echo "缺少打包资源：$1" >&2; exit 1; }; }
+require_executable "${stt_helper}"
+require_executable "${ocr_helper}"
+require_executable "${backend}"
+require_file "${asar}"
+require_file "${privacy}"
+require_file "${terms}"
+file "${backend}" | grep -E "Mach-O 64-bit executable ${file_arch}" >/dev/null
+file "${stt_helper}" | grep -E "Mach-O 64-bit executable ${file_arch}" >/dev/null
+file "${ocr_helper}" | grep -E "Mach-O 64-bit executable ${file_arch}" >/dev/null
+codesign --verify --strict --verbose=2 "${stt_helper}"
+codesign --verify --strict --verbose=2 "${ocr_helper}"
+"${app_dir}/node_modules/.bin/asar" list "${asar}" | grep -F '/node_modules/exceljs/package.json' >/dev/null
+"${app_dir}/node_modules/.bin/asar" list "${asar}" | grep -F '/node_modules/mammoth/package.json' >/dev/null
 
 codesign --verify --deep --strict --verbose=2 "${app_path}"
 spctl --assess --type execute --verbose=4 "${app_path}"
 xcrun stapler validate "${app_path}"
 hdiutil verify "${dmg_path}"
 spctl --assess --type open --context context:primary-signature --verbose=4 "${dmg_path}"
+grep -F "$(basename "${zip_path}")" "${update_manifest}" >/dev/null
+shasum -a 256 "${dmg_path}" "${zip_path}" "${update_manifest}"
 
-echo "签名、公证票据、Gatekeeper 和 DMG 完整性验证通过。"
+echo "签名、公证票据、Gatekeeper、安装包和自动更新元数据验证通过。"

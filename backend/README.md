@@ -6,7 +6,7 @@ FastAPI 单体服务，统一处理角色提示词、A 股行情、模型调用�
 
 ```bash
 cd backend
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env

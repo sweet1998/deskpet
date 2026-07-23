@@ -49,10 +49,36 @@ interface ElectronAPI {
   onSetHoverFade: (callback: (enabled: boolean) => void) => () => void
   onScreenshotCaptured: (callback: (base64: string) => void) => () => void
   setAutoScreenshotInterval: (sec: number) => void
-  sttTranscribe: (audio: ArrayBuffer, url?: string) => Promise<string | null>
+  captureScreen: () => Promise<string | null>
+  captureScreenRegion: () => Promise<string | null>
+  extractNativeFile: (input: import('../shared/native-tools').NativeFileExtractionInput) => Promise<import('../shared/native-tools').NativeFileExtractionResult>
+  listNativeReminders: () => Promise<import('../shared/native-tools').NativeReminder[]>
+  planNativeTools: (input: import('../shared/native-tools').NativeToolPlanningRequest) => Promise<import('../shared/native-tools').NativeToolPlanningResult>
+  createNativeReminder: (input: import('../shared/native-tools').NativeReminderInput) => Promise<import('../shared/native-tools').NativeReminder | { error: string } | null>
+  cancelNativeReminder: (id: string) => Promise<boolean>
+  clearNativeReminders: () => Promise<boolean>
+  appendNativeToolAudit: (input: import('../shared/native-tools').NativeToolAuditInput) => Promise<import('../shared/native-tools').NativeToolAuditEntry | null>
+  listNativeToolAudit: () => Promise<import('../shared/native-tools').NativeToolAuditEntry[]>
+  clearNativeToolAudit: () => Promise<boolean>
+  onNativeReminderTriggered: (callback: (reminder: import('../shared/native-tools').NativeReminder) => void) => () => void
+  writeNativeClipboard: (text: string) => Promise<boolean>
+  openNativeUrl: (url: string) => Promise<boolean>
+  revealNativePath: (targetPath: string) => Promise<boolean>
+  sttTranscribe: (audio: ArrayBuffer, url?: string) => Promise<import('../shared/voice').SttTranscriptionResult>
+  getVoicePermissionStatus: () => Promise<import('../shared/voice').VoicePermissionStatus | null>
   getDoubaoConfig: () => Promise<import('../shared/doubao').DoubaoConfigView>
   saveDoubaoConfig: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoConfigView>
+  clearDoubaoConfig: () => Promise<boolean>
+  readSecureUserData: (namespace: import('../shared/secure-user-data').SecureUserDataNamespace) => Promise<import('../shared/secure-user-data').SecureUserDataReadResult>
+  writeSecureUserData: (namespace: import('../shared/secure-user-data').SecureUserDataNamespace, value: unknown) => Promise<boolean>
+  clearSecureUserData: (namespace: import('../shared/secure-user-data').SecureUserDataNamespace) => Promise<boolean>
+  getAppVersion: () => Promise<string>
+  openProductDocument: (kind: 'privacy' | 'terms') => Promise<boolean>
+  getBackendAccess: () => Promise<import('../shared/backend').DesktopBackendAccess | null>
+  getSystemIdleTime: () => Promise<number>
+  checkForUpdates: () => Promise<boolean>
   testDoubaoConnection: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoResult>
+  detectDoubaoCapabilities: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoCapabilityReport>
   doubaoChat: (input: import('../shared/doubao').DoubaoChatRequest) => Promise<import('../shared/doubao').DoubaoResult>
   onDoubaoChatDelta: (callback: (event: import('../shared/doubao').DoubaoStreamDelta) => void) => () => void
   cancelDoubaoChat: (requestId: string) => Promise<boolean>
@@ -62,6 +88,7 @@ interface ElectronAPI {
   getMarketContext: (query: string) => Promise<import('../shared/market').MarketContextResult>
   saveAgentResult: (value: { title: string; content: string }) => Promise<boolean>
   exportConversation: (value: { title: string; content: string }) => Promise<boolean>
+  exportDiagnostics: () => Promise<boolean>
 }
 
 interface Window {

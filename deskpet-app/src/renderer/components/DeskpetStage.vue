@@ -20,11 +20,15 @@
       :pet-y="petModelY || lastH / 2"
       :pet-width="petViewportWidth"
       :pet-height="petViewportHeight"
+      :screenshot-preview="pendingScreenshot"
       @submit="submitUserMessage"
       @voice-start="startVoiceInput"
       @voice-stop="stopVoiceInput"
       @interrupt="interruptAgent"
       @retry="retryRequest"
+      @capture-screen="captureCurrentScreen"
+      @confirm-screenshot="confirmScreenshot"
+      @cancel-screenshot="pendingScreenshot = ''"
       @chat-after-leave="onChatAfterLeave"
     />
 
@@ -41,11 +45,13 @@
 
     <SettingsPanel
       :open="settingsPanelOpen"
+      :onboarding="onboardingOpen"
       :left="settingsPanelLeft"
       :top="settingsPanelTop"
       :width="settingsPanelWidth"
       :height="settingsPanelHeight"
-      @close="showSettings = false"
+      @close="closeSettings"
+      @configured="completeOnboarding"
     />
 
     <div v-if="modelError" class="model-error">
@@ -71,7 +77,7 @@ import AgentTaskPanel from './AgentTaskPanel.vue'
 import { useDeskpetStore } from '@/stores/deskpet'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore } from '@/stores/chat'
-import type { ChatAttachment, ChatReplyReference } from '@/stores/chat'
+import { useAiConfigStore } from '@/stores/ai-config'
 import { useChimeraTransport } from '@/services/transport/chimera'
 import { useLive2DAnimation } from '@/composables/useLive2DAnimation'
 import { useWindowDrag } from '@/composables/useWindowDrag'
@@ -80,8 +86,9 @@ import { useExpressionState } from '@/composables/useExpressionState'
 import { usePetActionState } from '@/composables/usePetActionState'
 import { useMotionPriority, MotionLayer } from '@/composables/useMotionPriority'
 import { useIdleScheduler } from '@/composables/useIdleScheduler'
-import { useLipSync } from '@/composables/useLipSync'
-import { useVoiceInput } from '@/composables/useVoiceInput'
+import { useAgentSpeech } from '@/composables/useAgentSpeech'
+import { useAgentRequestWorkflow } from '@/composables/useAgentRequestWorkflow'
+import { hasLegalConsent } from '../../shared/legal'
 import { useProactiveCompanion } from '@/composables/useProactiveCompanion'
 import { createPixiApp, loadLive2DModel, resizeModel, resizeModelFit } from '@/services/live2d/loader'
 import { discoverModel } from '@/services/live2d/model-discovery'
@@ -90,21 +97,21 @@ import { isClientPointInsideModel, modelBoundsToClientBounds } from '@/services/
 import { shouldPetWindowBeInteractive } from '@/services/interaction/pet-window-policy'
 import { isPointOverVisibleUi as isClientPointOverVisibleUi } from '@/services/interaction/ui-hit-test'
 import type { PetContextMenuCommand } from '../../shared/pet-context-menu'
+import type { NativeReminder } from '../../shared/native-tools'
 
 const store = useDeskpetStore()
 const MODEL_REFERENCE_WIDTH = 600
 const MODEL_REFERENCE_HEIGHT = 800
 const PET_WINDOW_PADDING = 8
-const SETTINGS_PANEL_WIDTH = 280
-const SETTINGS_PANEL_HEIGHT = 600
+const SETTINGS_PANEL_WIDTH = 320
+const SETTINGS_PANEL_HEIGHT = 640
 const AGENT_PANEL_WIDTH = 460
 const AGENT_PANEL_HEIGHT = 560
 const MAX_AGENT_FILE_BYTES = 12 * 1024 * 1024
-const TEXT_REQUEST_TIMEOUT_MS = 60_000
 const transport = useChimeraTransport()
 const agent = useAgentStore()
+const aiConfig = useAiConfigStore()
 const chat = useChatStore()
-const voiceInput = useVoiceInput()
 const proactiveCompanion = useProactiveCompanion(agent)
 const { start: startAnim, stop: stopAnim } = useLive2DAnimation()
 const { onWindowMouseDown, cleanup: cleanupWindowDrag } = useWindowDrag(
@@ -117,6 +124,7 @@ const stageRef = ref<HTMLDivElement>()
 const isHovered = ref(false)
 const showSettings = ref(false)
 const settingsPanelOpen = ref(false)
+const onboardingOpen = ref(false)
 const settingsPanelLeft = ref(0)
 const settingsPanelTop = ref(0)
 const settingsPanelWidth = ref(SETTINGS_PANEL_WIDTH)
@@ -124,7 +132,28 @@ const settingsPanelHeight = ref(SETTINGS_PANEL_HEIGHT)
 const modelError = ref('')
 const fileDragActive = ref(false)
 const chatLayoutOpen = ref(agent.chatOpen)
-const textRequestTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const speech = useAgentSpeech(agent, chat)
+const requestWorkflow = useAgentRequestWorkflow({
+  agent,
+  chat,
+  transport,
+  requireLegalConsent,
+  cancelSpeech: speech.cancel,
+  isSpeaking: speech.isSpeaking,
+})
+const {
+  pendingScreenshot,
+  submitUserMessage,
+  retryRequest,
+  startVoiceInput,
+  stopVoiceInput,
+  interruptAgent,
+  previewScreenshot,
+  confirmScreenshot,
+  captureCurrentScreen,
+  respondToConfirmation,
+  saveTaskResult,
+} = requestWorkflow
 const expandedUiOpen = computed(() => Boolean(
   showSettings.value || chatLayoutOpen.value || agent.workspaceOpen || chat.chatBubble.visible,
 ))
@@ -134,6 +163,7 @@ let unsubscribeGlobalCursor: (() => void) | null = null
 let unsubscribeResetModelView: (() => void) | null = null
 let unsubscribeSetHoverFade: (() => void) | null = null
 let unsubscribeScreenshot: (() => void) | null = null
+let unsubscribeNativeReminder: (() => void) | null = null
 let unsubscribePetContextCommand: (() => void) | null = null
 let unsubscribePetWindowLayout: (() => void) | null = null
 let lastPointerInteractive: boolean | null = null
@@ -149,6 +179,22 @@ let pointerDownScreenPosition: { x: number; y: number } | null = null
 let compactLayoutPending = false
 
 onMounted(async () => {
+  await Promise.all([
+    aiConfig.load(),
+    chat.hydrateSecureStorage(),
+    agent.hydrateSecureStorage(),
+  ])
+  if (
+    !aiConfig.ready
+    || !aiConfig.capabilitiesChecked
+    || !aiConfig.textSupported
+    || !aiConfig.streamingSupported
+    || !hasLegalConsent()
+  ) {
+    onboardingOpen.value = true
+    showSettings.value = true
+    settingsPanelOpen.value = true
+  }
   unsubscribePetContextCommand = window.electronAPI?.onPetContextMenuCommand(
     handlePetContextCommand,
   ) ?? null
@@ -159,6 +205,10 @@ onMounted(async () => {
     mouseX = position.x
     mouseY = position.y
     syncPointerInteractive(position.x, position.y)
+  }) ?? null
+  unsubscribeNativeReminder = window.electronAPI?.onNativeReminderTriggered?.((reminder: NativeReminder) => {
+    agent.proactiveMessage = `提醒：${reminder.body}`
+    store.currentEmotion = 'happy'
   }) ?? null
 
   const stage = deskpetStageRef.value
@@ -220,16 +270,7 @@ onMounted(async () => {
   unsubscribeSetHoverFade = window.electronAPI?.onSetHoverFade?.((enabled) => {
     store.hoverFadeEnabled = enabled
   }) ?? null
-  unsubscribeScreenshot = window.electronAPI?.onScreenshotCaptured?.((base64) => {
-    const requestId = createRequestId()
-    chat.bindRequest(requestId, agent.currentRole)
-    agent.beginRequest(requestId, '分析当前屏幕', '屏幕截图')
-    agent.taskPanelOpen = true
-    agent.applyState({ requestId, state: 'executing', progress: 25, step: '正在理解屏幕内容', interruptible: true })
-    if (!transport.sendScreenshot(base64, requestId)) {
-      agent.applyState({ requestId, state: 'error', error: '截图任务提交失败，请检查 MaiBot 连接' })
-    }
-  }) ?? null
+  unsubscribeScreenshot = window.electronAPI?.onScreenshotCaptured?.(previewScreenshot) ?? null
 
   startAnimationPoll()
 })
@@ -267,6 +308,15 @@ function onChatAfterLeave(): void {
   if (!agent.chatOpen) chatLayoutOpen.value = false
 }
 
+function closeSettings(): void {
+  showSettings.value = false
+}
+
+function completeOnboarding(): void {
+  onboardingOpen.value = false
+  showSettings.value = false
+}
+
 const { onWheel } = useModelZoom(
   store,
   () => ({ x: mouseX, y: mouseY }),
@@ -281,7 +331,6 @@ const { activateEmotionState, cleanup: cleanupExpression } = useExpressionState(
 const { playActionEffect, stopActionEffect, cleanup: cleanupActionEffects } = usePetActionState(store)
 const { playMotionWithPriority } = useMotionPriority(store)
 const idleScheduler = useIdleScheduler(playMotionWithPriority)
-const { getMouthOpen } = useLipSync()
 const stopPendingAnimationWatch = watch(
   [() => store.pendingAnimation, () => store.live2dModel],
   ([pending, model]) => {
@@ -291,9 +340,6 @@ const stopPendingAnimationWatch = watch(
 )
 
 watch(() => agent.state, (state) => {
-  if (['success', 'error', 'interrupted', 'idle'].includes(state)) {
-    clearTextRequestTimer(agent.activeRequestId)
-  }
   const stateBehavior: Partial<Record<typeof state, { emotion: string; action?: string; loop?: boolean }>> = {
     idle: { emotion: 'neutral' },
     listening: { emotion: 'curious' },
@@ -318,18 +364,15 @@ watch(() => agent.state, (state) => {
   }
 })
 
-watch(() => agent.activityVersion, () => {
-  if (agent.activeRequestId && agent.interruptible) {
-    startTextRequestTimer(agent.activeRequestId)
-  }
-})
-
 watch(() => agent.currentRole, (roleId, previousRole) => {
   if (roleId === previousRole) return
+  speech.cancel()
   const requestId = agent.activeRequestId
-  if (requestId && agent.interruptible) {
+  if (requestId && agent.confirmation) {
+    transport.sendConfirmation(requestId, false)
+  } else if (requestId && agent.interruptible) {
     transport.sendInterrupt(requestId)
-    clearTextRequestTimer(requestId)
+    requestWorkflow.clearRequestTimer(requestId)
   }
   chat.hideChatBubble()
   chat.setActiveRole(roleId)
@@ -482,177 +525,13 @@ function onPetMouseUp(event: MouseEvent): void {
   agent.chatOpen = true
 }
 
-function createRequestId(): string {
-  return typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `deskpet-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function clearTextRequestTimer(requestId: string): void {
-  const timer = textRequestTimers.get(requestId)
-  if (timer) clearTimeout(timer)
-  textRequestTimers.delete(requestId)
-}
-
-function startTextRequestTimer(requestId: string): void {
-  clearTextRequestTimer(requestId)
-  textRequestTimers.set(requestId, setTimeout(() => {
-    textRequestTimers.delete(requestId)
-    if (agent.activeRequestId !== requestId || !agent.interruptible) return
-    transport.sendInterrupt(requestId)
-    chat.finishThought(requestId)
-    chat.showStatusMessage(
-      requestId,
-      '响应超时。请检查网络或 AI 服务配置后重试。',
-      'timeout',
-    )
-    agent.applyState({
-      requestId,
-      state: 'error',
-      progress: 0,
-      step: '请求超时',
-      interruptible: false,
-      error: '响应超时，请稍后重试',
-    })
-  }, TEXT_REQUEST_TIMEOUT_MS))
-}
-
-function followUpPrompt(text: string, replyTo?: ChatReplyReference): string {
-  if (!replyTo) return text
-  return `请基于本会话中这段回答继续回应。回答摘录：“${replyTo.preview}”\n用户追问：${text}`
-}
-
-function submitUserText(text: string, replyTo?: ChatReplyReference): void {
-  const value = text.trim()
-  if (!value || agent.interruptible) return
-  const requestText = followUpPrompt(value, replyTo)
-  const requestId = createRequestId()
-  const memoryMatch = value.match(/^(?:请)?记住[：:\s]*(.+)$/)
-  if (memoryMatch?.[1]) agent.addMemory(memoryMatch[1])
-  chat.addUserMessage(value, requestId, agent.currentRole, [], replyTo)
-  agent.beginRequest(requestId, value)
-  agent.taskPanelOpen = false
-  agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
-  agent.chatOpen = true
-  startTextRequestTimer(requestId)
-  if (!transport.sendUserText(requestText, requestId)) {
-    clearTextRequestTimer(requestId)
-    chat.finishThought(requestId)
-    chat.showStatusMessage(requestId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
-    agent.applyState({ requestId, state: 'error', error: '尚未连接到 MaiBot' })
-  }
-}
-
-function attachmentMetadata(file: File): ChatAttachment {
-  return {
-    id: `${file.name}-${file.size}-${file.lastModified}`,
-    name: file.name,
-    mimeType: file.type || 'application/octet-stream',
-    size: file.size,
-  }
-}
-
-function submitUserMessage(payload: { text: string; attachments: File[]; replyTo?: ChatReplyReference }): void {
-  if (!payload.attachments.length) {
-    submitUserText(payload.text, payload.replyTo)
-    return
-  }
-  void submitUserFiles(payload.text, payload.attachments, payload.replyTo)
-}
-
-async function submitUserFiles(
-  text: string,
-  files: File[],
-  replyTo?: ChatReplyReference,
-): Promise<void> {
-  if (agent.interruptible || !files.length) return
-  const displayText = text.trim() || '请总结附件，提取关键结论和可执行事项。'
-  const prompt = followUpPrompt(displayText, replyTo)
-  const firstRequestId = createRequestId()
-  chat.addUserMessage(
-    text.trim() || `请处理附件：${files.map((file) => file.name).join('、')}`,
-    firstRequestId,
-    agent.currentRole,
-    files.map(attachmentMetadata),
-    replyTo,
-  )
-  agent.chatOpen = true
-
-  for (const [index, file] of files.entries()) {
-    const requestId = index === 0 ? firstRequestId : createRequestId()
-    if (index > 0) chat.bindRequest(requestId, agent.currentRole)
-    agent.beginRequest(requestId, prompt, file.name)
-    agent.taskPanelOpen = true
-    agent.applyState({
-      requestId,
-      state: 'planning',
-      progress: 15,
-      step: files.length > 1 ? `正在提交附件 ${index + 1}/${files.length}` : '正在制定处理计划',
-      interruptible: true,
-    })
-    try {
-      const base64 = await readFileAsBase64(file)
-      const sent = transport.sendFile({
-        requestId,
-        name: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        size: file.size,
-        base64,
-        prompt,
-      })
-      if (!sent) throw new Error('not connected')
-    } catch {
-      chat.showStatusMessage(requestId, `附件“${file.name}”提交失败，请检查 AI 接入设置。`, 'network')
-      agent.applyState({ requestId, state: 'error', error: '附件提交失败，请检查 AI 接入设置' })
-      break
-    }
-  }
-}
-
-function retryRequest(requestId: string): void {
-  if (agent.interruptible) return
-  const text = chat.getRequestText(requestId)
-  if (text) submitUserText(text, chat.getRequestReplyTo(requestId))
-}
-
-async function startVoiceInput(): Promise<void> {
-  if (agent.recording) return
-  const requestId = createRequestId()
-  agent.beginRequest(requestId, '语音对话')
-  agent.recording = true
-  agent.applyState({ requestId, state: 'listening', step: '正在聆听', interruptible: true })
-  try {
-    await voiceInput.start()
-  } catch {
-    agent.recording = false
-    agent.applyState({ requestId, state: 'error', error: '无法使用麦克风，请检查系统权限' })
-  }
-}
-
-async function stopVoiceInput(): Promise<void> {
-  if (!agent.recording) return
-  agent.recording = false
-  const text = await voiceInput.stop()
-  if (text) submitUserText(text)
-  else agent.applyState({ requestId: agent.activeRequestId, state: 'idle', progress: 0, step: '' })
-}
-
-function interruptAgent(): void {
-  if (agent.recording) {
-    agent.recording = false
-    void voiceInput.stop()
-  }
-  const requestId = agent.activeRequestId
-  transport.sendInterrupt(requestId)
-  clearTextRequestTimer(requestId)
-  chat.finishThought(requestId)
-  agent.applyState({
-    requestId: agent.activeRequestId,
-    state: 'interrupted',
-    progress: 0,
-    step: '已停止',
-    interruptible: false,
-  })
+function requireLegalConsent(): boolean {
+  if (hasLegalConsent()) return true
+  onboardingOpen.value = true
+  showSettings.value = true
+  settingsPanelOpen.value = true
+  agent.chatOpen = false
+  return false
 }
 
 function onFileDragEnter(event: DragEvent): void {
@@ -664,24 +543,15 @@ function onFileDragLeave(event: DragEvent): void {
   fileDragActive.value = false
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(reader.error)
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
-    reader.readAsDataURL(file)
-  })
-}
-
 async function onFileDrop(event: DragEvent): Promise<void> {
   fileDragActive.value = false
   if (!isPointOverModel(event.clientX, event.clientY)) return
   const file = event.dataTransfer?.files?.[0]
   if (!file) return
   const extension = file.name.split('.').pop()?.toLowerCase()
-  if (!extension || !['pdf', 'txt', 'md', 'markdown'].includes(extension)) {
+  if (!extension || !['pdf', 'docx', 'xlsx', 'png', 'jpg', 'jpeg', 'heic', 'webp', 'tif', 'tiff', 'txt', 'md', 'markdown', 'json', 'csv', 'log'].includes(extension)) {
     agent.chatOpen = true
-    agent.applyState({ requestId: '', state: 'error', error: '目前支持 PDF、TXT 和 Markdown 文件' })
+    agent.applyState({ requestId: '', state: 'error', error: '目前支持 PDF、DOCX、XLSX、图片、TXT、Markdown、JSON 和 CSV 文件' })
     return
   }
   if (file.size > MAX_AGENT_FILE_BYTES) {
@@ -690,49 +560,10 @@ async function onFileDrop(event: DragEvent): Promise<void> {
     return
   }
 
-  const requestId = createRequestId()
-  chat.bindRequest(requestId, agent.currentRole)
-  agent.beginRequest(requestId, '总结文件并生成待办', file.name)
-  agent.taskPanelOpen = true
-  agent.applyState({ requestId, state: 'planning', progress: 15, step: '正在制定处理计划', interruptible: true })
-  try {
-    const base64 = await readFileAsBase64(file)
-    const sent = transport.sendFile({
-      requestId,
-      name: file.name,
-      mimeType: file.type || 'application/octet-stream',
-      size: file.size,
-      base64,
-      prompt: '请总结这份文件，提取关键结论，并生成清晰可执行的待办事项。',
-    })
-    if (!sent) throw new Error('not connected')
-  } catch {
-    agent.applyState({ requestId, state: 'error', error: '文件任务提交失败，请检查 MaiBot 连接' })
-  }
-}
-
-function respondToConfirmation(allowed: boolean): void {
-  const requestId = agent.confirmation?.requestId
-  if (!requestId) return
-  transport.sendConfirmation(requestId, allowed)
-  agent.setConfirmation(null)
-  agent.applyState({
-    requestId,
-    state: allowed ? 'executing' : 'interrupted',
-    progress: agent.progress,
-    step: allowed ? '已允许，继续执行' : '已取消操作',
-    interruptible: allowed,
-  })
-}
-
-async function saveTaskResult(): Promise<void> {
-  const result = agent.taskResult
-  if (!result) return
-  const saved = await window.electronAPI?.saveAgentResult({
-    title: result.title,
-    content: result.content,
-  })
-  if (saved) agent.currentStep = '结果已保存'
+  await requestWorkflow.submitFiles(
+    '请总结这份文件，提取关键结论，并生成清晰可执行的待办事项。',
+    [file],
+  )
 }
 
 function onPetContextMenu(event: MouseEvent): void {
@@ -746,6 +577,7 @@ function onPetContextMenu(event: MouseEvent): void {
   void window.electronAPI?.showPetContextMenu({
     emotions: Object.keys(adapter?.emotions ?? {}),
     actions: Object.keys(adapter?.animations ?? {}),
+    currentRole: agent.currentRole,
   })
 }
 
@@ -753,6 +585,10 @@ function handlePetContextCommand(command: PetContextMenuCommand): void {
   if (command.type === 'settings') {
     showSettings.value = true
     settingsPanelOpen.value = true
+    return
+  }
+  if (command.type === 'role') {
+    agent.currentRole = command.id
     return
   }
   if (command.type === 'emotion') {
@@ -820,7 +656,7 @@ function startAnimationPoll() {
       }
       try { store.live2dModel.focus(mouseX, mouseY) } catch { /* focus not supported */ }
       try {
-        (store.live2dModel as any).internalModel.coreModel.setParameterValueById('ParamMouthOpenY', getMouthOpen())
+        (store.live2dModel as any).internalModel.coreModel.setParameterValueById('ParamMouthOpenY', speech.getMouthOpen())
       } catch { /* lip sync param not available */ }
     }
     animFrameId = requestAnimationFrame(tick)
@@ -842,8 +678,6 @@ function onWindowResize() {
 window.addEventListener('mousemove', onMouseMove)
 window.addEventListener('resize', onWindowResize)
 onUnmounted(() => {
-  for (const timer of textRequestTimers.values()) clearTimeout(timer)
-  textRequestTimers.clear()
   stopAnim()
   if (animFrameId) cancelAnimationFrame(animFrameId)
   cleanupWindowDrag()
@@ -863,9 +697,12 @@ onUnmounted(() => {
   unsubscribeSetHoverFade = null
   unsubscribeScreenshot?.()
   unsubscribeScreenshot = null
+  unsubscribeNativeReminder?.()
+  unsubscribeNativeReminder = null
   cleanupExpression()
   cleanupActionEffects()
   proactiveCompanion.stop()
+  speech.cleanup()
   stopPendingAnimationWatch()
   idleScheduler.stop()
   window.removeEventListener('mousemove', onMouseMove)

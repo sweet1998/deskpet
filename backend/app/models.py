@@ -1,3 +1,5 @@
+import base64
+import binascii
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -155,6 +157,22 @@ class ResearchPrepareResponse(BaseModel):
     reply: Optional[str] = None
 
 
+class AgentImageInput(BaseModel):
+    mimeType: Literal["image/png", "image/jpeg", "image/webp"] = "image/png"
+    base64: str = Field(min_length=1, max_length=16_777_216)
+
+    @field_validator("base64")
+    @classmethod
+    def validate_image(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("图片不是有效的 Base64 数据") from error
+        if len(decoded) > 12 * 1024 * 1024:
+            raise ValueError("图片不能超过 12MB")
+        return value
+
+
 class AgentChatRequest(BaseModel):
     requestId: str = Field(min_length=1, max_length=100)
     roleId: RoleId = "default"
@@ -164,6 +182,7 @@ class AgentChatRequest(BaseModel):
     userName: Optional[str] = Field(default=None, max_length=80)
     memories: List[str] = Field(default_factory=list, max_length=30)
     history: List[ChatMessage] = Field(default_factory=list, max_length=20)
+    image: Optional[AgentImageInput] = None
 
     @field_validator("memories")
     @classmethod

@@ -6,10 +6,12 @@ const MENU_ID = /^[A-Za-z0-9:_-]{1,64}$/
 export interface PetContextMenuRequest {
   emotions: string[]
   actions: string[]
+  currentRole: 'default' | 'stock_expert'
 }
 
 export type PetContextMenuCommand =
   | { type: 'settings' }
+  | { type: 'role'; id: 'default' | 'stock_expert' }
   | { type: 'emotion'; id: string }
   | { type: 'action'; id: string }
 
@@ -68,6 +70,7 @@ export function normalizePetContextMenuRequest(value: unknown): PetContextMenuRe
   return {
     emotions: normalizeIds(Object.hasOwn(input, 'emotions') ? input.emotions : undefined),
     actions: normalizeIds(Object.hasOwn(input, 'actions') ? input.actions : undefined),
+    currentRole: input.currentRole === 'stock_expert' ? 'stock_expert' : 'default',
   }
 }
 
@@ -77,6 +80,9 @@ export function isPetContextMenuCommand(value: unknown): value is PetContextMenu
   const command = value as Record<string, unknown>
   if (!Object.hasOwn(command, 'type')) return false
   if (command.type === 'settings') return true
+  if (command.type === 'role') {
+    return Object.hasOwn(command, 'id') && (command.id === 'default' || command.id === 'stock_expert')
+  }
   if (command.type !== 'emotion' && command.type !== 'action') return false
 
   return (

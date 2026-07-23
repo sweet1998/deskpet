@@ -1,12 +1,12 @@
 import type { RoleId } from '../../shared/roles'
 import type { MarketContextResult } from '../../shared/market'
 import type { ResearchPrepareInput, ResearchPrepareResult } from '../../shared/research'
+import { DESKTOP_BACKEND_URL, type DesktopBackendAccess, type MarketHealth } from '../../shared/backend'
 
 const BACKEND_URL_KEY = 'deskpet/backend-url'
 const BACKEND_TOKEN_KEY = 'deskpet/backend-token'
 const DEVICE_ID_KEY = 'deskpet/device-id'
 const MARKET_SOURCE_KEY = 'deskpet/market-source'
-const DESKTOP_BACKEND_URL = 'http://127.0.0.1:18540'
 
 export type MarketSource = 'backend' | 'opend'
 
@@ -18,6 +18,10 @@ export interface BackendChatInput {
   userName: string
   memories: string[]
   history: Array<{ role: 'user' | 'assistant'; content: string }>
+  image?: {
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+    base64: string
+  }
 }
 
 export interface BackendEvent {
@@ -66,20 +70,26 @@ export function setMarketSource(_value: MarketSource): void {
   localStorage.setItem(MARKET_SOURCE_KEY, 'backend')
 }
 
-function backendHeaders(): Record<string, string> {
-  const token = getBackendToken()
+async function backendAccess(): Promise<DesktopBackendAccess> {
+  const access = await window.electronAPI?.getBackendAccess()
+  if (access?.url === DESKTOP_BACKEND_URL && access.token) return access
+  return { url: DESKTOP_BACKEND_URL, token: '' }
+}
+
+function backendHeaders(access: DesktopBackendAccess): Record<string, string> {
   return {
     'Content-Type': 'application/json',
     'X-Device-Id': getDeviceId(),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(access.token ? { Authorization: `Bearer ${access.token}` } : {}),
   }
 }
 
 export async function getBackendMarketContext(query: string): Promise<MarketContextResult> {
   try {
-    const response = await fetch(`${getBackendUrl()}/v1/market/context`, {
+    const access = await backendAccess()
+    const response = await fetch(`${access.url}/v1/market/context`, {
       method: 'POST',
-      headers: backendHeaders(),
+      headers: backendHeaders(access),
       body: JSON.stringify({ query, dailyCount: 120 }),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -94,9 +104,10 @@ export async function getBackendMarketContext(query: string): Promise<MarketCont
 }
 
 export async function prepareResearch(input: ResearchPrepareInput): Promise<ResearchPrepareResult> {
-  const response = await fetch(`${getBackendUrl()}/v1/research/prepare`, {
+  const access = await backendAccess()
+  const response = await fetch(`${access.url}/v1/research/prepare`, {
     method: 'POST',
-    headers: backendHeaders(),
+    headers: backendHeaders(access),
     body: JSON.stringify(input),
   })
   if (!response.ok) throw new Error(`研究准备失败（HTTP ${response.status}）`)
@@ -108,9 +119,10 @@ export async function streamResearchPreparation(
   onReasoning: (text: string) => void | Promise<void>,
   signal?: AbortSignal,
 ): Promise<ResearchPrepareResult> {
-  const response = await fetch(`${getBackendUrl()}/v1/research/prepare/stream`, {
+  const access = await backendAccess()
+  const response = await fetch(`${access.url}/v1/research/prepare/stream`, {
     method: 'POST',
-    headers: backendHeaders(),
+    headers: backendHeaders(access),
     body: JSON.stringify(input),
     signal,
   })
@@ -177,9 +189,10 @@ export async function streamBackendChat(
   onEvent: (event: BackendEvent) => void | Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${getBackendUrl()}/v1/agent/chat`, {
+  const access = await backendAccess()
+  const response = await fetch(`${access.url}/v1/agent/chat`, {
     method: 'POST',
-    headers: backendHeaders(),
+    headers: backendHeaders(access),
     body: JSON.stringify(input),
     signal,
   })
@@ -191,12 +204,29 @@ export async function streamBackendChat(
 
 export async function testBackendConnection(): Promise<{ ok: boolean; message: string }> {
   try {
-    const response = await fetch(`${getBackendUrl()}/health`)
+    const access = await backendAccess()
+    const response = await fetch(`${access.url}/health`)
     const data = await response.json() as { ok?: boolean }
     if (!response.ok || !data.ok) throw new Error(`HTTP ${response.status}`)
+    const marketResponse = await fetch(`${access.url}/v1/market/health`, {
+      headers: backendHeaders(access),
+    })
+    const market = await marketResponse.json() as MarketHealth
+    if (!marketResponse.ok || !market.ok) {
+      return {
+        ok: false,
+        message: `本地研究服务已启动，但行情源不可用${market.error ? `：${market.error}` : ''}`,
+      }
+    }
+    if (market.status === 'degraded') {
+      return {
+        ok: true,
+        message: `本地研究服务可用；行情当前为降级数据${market.source ? `（${market.source}）` : ''}`,
+      }
+    }
     return {
       ok: true,
-      message: '本地研究服务可用',
+      message: `本地研究服务和行情源均可用${market.source ? `（${market.source}）` : ''}`,
     }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : '后端连接失败' }

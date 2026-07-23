@@ -250,6 +250,16 @@ async def test_today_sector_and_market_queries_use_simple_snapshots():
     "今天盘面如何",
     "A股今天表现怎么样",
     "今天股市涨跌情况",
+    "今天行情怎样",
+    "今天市场什么情况",
+    "大A今天咋样",
+    "两市今天红还是绿",
+    "今天盘面强不强",
+    "今天行情好吗",
+    "A股今天还好吗",
+    "大盘今天咋回事",
+    "两市今天有啥变化",
+    "今天赚钱效应好不好",
 ])
 async def test_colloquial_market_snapshot_queries_default_to_a_share(query):
     result, _ = await prepare(query)
@@ -257,6 +267,27 @@ async def test_colloquial_market_snapshot_queries_default_to_a_share(query):
     assert result.intent == "market_snapshot"
     assert result.targetKind == "market"
     assert result.requiresResearch is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "什么是 PEG",
+    "MACD 怎么理解",
+    "解释一下集合竞价",
+    "PE 和 PB 有什么区别",
+    "融资融券是什么意思",
+    "市盈率高代表什么",
+    "为什么会涨停",
+    "怎么理解 T+1",
+    "新手怎么选股",
+])
+async def test_colloquial_education_queries_do_not_fetch_market_data(query):
+    result, market = await prepare(query)
+
+    assert result.scope == "in_scope"
+    assert result.intent == "education"
+    assert result.requiresResearch is False
+    assert market.calls == []
 
 
 @pytest.mark.asyncio
@@ -317,6 +348,23 @@ async def test_technology_theme_aggregates_standard_sectors_without_clarificatio
     assert any("正在把科技主题拆分" in item for item in progress)
     assert any("半导体板块" in item for item in progress)
     assert result.reply is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "人工智能板块最近怎么样",
+    "AI 方向后市怎么看",
+    "新能源最近还好吗",
+    "医药板块接下来怎么看",
+    "金融板块最近走势",
+])
+async def test_common_sector_themes_route_to_group_research(query):
+    result, _ = await prepare(query)
+
+    assert result.scope == "in_scope"
+    assert result.intent == "sector"
+    assert result.targetKind == "sector"
+    assert result.requiresResearch is True
 
 
 @pytest.mark.asyncio
@@ -396,3 +444,46 @@ async def test_follow_up_inherits_previous_security_target():
     assert result.intent == "security_trend"
     assert result.targets[0].code == "SH.600519"
     assert any("600519" in query for kind, query in market.calls if kind == "security")
+
+
+@pytest.mark.asyncio
+async def test_follow_up_uses_the_most_recent_explicit_target_only():
+    result, market = await prepare("那它的风险呢", [
+        ChatMessage(role="user", content="先看 600519"),
+        ChatMessage(role="assistant", content="贵州茅台近期偏震荡。"),
+        ChatMessage(role="user", content="再看 000858"),
+        ChatMessage(role="assistant", content="五粮液近期波动较大。"),
+    ])
+
+    assert result.intent == "security_trend"
+    assert result.targets[0].code == "SZ.000858"
+    assert all("600519" not in query for kind, query in market.calls if kind == "security")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query, expected_name", [
+    ("沪指今天怎么样", "上证指数"),
+    ("上证最近为什么走弱", "上证指数"),
+    ("深成指当前点位", "深证成指"),
+    ("创业板指数最近走势", "创业板指"),
+])
+async def test_common_index_aliases(query, expected_name):
+    result, _ = await prepare(query)
+
+    assert result.intent == "index"
+    assert result.targets[0].name == expected_name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "市盈率怎么算",
+    "ROE 有什么用",
+    "量价关系是什么意思",
+    "PE 高好还是低好",
+])
+async def test_more_stock_education_phrasings_skip_market(query):
+    result, market = await prepare(query)
+
+    assert result.intent == "education"
+    assert result.requiresResearch is False
+    assert market.calls == []

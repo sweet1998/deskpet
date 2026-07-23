@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAgentStore } from './agent'
 
 describe('agent store', () => {
   beforeEach(() => {
     localStorage.clear()
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: undefined })
     setActivePinia(createPinia())
   })
 
@@ -67,6 +68,17 @@ describe('agent store', () => {
     expect(store.memories).toEqual([])
   })
 
+  it('clears the user name and long-term memories', () => {
+    const store = useAgentStore()
+    store.userName = '小林'
+    store.addMemory('周五交周报')
+
+    store.clearPersonalData()
+
+    expect(store.userName).toBe('')
+    expect(store.memories).toEqual([])
+  })
+
   it('persists the selected role and rejects an invalid persisted role', async () => {
     const store = useAgentStore()
     store.currentRole = 'stock_expert'
@@ -76,5 +88,38 @@ describe('agent store', () => {
     localStorage.setItem('deskpet/agent-preferences', JSON.stringify({ currentRole: 'admin' }))
     setActivePinia(createPinia())
     expect(useAgentStore().currentRole).toBe('default')
+  })
+
+  it('persists the automatic voice reply preference', async () => {
+    const store = useAgentStore()
+    expect(store.voiceReplyEnabled).toBe(false)
+    store.voiceReplyEnabled = true
+    await Promise.resolve()
+    expect(JSON.parse(localStorage.getItem('deskpet/agent-preferences') || '{}').voiceReplyEnabled).toBe(true)
+  })
+
+  it('migrates preferences and memories to encrypted storage', async () => {
+    localStorage.setItem('deskpet/agent-preferences', JSON.stringify({ userName: '小林' }))
+    localStorage.setItem('deskpet/agent-memories', JSON.stringify(['周五交周报']))
+    const writeSecureUserData = vi.fn().mockResolvedValue(true)
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        readSecureUserData: vi.fn().mockResolvedValue({ available: true, exists: false }),
+        writeSecureUserData,
+      },
+    })
+    setActivePinia(createPinia())
+    const store = useAgentStore()
+
+    await expect(store.hydrateSecureStorage()).resolves.toBe(true)
+
+    expect(store.storageProtected).toBe(true)
+    expect(localStorage.getItem('deskpet/agent-preferences')).toBeNull()
+    expect(localStorage.getItem('deskpet/agent-memories')).toBeNull()
+    expect(writeSecureUserData).toHaveBeenCalledWith('agent', expect.objectContaining({
+      preferences: expect.objectContaining({ userName: '小林' }),
+      memories: ['周五交周报'],
+    }))
   })
 })

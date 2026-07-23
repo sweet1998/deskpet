@@ -10,6 +10,8 @@ const requiredFiles = [
   path.join(appDirectory, 'src/renderer/public/models/hiyori_pro_zh/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json'),
   path.join(appDirectory, 'src/shared/role-profiles.json'),
   path.join(repositoryDirectory, 'LICENSE'),
+  path.join(repositoryDirectory, 'PRIVACY.md'),
+  path.join(repositoryDirectory, 'TERMS.md'),
 ]
 
 const missing = requiredFiles.filter((filename) => !fs.existsSync(filename))

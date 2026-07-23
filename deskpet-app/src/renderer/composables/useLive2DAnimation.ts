@@ -1,6 +1,5 @@
 import { ref, onUnmounted } from 'vue'
-import type { Live2DModel } from 'pixi-live2d-display/cubism4'
-import type { Cubism4ModelSettings } from 'pixi-live2d-display/cubism4'
+import type { DeskpetLive2DModel } from '@/services/live2d/types'
 
 interface AnimationState {
   blinkTimer: ReturnType<typeof setTimeout> | null
@@ -30,7 +29,7 @@ export function useLive2DAnimation() {
     animFrameId: 0
   }
 
-  function start(model: Live2DModel<Cubism4ModelSettings>) {
+  function start(model: DeskpetLive2DModel) {
     scheduleBlink(model)
     startBreath(model)
   }
@@ -46,7 +45,7 @@ export function useLive2DAnimation() {
     }
   }
 
-  function scheduleBlink(model: Live2DModel<Cubism4ModelSettings>) {
+  function scheduleBlink(model: DeskpetLive2DModel) {
     if (!animationEnabled.value) return
 
     const interval = 2000 + Math.random() * 5000
@@ -57,7 +56,7 @@ export function useLive2DAnimation() {
     }, interval)
   }
 
-  function executeBlink(model: Live2DModel<Cubism4ModelSettings>) {
+  function executeBlink(model: DeskpetLive2DModel) {
     const internalModel = model.internalModel
     const coreModel = internalModel.coreModel
 
@@ -80,10 +79,10 @@ export function useLive2DAnimation() {
     blinkClose()
   }
 
-  function startBreath(model: Live2DModel<Cubism4ModelSettings>) {
+  function startBreath(model: DeskpetLive2DModel) {
     const internalModel = model.internalModel
     const coreModel = internalModel.coreModel
-    let startTime = performance.now()
+    const startTime = performance.now()
 
     const tick = () => {
       if (!animationEnabled.value) {

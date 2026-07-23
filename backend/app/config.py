@@ -16,6 +16,7 @@ class Settings:
     market_fallback_provider: Optional[str]
     market_request_timeout: float
     redis_url: Optional[str]
+    market_cache_path: Optional[str]
     database_url: Optional[str]
     model_base_url: str
     model_api_key: str
@@ -36,6 +37,7 @@ class Settings:
             market_fallback_provider=os.getenv("MARKET_FALLBACK_PROVIDER", "tencent") or None,
             market_request_timeout=float(os.getenv("MARKET_REQUEST_TIMEOUT", "8")),
             redis_url=os.getenv("REDIS_URL") or None,
+            market_cache_path=os.getenv("MARKET_CACHE_PATH") or None,
             database_url=os.getenv("DATABASE_URL") or None,
             model_base_url=os.getenv(
                 "MODEL_BASE_URL",

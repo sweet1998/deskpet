@@ -11,11 +11,25 @@ export interface DoubaoConfigView {
   baseUrl: string
   model: string
   hasApiKey: boolean
+  capabilities?: DoubaoCapabilityReport
 }
+
+export interface DoubaoCapabilityReport {
+  model: string
+  checkedAt: number
+  text: boolean
+  streaming: boolean
+  vision: boolean
+  errors: Partial<Record<'text' | 'streaming' | 'vision', string>>
+}
+
+export type DoubaoContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
 
 export interface DoubaoMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: string | DoubaoContentPart[]
 }
 
 export interface DoubaoChatRequest {

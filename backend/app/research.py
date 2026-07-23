@@ -23,13 +23,23 @@ OUT_OF_SCOPE_KEYWORDS = (
 EDUCATION_KEYWORDS = (
     "市盈率", "市净率", "roe", "k线", "复权", "分红", "财报", "换手率", "量比", "基本面",
     "技术面", "仓位", "止损", "估值", "涨停", "跌停", "打新", "牛市", "熊市", "成交量",
+    "pe", "pb", "peg", "ps", "macd", "rsi", "均线", "股息率", "除权", "除息", "集合竞价", "龙虎榜",
+    "融资融券", "每股收益", "净资产收益率", "自由现金流", "量价关系", "市销率", "市值", "股本",
+    "停牌", "退市", "分时图", "盘口", "北向资金", "选股", "打板", "做t", "t+1",
 )
-EDUCATION_QUESTION_WORDS = ("什么是", "是什么意思", "怎么理解", "如何理解", "含义", "区别", "解释一下")
-MARKET_KEYWORDS = ("大盘", "a股市场", "全市场", "涨跌家数", "市场情绪", "市场宽度", "两市成交")
+EDUCATION_QUESTION_WORDS = (
+    "什么是", "什么意思", "是什么意思", "怎么理解", "如何理解", "含义", "区别", "解释一下",
+    "怎么算", "怎么计算", "计算方法", "有什么用", "高好还是低好", "越高越好吗", "为什么会",
+    "代表什么", "怎么看", "怎么选", "怎么做",
+)
+MARKET_KEYWORDS = (
+    "大盘", "a股市场", "全市场", "涨跌家数", "市场情绪", "市场宽度", "两市成交", "赚钱效应",
+    "市场风格", "成交额", "北向资金",
+)
 GENERIC_MARKET_KEYWORDS = (
-    "行情", "盘面", "股市", "市场表现", "市场涨跌", "市场怎么样", "a股", "两市",
+    "行情", "盘面", "股市", "市场", "市场表现", "市场涨跌", "市场怎么样", "a股", "大a", "两市",
 )
-GENERIC_MARKET_TARGETS = ("行情", "盘面", "股市", "市场", "大盘", "a股", "两市")
+GENERIC_MARKET_TARGETS = ("行情", "盘面", "股市", "市场", "大盘", "a股", "大a", "两市")
 SECTOR_SCAN_KEYWORDS = (
     "哪些板块", "什么板块", "哪个板块", "板块排名", "板块排行", "板块筛选", "领涨板块", "走强板块",
     "哪些行业", "什么行业", "哪个行业", "行业排名", "行业排行", "行业筛选", "领涨行业", "走强行业",
@@ -41,17 +51,20 @@ FUNDAMENTAL_KEYWORDS = ("基本面", "财报", "营收", "利润", "现金流", 
 VALUATION_KEYWORDS = ("估值", "市盈率", "市净率", "pe", "pb", "贵不贵", "便宜")
 TREND_KEYWORDS = (
     "趋势", "走势", "近期", "最近", "分析", "为什么", "原因", "风险", "展望", "技术面", "支撑", "压力",
+    "后市", "接下来", "前景", "回撤", "持续性",
 )
 RESEARCH_DEPTH_KEYWORDS = TREND_KEYWORDS + (
     "持续", "后续", "未来", "逻辑", "驱动", "影响", "怎么看", "值得关注", "机会", "对比", "比较",
 )
 SNAPSHOT_KEYWORDS = (
     "今天", "今日", "当日", "现在", "当前", "盘中", "收盘", "行情", "盘面", "表现", "涨跌", "怎么样", "如何",
+    "咋样", "什么情况", "怎么走", "红还是绿", "涨还是跌", "强不强", "好吗", "好不好", "还好吗",
+    "咋回事", "怎么了", "整体如何", "热不热", "弱不弱", "有啥变化",
 )
 ROUTING_NOISE_TERMS = (
-    GENERIC_MARKET_TARGETS + RESEARCH_DEPTH_KEYWORDS + SNAPSHOT_KEYWORDS
+    GENERIC_MARKET_TARGETS + MARKET_KEYWORDS + RESEARCH_DEPTH_KEYWORDS + SNAPSHOT_KEYWORDS
     + GENERIC_SCAN_MOVES + GENERIC_SCAN_QUESTIONS
-    + ("走弱", "走低", "下行", "震荡", "情况", "怎样")
+    + ("走弱", "走低", "下行", "震荡", "情况", "怎样", "好吗", "好不好", "还好吗", "咋回事", "怎么了")
 )
 QUOTE_KEYWORDS = ("多少钱", "当前价格", "现在价格", "股价", "涨跌幅", "现价", "当前点位", "现在点位")
 REFERENCE_WORDS = (
@@ -61,13 +74,22 @@ COMPARISON_WORDS = ("对比", "比较", "相比", "vs", "VS")
 
 SECTOR_THEMES: Dict[str, Tuple[str, ...]] = {
     "科技": ("半导体", "软件开发", "IT服务Ⅱ", "通信设备", "消费电子"),
+    "人工智能": ("软件开发", "计算机设备", "通信设备", "半导体", "消费电子"),
+    "AI": ("软件开发", "计算机设备", "通信设备", "半导体", "消费电子"),
+    "新能源": ("电池", "光伏设备", "风电设备", "电网设备"),
+    "医药": ("化学制药", "生物制品", "医疗器械", "医疗服务", "中药"),
+    "金融": ("银行", "证券", "保险及其他"),
 }
 
 INDEXES: Dict[str, Dict[str, str]] = {
     "上证指数": {"name": "上证指数", "code": "sh000001", "category": "沪深重要指数"},
     "上证综指": {"name": "上证指数", "code": "sh000001", "category": "沪深重要指数"},
+    "沪指": {"name": "上证指数", "code": "sh000001", "category": "沪深重要指数"},
+    "上证": {"name": "上证指数", "code": "sh000001", "category": "沪深重要指数"},
     "深证成指": {"name": "深证成指", "code": "sz399001", "category": "沪深重要指数"},
+    "深成指": {"name": "深证成指", "code": "sz399001", "category": "沪深重要指数"},
     "创业板指": {"name": "创业板指", "code": "sz399006", "category": "沪深重要指数"},
+    "创业板指数": {"name": "创业板指", "code": "sz399006", "category": "沪深重要指数"},
     "创业板": {"name": "创业板指", "code": "sz399006", "category": "沪深重要指数"},
     "科创50": {"name": "科创50", "code": "sh000688", "category": "沪深重要指数"},
     "上证50": {"name": "上证50", "code": "sh000016", "category": "沪深重要指数"},
@@ -133,7 +155,10 @@ def _is_generic_market_query(text: str) -> bool:
         return False
     return _contains(text, MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS) and (
         _contains(text, SNAPSHOT_KEYWORDS + TREND_KEYWORDS)
-        or any(word in text for word in ("怎样", "情况", "涨吗", "跌吗"))
+        or any(word in text for word in (
+            "怎样", "咋样", "情况", "涨吗", "跌吗", "红还是绿", "涨还是跌", "强不强", "好吗", "好不好",
+            "还好吗", "咋回事", "怎么了", "整体如何", "热不热", "弱不弱", "有啥变化",
+        ))
     )
 
 
@@ -187,6 +212,21 @@ def compact_research_context(value: Dict[str, Any]) -> Dict[str, Any]:
     return compact(value)
 
 
+def research_context_unavailable(prepared: ResearchPrepareResponse) -> bool:
+    context = prepared.context or {}
+    if not context or prepared.intent == "education":
+        return False
+    if context.get("kind") == "security":
+        return (context.get("market") or {}).get("status") != "ok"
+    if context.get("kind") == "sector_group":
+        return not any(
+            item.get("status") == "ok"
+            for item in context.get("sectors") or []
+            if isinstance(item, dict)
+        )
+    return context.get("status") == "unavailable"
+
+
 def _number(value: Any, suffix: str = "", digits: int = 2) -> Optional[str]:
     if not isinstance(value, (int, float)):
         return None
@@ -228,12 +268,18 @@ class ResearchService:
     def _reference_query(request: ResearchPrepareRequest) -> str:
         if not _contains(request.text, REFERENCE_WORDS):
             return request.text
-        history = " ".join(
-            item.content
-            for item in request.history[-6:]
-            if item.role == "user"
-        )
-        return f"{request.text} {history}".strip()
+        for item in reversed(request.history[-6:]):
+            if item.role != "user":
+                continue
+            content = item.content.strip()
+            if (
+                CODE_PATTERN.search(content)
+                or _index_target(content)
+                or _named_target_terms(content)
+                or _contains(content, ("板块", "行业", "概念", "大盘", "a股", "大a"))
+            ):
+                return f"{request.text} {content}".strip()
+        return request.text
 
     @staticmethod
     def _out_of_scope(text: str) -> ResearchPrepareResponse:
@@ -645,7 +691,7 @@ class ResearchService:
                     names = "、".join(item["name"] for item in securities)
                     await self._report(progress, f"正在获取{names}的行情、财务和历史数据")
                 market_context = await self.market.context(reference_query, 120)
-                if market_context.status == "ok":
+                if market_context.status in {"ok", "unavailable"}:
                     return await self._security_response(text, market_context, progress)
 
         target_count = max(1, len(CODE_PATTERN.findall(reference_query)))
@@ -656,7 +702,7 @@ class ResearchService:
         if market_context.status == "ambiguous":
             choices = "、".join(f"{item.name}（{item.code}）" for item in market_context.candidates)
             return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
-        if market_context.status == "ok":
+        if market_context.status in {"ok", "unavailable"}:
             return await self._security_response(text, market_context, progress)
 
         if has_stock_signal:

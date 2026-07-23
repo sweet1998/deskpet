@@ -1,0 +1,117 @@
+name: Release macOS
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed release tag
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      LIVE2D_DISTRIBUTION_CONFIRMED: ${{ secrets.LIVE2D_DISTRIBUTION_CONFIRMED }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: deskpet-app/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Restore licensed Live2D release assets
+        env:
+          LIVE2D_ASSET_ARCHIVE_URL: ${{ secrets.LIVE2D_ASSET_ARCHIVE_URL }}
+          LIVE2D_ASSET_TOKEN: ${{ secrets.LIVE2D_ASSET_TOKEN }}
+        run: |
+          test -n "${LIVE2D_ASSET_ARCHIVE_URL}"
+          if [[ -n "${LIVE2D_ASSET_TOKEN}" ]]; then
+            curl --fail --location --header "Authorization: Bearer ${LIVE2D_ASSET_TOKEN}" "${LIVE2D_ASSET_ARCHIVE_URL}" -o /tmp/live2d-assets.zip
+          else
+            curl --fail --location "${LIVE2D_ASSET_ARCHIVE_URL}" -o /tmp/live2d-assets.zip
+          fi
+          ditto -x -k /tmp/live2d-assets.zip deskpet-app/src/renderer/public
+      - name: Install dependencies
+        run: |
+          cd deskpet-app && npm ci
+          cd ../backend && python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+      - name: Verify source
+        run: |
+          cd deskpet-app && npm run verify:lockfile && npm run audit:dependencies && npm test && npm run typecheck
+          cd ../backend && .venv/bin/python -m pytest -q
+      - name: Build, sign, notarize, and verify
+        working-directory: deskpet-app
+        run: npm run dist:mac
+      - name: Stage release artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp deskpet-app/dist/MaiMai-DeskPet-*-${{ matrix.arch }}.dmg release-artifacts/
+          cp deskpet-app/dist/MaiMai-DeskPet-*-${{ matrix.arch }}.zip release-artifacts/
+          cp deskpet-app/dist/MaiMai-DeskPet-*-${{ matrix.arch }}.dmg.blockmap release-artifacts/
+          cp deskpet-app/dist/MaiMai-DeskPet-*-${{ matrix.arch }}.zip.blockmap release-artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: release-artifacts/
+          if-no-files-found: error
+
+  release:
+    needs: build-mac
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mac-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Create dual-architecture update manifest
+        run: |
+          version="${RELEASE_TAG#v}"
+          node deskpet-app/scripts/create-mac-update-manifest.mjs release-artifacts "${version}"
+          grep -F -- "-${version}-arm64.zip" release-artifacts/latest-mac.yml
+          grep -F -- "-${version}-x64.zip" release-artifacts/latest-mac.yml
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/MaiMai-DeskPet-*.dmg
+            release-artifacts/MaiMai-DeskPet-*.zip
+            release-artifacts/latest-mac.yml
+            release-artifacts/*.blockmap

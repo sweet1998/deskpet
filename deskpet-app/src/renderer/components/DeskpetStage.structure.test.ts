@@ -45,9 +45,12 @@ describe('DeskpetStage model-only shell', () => {
     const shape = collectTemplateShape(readFileSync(filename, 'utf8'))
 
     expect(shape.tags).toContain('SettingsPanel')
+    expect(shape.template).toContain(':onboarding="onboardingOpen"')
+    expect(shape.template).toContain('@configured="completeOnboarding"')
     expect(shape.tags).toContain('PetInteraction')
     expect(shape.tags).toContain('AgentTaskPanel')
     expect(shape.template).toContain('v-if="agent.sourceName || agent.confirmation || agent.taskResult"')
+    expect(shape.scriptSetup).toContain('requireLegalConsent')
     expect(shape.tags).not.toContain('ChatBubble')
     expect(shape.tags).not.toContain('QuickInput')
     expect(shape.classes).not.toContain('nav-bar')
@@ -61,12 +64,18 @@ describe('DeskpetStage model-only shell', () => {
     expect(shape.scriptSetup).toMatch(
       /command\.type === 'settings'[\s\S]*showSettings\.value = true[\s\S]*settingsPanelOpen\.value = true/,
     )
-    expect(shape.scriptSetup).toContain('watch(() => agent.activityVersion')
-    expect(shape.scriptSetup).toContain('startTextRequestTimer(agent.activeRequestId)')
+    const requestWorkflow = readFileSync(
+      fileURLToPath(new URL('../composables/useAgentRequestWorkflow.ts', import.meta.url)),
+      'utf8',
+    )
+    expect(requestWorkflow).toContain('watch(() => agent.activityVersion')
+    expect(requestWorkflow).toContain('startRequestTimer(agent.activeRequestId)')
     expect(shape.scriptSetup).toContain('agent.chatOpen = true')
     expect(shape.scriptSetup).not.toContain('interactionOpen')
     expect(shape.scriptSetup).not.toContain('conversationOpen')
     expect(shape.template).toContain('@chat-after-leave="onChatAfterLeave"')
+    expect(shape.template).toContain('@capture-screen="captureCurrentScreen"')
+    expect(shape.template).toContain('@confirm-screenshot="confirmScreenshot"')
     expect(shape.scriptSetup).toContain('showSettings.value || chatLayoutOpen.value')
     expect(shape.scriptSetup).toContain('function onChatAfterLeave(): void')
     expect(shape.scriptSetup).toContain('chatLayoutOpen.value = false')
@@ -75,6 +84,20 @@ describe('DeskpetStage model-only shell', () => {
     expect(shape.scriptSetup).toContain('function syncPixiViewportToWindow(): void')
     expect(shape.scriptSetup).toContain('window.addEventListener(\'resize\', onWindowResize)')
     expect(shape.scriptSetup).toContain('renderPetFrame()')
+    expect(shape.scriptSetup).toContain('useAgentRequestWorkflow')
+    expect(requestWorkflow).toContain('useAttachmentWorkflow')
+    expect(requestWorkflow).toContain('attachmentWorkflow.submitUserFiles')
+    const attachmentWorkflow = readFileSync(
+      fileURLToPath(new URL('../composables/useAttachmentWorkflow.ts', import.meta.url)),
+      'utf8',
+    )
+    expect(attachmentWorkflow).toContain('extractNativeFile')
+    expect(attachmentWorkflow).toContain('auditNativeTool')
+    expect(requestWorkflow).toContain('function analyzeScreenshot')
+    expect(requestWorkflow).toContain('function previewScreenshot')
+    expect(requestWorkflow).toContain('async function captureCurrentScreen')
+    expect(requestWorkflow).toContain("inputKind === 'screenshot'")
+    expect(shape.scriptSetup).not.toContain('transport.sendFile({')
     const mouseUpHandler = shape.scriptSetup.match(/function onPetMouseUp[\s\S]*?\n}/)?.[0] ?? ''
     expect(mouseUpHandler).toContain('if (!start) return')
     expect(mouseUpHandler).not.toContain('isPointOverModel')

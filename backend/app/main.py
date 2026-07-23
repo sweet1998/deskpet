@@ -38,7 +38,7 @@ def create_services():
     fallback_type = provider_types.get(settings.market_fallback_provider or "")
     if settings.market_fallback_provider and not fallback_type:
         raise RuntimeError(f"暂不支持兜底行情供应商：{settings.market_fallback_provider}")
-    cache = TTLCache(settings.redis_url)
+    cache = TTLCache(settings.redis_url, settings.market_cache_path)
     provider = provider_type(timeout=settings.market_request_timeout)
     fallback = (
         fallback_type(timeout=settings.market_request_timeout)
@@ -146,6 +146,28 @@ async def sector_scan(
     _identity: str = Depends(authorize),
 ) -> dict:
     return await request.app.state.market.scan_sectors(body.limit, body.windowDays)
+
+
+@app.get("/v1/market/health")
+async def market_health(
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    overview = await request.app.state.market.market_overview()
+    available = overview.get("status") == "ok"
+    warnings = overview.get("warnings") if isinstance(overview.get("warnings"), list) else []
+    degraded = available and (bool(overview.get("stale")) or bool(warnings))
+    return {
+        "ok": available,
+        "status": "degraded" if degraded else "ok" if available else "unavailable",
+        "provider": settings.market_provider,
+        "fallbackProvider": settings.market_fallback_provider or None,
+        "source": overview.get("source"),
+        "stale": bool(overview.get("stale")),
+        "asOf": overview.get("asOf") or overview.get("dataTime"),
+        "warnings": warnings,
+        "error": overview.get("error"),
+    }
 
 
 @app.post("/v1/agent/chat")

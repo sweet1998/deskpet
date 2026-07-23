@@ -23,9 +23,24 @@ function marketItem(value: unknown, fallbackName = '行情'): ChatMarketItem | n
 }
 
 function sourceFrom(value: Record<string, any>): string | undefined {
-  if (typeof value.source === 'string') return value.source
-  const sources = value.dataSources
-  return sources && typeof sources.snapshot === 'string' ? sources.snapshot : undefined
+  const source = typeof value.source === 'string'
+    ? value.source
+    : value.dataSources && typeof value.dataSources.snapshot === 'string'
+      ? value.dataSources.snapshot
+      : undefined
+  if (!source) return undefined
+  const labels: Record<string, string> = {
+    akshare: 'AKShare',
+    'akshare-eastmoney': 'AKShare · 东方财富',
+    'akshare-ths': 'AKShare · 同花顺',
+    tencent: '腾讯行情',
+    'tencent-public': '腾讯行情',
+    eastmoney: '东方财富',
+    mixed: '多源数据',
+  }
+  const label = labels[source]
+    || (source.endsWith('-sector-proxy') ? '代表性成分股估算' : source)
+  return `数据来源：${label}`
 }
 
 function card(
@@ -36,12 +51,17 @@ function card(
   const valid = items.filter((item): item is ChatMarketItem => Boolean(item)).slice(0, 8)
   if (!valid.length || valid.every((item) => item.price == null && item.changePercent == null)) return null
   const warnings = Array.isArray(context.warnings) ? context.warnings : []
+  const note = context.marketStatus === 'closed'
+    ? '已休市，展示最近可用数据'
+    : context.stale === true
+      ? '行情数据已超过 60 秒，请注意时效'
+      : warnings[0]
   return {
     title,
     items: valid,
     ...(typeof context.asOf === 'string' ? { asOf: context.asOf } : {}),
     ...(sourceFrom(context) ? { source: sourceFrom(context) } : {}),
-    ...(warnings[0] ? { note: String(warnings[0]).slice(0, 160) } : {}),
+    ...(note ? { note: String(note).slice(0, 160) } : {}),
   }
 }
 
@@ -56,6 +76,9 @@ export function marketCardFromResearch(prepared: ResearchPrepareResult): ChatMar
       ...context,
       asOf: market.asOf ?? context.asOf,
       source: market.source ?? context.source,
+      marketStatus: market.marketStatus ?? context.marketStatus,
+      stale: securities.some((item) => Boolean(item && typeof item === 'object' && (item as Record<string, unknown>).stale)),
+      warnings: context.warnings ?? market.warnings,
     })
   }
 

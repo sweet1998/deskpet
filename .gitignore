@@ -3,12 +3,14 @@ out/
 dist/
 backend/build/
 deskpet-app/build/icon.png
+deskpet-app/build/native/
 __pycache__/
 .pytest_cache/
 *.pyc
 .electron-cache/
 .vite/
 .venv/
+.venv-*/
 *.log
 MaiBot/
 airi-main/

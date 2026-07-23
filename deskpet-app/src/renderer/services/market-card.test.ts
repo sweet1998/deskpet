@@ -22,7 +22,7 @@ describe('marketCardFromResearch', () => {
 
     expect(result).toMatchObject({
       title: '个股行情',
-      source: 'akshare-eastmoney',
+      source: '数据来源：AKShare · 东方财富',
       items: [{ code: '600519', name: '贵州茅台', price: 1488.2, changePercent: 1.25 }],
     })
   })
@@ -55,5 +55,25 @@ describe('marketCardFromResearch', () => {
       thoughts: [],
       context: { kind: 'knowledge' },
     })).toBeNull()
+  })
+
+  it('surfaces closed-market and stale-data state', () => {
+    const closed = marketCardFromResearch({
+      scope: 'in_scope', intent: 'index', requiresResearch: false, targetKind: 'index', targets: [], thoughts: [],
+      context: {
+        kind: 'index', status: 'ok', name: '沪深300', marketStatus: 'closed',
+        snapshot: { price: 4200, changePercent: -0.2 },
+      },
+    })
+    const stale = marketCardFromResearch({
+      scope: 'in_scope', intent: 'security_quote', requiresResearch: false, targetKind: 'security', targets: [], thoughts: [],
+      context: {
+        kind: 'security',
+        market: { status: 'ok', securities: [{ name: '贵州茅台', price: 1500, stale: true }] },
+      },
+    })
+
+    expect(closed?.note).toContain('已休市')
+    expect(stale?.note).toContain('超过 60 秒')
   })
 })

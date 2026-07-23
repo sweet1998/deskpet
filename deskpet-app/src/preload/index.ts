@@ -4,8 +4,29 @@ import {
   type PetContextMenuCommand,
   type PetContextMenuRequest,
 } from '../shared/pet-context-menu'
-import type { DoubaoChatRequest, DoubaoConfigInput, DoubaoStreamDelta } from '../shared/doubao'
+import type {
+  DoubaoCapabilityReport,
+  DoubaoChatRequest,
+  DoubaoConfigInput,
+  DoubaoStreamDelta,
+} from '../shared/doubao'
 import type { MarketBridgeConfig } from '../shared/market'
+import type {
+  SecureUserDataNamespace,
+  SecureUserDataReadResult,
+} from '../shared/secure-user-data'
+import type { SttTranscriptionResult, VoicePermissionStatus } from '../shared/voice'
+import type { DesktopBackendAccess } from '../shared/backend'
+import type {
+  NativeFileExtractionInput,
+  NativeFileExtractionResult,
+  NativeReminder,
+  NativeReminderInput,
+  NativeToolAuditEntry,
+  NativeToolAuditInput,
+  NativeToolPlanningRequest,
+  NativeToolPlanningResult,
+} from '../shared/native-tools'
 
 interface GlobalCursorPosition {
   screenX: number
@@ -93,10 +114,51 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('screenshot-captured', listener)
   },
   setAutoScreenshotInterval: (sec: number) => ipcRenderer.invoke('set-auto-screenshot-interval', sec),
-  sttTranscribe: (audio: ArrayBuffer, url?: string): Promise<string | null> => ipcRenderer.invoke('stt-transcribe', audio, url),
+  captureScreen: (): Promise<string | null> => ipcRenderer.invoke('capture-screen'),
+  captureScreenRegion: (): Promise<string | null> => ipcRenderer.invoke('capture-screen-region'),
+  extractNativeFile: (input: NativeFileExtractionInput): Promise<NativeFileExtractionResult> =>
+    ipcRenderer.invoke('extract-native-file', input),
+  listNativeReminders: (): Promise<NativeReminder[]> => ipcRenderer.invoke('list-native-reminders'),
+  planNativeTools: (input: NativeToolPlanningRequest): Promise<NativeToolPlanningResult> =>
+    ipcRenderer.invoke('plan-native-tools', input),
+  createNativeReminder: (input: NativeReminderInput): Promise<NativeReminder | { error: string } | null> =>
+    ipcRenderer.invoke('create-native-reminder', input),
+  cancelNativeReminder: (id: string): Promise<boolean> => ipcRenderer.invoke('cancel-native-reminder', id),
+  clearNativeReminders: (): Promise<boolean> => ipcRenderer.invoke('clear-native-reminders'),
+  appendNativeToolAudit: (input: NativeToolAuditInput): Promise<NativeToolAuditEntry | null> =>
+    ipcRenderer.invoke('append-native-tool-audit', input),
+  listNativeToolAudit: (): Promise<NativeToolAuditEntry[]> => ipcRenderer.invoke('list-native-tool-audit'),
+  clearNativeToolAudit: (): Promise<boolean> => ipcRenderer.invoke('clear-native-tool-audit'),
+  onNativeReminderTriggered: (callback: (reminder: NativeReminder) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, reminder: NativeReminder) => callback(reminder)
+    ipcRenderer.on('native-reminder-triggered', listener)
+    return () => ipcRenderer.removeListener('native-reminder-triggered', listener)
+  },
+  writeNativeClipboard: (text: string): Promise<boolean> => ipcRenderer.invoke('write-native-clipboard', text),
+  openNativeUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('open-native-url', url),
+  revealNativePath: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('reveal-native-path', targetPath),
+  sttTranscribe: (audio: ArrayBuffer, url?: string): Promise<SttTranscriptionResult> =>
+    ipcRenderer.invoke('stt-transcribe', audio, url),
+  getVoicePermissionStatus: (): Promise<VoicePermissionStatus | null> =>
+    ipcRenderer.invoke('get-voice-permission-status'),
   getDoubaoConfig: () => ipcRenderer.invoke('get-doubao-config'),
   saveDoubaoConfig: (input: DoubaoConfigInput) => ipcRenderer.invoke('save-doubao-config', input),
+  clearDoubaoConfig: (): Promise<boolean> => ipcRenderer.invoke('clear-doubao-config'),
+  readSecureUserData: (namespace: SecureUserDataNamespace): Promise<SecureUserDataReadResult> =>
+    ipcRenderer.invoke('read-secure-user-data', namespace),
+  writeSecureUserData: (namespace: SecureUserDataNamespace, value: unknown): Promise<boolean> =>
+    ipcRenderer.invoke('write-secure-user-data', namespace, value),
+  clearSecureUserData: (namespace: SecureUserDataNamespace): Promise<boolean> =>
+    ipcRenderer.invoke('clear-secure-user-data', namespace),
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('get-app-version'),
+  openProductDocument: (kind: 'privacy' | 'terms'): Promise<boolean> =>
+    ipcRenderer.invoke('open-product-document', kind),
+  getBackendAccess: (): Promise<DesktopBackendAccess | null> => ipcRenderer.invoke('get-backend-access'),
+  getSystemIdleTime: (): Promise<number> => ipcRenderer.invoke('get-system-idle-time'),
+  checkForUpdates: (): Promise<boolean> => ipcRenderer.invoke('check-for-updates'),
   testDoubaoConnection: (input: DoubaoConfigInput) => ipcRenderer.invoke('test-doubao-connection', input),
+  detectDoubaoCapabilities: (input: DoubaoConfigInput): Promise<DoubaoCapabilityReport> =>
+    ipcRenderer.invoke('detect-doubao-capabilities', input),
   doubaoChat: (input: DoubaoChatRequest) => ipcRenderer.invoke('doubao-chat', input),
   onDoubaoChatDelta: (callback: (event: DoubaoStreamDelta) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, value: DoubaoStreamDelta) => callback(value)
@@ -112,4 +174,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('save-agent-result', value),
   exportConversation: (value: { title: string; content: string }): Promise<boolean> =>
     ipcRenderer.invoke('export-conversation', value),
+  exportDiagnostics: (): Promise<boolean> => ipcRenderer.invoke('export-diagnostics'),
 })

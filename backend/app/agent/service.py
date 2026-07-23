@@ -1,10 +1,10 @@
 import asyncio
 import json
-from typing import AsyncIterator, Dict, List, Tuple, Union
+from typing import Any, AsyncIterator, Dict, List, Tuple, Union
 
 from ..market.service import MarketService
 from ..models import AgentChatRequest, ResearchPrepareRequest, ResearchPrepareResponse
-from ..research import ResearchService, compact_research_context
+from ..research import ResearchService, compact_research_context, research_context_unavailable
 from ..roles import get_role
 from .model_client import OpenAICompatibleModel
 
@@ -39,7 +39,7 @@ class AgentService:
         self,
         request: AgentChatRequest,
         prepared: ResearchPrepareResponse,
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         profile = get_role(request.roleId)
         identity = [
             profile.systemPrompt,
@@ -50,7 +50,19 @@ class AgentService:
         ]
         messages = [{"role": "system", "content": "\n".join(str(item) for item in identity if item)}]
         messages.extend({"role": item.role, "content": item.content} for item in request.history[-20:])
-        messages.append({"role": "user", "content": request.text})
+        user_content: Union[str, List[Dict[str, Any]]] = request.text
+        if request.image:
+            user_content = [
+                {"type": "text", "text": request.text},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{request.image.mimeType};base64,{request.image.base64}",
+                        "detail": "high",
+                    },
+                },
+            ]
+        messages.append({"role": "user", "content": user_content})
         return messages
 
     async def _prepare_events(
@@ -135,6 +147,14 @@ class AgentService:
             yield sse("result", {
                 "requestId": request.requestId,
                 "text": prepared.reply or "请补充更明确的 A 股研究问题。",
+            })
+            yield sse("done", {"requestId": request.requestId})
+            return
+
+        if request.roleId == "stock_expert" and research_context_unavailable(prepared):
+            yield sse("result", {
+                "requestId": request.requestId,
+                "text": "当前行情数据源暂时不可用，无法可靠回答这个问题。请稍后重试。",
             })
             yield sse("done", {"requestId": request.requestId})
             return

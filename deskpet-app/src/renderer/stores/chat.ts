@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { normalizeRoleId, type RoleId } from '../../shared/roles'
 
 export type ChatStatusCode = 'timeout' | 'network' | 'service' | 'cancelled'
+export type ChatInputKind = 'text' | 'file' | 'screenshot'
 
 export interface ChatAttachment {
   id: string
@@ -41,6 +42,7 @@ export type ChatMessage =
       type: 'text'
       attachments?: ChatAttachment[]
       replyTo?: ChatReplyReference
+      inputKind?: ChatInputKind
     }
   | {
       id: string
@@ -93,8 +95,24 @@ const LEGACY_DRAFTS_KEY = 'deskpet/chat-drafts-v1'
 const CONVERSATIONS_KEY = 'deskpet/chat-conversations-v2'
 const ACTIVE_CONVERSATIONS_KEY = 'deskpet/chat-active-conversations-v2'
 const DRAFTS_KEY = 'deskpet/chat-conversation-drafts-v2'
+const PRIVACY_MODE_KEY = 'deskpet/privacy-mode'
 const MESSAGE_LIMIT = 200
 const CONVERSATION_LIMIT = 40
+
+interface SecureChatState {
+  version: 1
+  conversations: Record<RoleId, ChatConversation[]>
+  active: Record<RoleId, string>
+  drafts: Record<string, string>
+}
+
+const LEGACY_PERSISTENCE_KEYS = [
+  LEGACY_HISTORY_KEY,
+  LEGACY_DRAFTS_KEY,
+  CONVERSATIONS_KEY,
+  ACTIVE_CONVERSATIONS_KEY,
+  DRAFTS_KEY,
+] as const
 
 function createId(prefix: string): string {
   return typeof crypto.randomUUID === 'function'
@@ -171,6 +189,9 @@ function sanitizeStoredMessage(value: unknown): ChatMessage | null {
       ? item.attachments.map(sanitizeAttachment).filter((entry): entry is ChatAttachment => Boolean(entry))
       : []
     const replyTo = sanitizeReplyReference(item.replyTo)
+    const inputKind: ChatInputKind = ['file', 'screenshot'].includes(String(item.inputKind))
+      ? item.inputKind as ChatInputKind
+      : item.text.trim() === '分析当前屏幕' ? 'screenshot' : 'text'
     return {
       id,
       role,
@@ -180,6 +201,7 @@ function sanitizeStoredMessage(value: unknown): ChatMessage | null {
       type: 'text',
       ...(attachments.length ? { attachments } : {}),
       ...(replyTo ? { replyTo } : {}),
+      inputKind,
     }
   }
   if (item.type === 'thought' && role === 'assistant' && item.complete === true) {
@@ -279,6 +301,32 @@ function readConversations(): Record<RoleId, ChatConversation[]> {
   return result
 }
 
+function readPersistentChatState(): SecureChatState {
+  const conversations = readConversations()
+  const storedActive = readStoredObject(ACTIVE_CONVERSATIONS_KEY)
+  const active = {} as Record<RoleId, string>
+  const drafts: Record<string, string> = {}
+  const storedDrafts = readStoredObject(DRAFTS_KEY)
+  const legacyDrafts = readStoredObject(LEGACY_DRAFTS_KEY)
+
+  for (const roleId of ['default', 'stock_expert'] as const) {
+    const activeId = typeof storedActive[roleId] === 'string'
+      && conversations[roleId].some((item) => item.id === storedActive[roleId])
+      ? String(storedActive[roleId])
+      : conversations[roleId][0].id
+    active[roleId] = activeId
+    for (const conversation of conversations[roleId]) {
+      const draft = storedDrafts[conversation.id]
+      if (typeof draft === 'string') drafts[conversation.id] = draft.slice(0, 12000)
+    }
+    if (!(activeId in drafts) && typeof legacyDrafts[roleId] === 'string') {
+      drafts[activeId] = String(legacyDrafts[roleId]).slice(0, 12000)
+    }
+  }
+
+  return { version: 1, conversations, active, drafts }
+}
+
 function titleFromMessages(messages: ChatMessage[]): string {
   const first = messages.find((message) => message.type === 'text' && message.role === 'user')
   if (!first || first.type !== 'text') return '新对话'
@@ -293,36 +341,35 @@ function formatTime(timestamp: number): string {
 }
 
 export const useChatStore = defineStore('chat', () => {
-  const conversationsByRole = ref<Record<RoleId, ChatConversation[]>>(readConversations())
-  const storedActive = readStoredObject(ACTIVE_CONVERSATIONS_KEY)
-  const activeConversationByRole = ref<Record<RoleId, string>>({
-    default: typeof storedActive.default === 'string'
-      && conversationsByRole.value.default.some((item) => item.id === storedActive.default)
-      ? storedActive.default
-      : conversationsByRole.value.default[0].id,
-    stock_expert: typeof storedActive.stock_expert === 'string'
-      && conversationsByRole.value.stock_expert.some((item) => item.id === storedActive.stock_expert)
-      ? storedActive.stock_expert
-      : conversationsByRole.value.stock_expert[0].id,
+  const privacyMode = ref(localStorage.getItem(PRIVACY_MODE_KEY) === 'true')
+  const privateConversations = (): Record<RoleId, ChatConversation[]> => ({
+    default: [emptyConversation('default')],
+    stock_expert: [emptyConversation('stock_expert')],
   })
-  const storedDrafts = readStoredObject(DRAFTS_KEY)
-  const legacyDrafts = readStoredObject(LEGACY_DRAFTS_KEY)
-  const draftsByConversation = ref<Record<string, string>>({})
-  for (const roleId of ['default', 'stock_expert'] as const) {
-    for (const conversation of conversationsByRole.value[roleId]) {
-      const stored = storedDrafts[conversation.id]
-      if (typeof stored === 'string') draftsByConversation.value[conversation.id] = stored.slice(0, 12000)
-    }
-    const activeId = activeConversationByRole.value[roleId]
-    if (!(activeId in draftsByConversation.value) && typeof legacyDrafts[roleId] === 'string') {
-      draftsByConversation.value[activeId] = String(legacyDrafts[roleId]).slice(0, 12000)
-    }
-  }
+  const persistentStateAtStartup = readPersistentChatState()
+  const initialConversations = privacyMode.value ? privateConversations() : persistentStateAtStartup.conversations
+  const conversationsByRole = ref<Record<RoleId, ChatConversation[]>>(initialConversations)
+  const activeConversationByRole = ref<Record<RoleId, string>>(privacyMode.value
+    ? {
+        default: initialConversations.default[0].id,
+        stock_expert: initialConversations.stock_expert[0].id,
+      }
+    : persistentStateAtStartup.active)
+  const draftsByConversation = ref<Record<string, string>>(
+    privacyMode.value ? {} : persistentStateAtStartup.drafts,
+  )
 
   const activeRole = ref<RoleId>('default')
   const requestRoleById = ref<Record<string, RoleId>>({})
   const requestConversationById = ref<Record<string, string>>({})
   const bubbleVisible = ref(false)
+  const storageProtected = ref(false)
+  const storageError = ref('')
+  const storageNotice = ref('')
+  let storageHydrated = false
+  let secureSaveTimer: ReturnType<typeof setTimeout> | null = null
+  let secureWriteChain: Promise<void> = Promise.resolve()
+  let standardSessionSnapshot: SecureChatState | null = privacyMode.value ? persistentStateAtStartup : null
 
   function activeForRole(roleId: RoleId): ChatConversation {
     const normalized = normalizeRoleId(roleId)
@@ -343,11 +390,74 @@ export const useChatStore = defineStore('chat', () => {
     stock_expert: draftsByConversation.value[activeConversationByRole.value.stock_expert] || '',
   }))
 
+  function persistentConversations(): Record<RoleId, ChatConversation[]> {
+    if ([...conversationsByRole.value.default, ...conversationsByRole.value.stock_expert]
+      .some((conversation) => conversation.messages.length > MESSAGE_LIMIT)) {
+      storageNotice.value = `单个会话最多长期保留 ${MESSAGE_LIMIT} 条消息，请及时导出重要内容。`
+    }
+    return {
+      default: conversationsByRole.value.default.slice(0, CONVERSATION_LIMIT).map((conversation) => ({
+        ...conversation,
+        messages: persistedMessages(conversation),
+      })),
+      stock_expert: conversationsByRole.value.stock_expert.slice(0, CONVERSATION_LIMIT).map((conversation) => ({
+        ...conversation,
+        messages: persistedMessages(conversation),
+      })),
+    }
+  }
+
+  function secureState(): SecureChatState {
+    return {
+      version: 1,
+      conversations: persistentConversations(),
+      active: { ...activeConversationByRole.value },
+      drafts: { ...draftsByConversation.value },
+    }
+  }
+
+  function queueSecureWrite(payload: SecureChatState): Promise<void> {
+    secureWriteChain = secureWriteChain.then(async () => {
+      const saved = await window.electronAPI?.writeSecureUserData('chat', payload)
+      if (!saved) storageError.value = '无法安全保存对话，请检查 macOS 钥匙串状态。'
+    }).catch(() => {
+      storageError.value = '无法安全保存对话，请检查 macOS 钥匙串状态。'
+    })
+    return secureWriteChain
+  }
+
+  function scheduleSecureSave(): void {
+    if (!storageProtected.value || privacyMode.value) return
+    if (secureSaveTimer) clearTimeout(secureSaveTimer)
+    const payload = secureState()
+    secureSaveTimer = setTimeout(() => {
+      secureSaveTimer = null
+      void queueSecureWrite(payload)
+    }, 150)
+  }
+
+  function flushSecureSave(payload = secureState()): void {
+    if (!storageProtected.value) return
+    if (secureSaveTimer) clearTimeout(secureSaveTimer)
+    secureSaveTimer = null
+    void queueSecureWrite(payload)
+  }
+
   function persistActive() {
+    if (privacyMode.value) return
+    if (storageProtected.value) {
+      scheduleSecureSave()
+      return
+    }
     localStorage.setItem(ACTIVE_CONVERSATIONS_KEY, JSON.stringify(activeConversationByRole.value))
   }
 
   function persistDrafts() {
+    if (privacyMode.value) return
+    if (storageProtected.value) {
+      scheduleSecureSave()
+      return
+    }
     localStorage.setItem(DRAFTS_KEY, JSON.stringify(draftsByConversation.value))
   }
 
@@ -360,16 +470,83 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function persistMessages() {
-    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify({
-      default: conversationsByRole.value.default.slice(0, CONVERSATION_LIMIT).map((conversation) => ({
-        ...conversation,
-        messages: persistedMessages(conversation),
-      })),
-      stock_expert: conversationsByRole.value.stock_expert.slice(0, CONVERSATION_LIMIT).map((conversation) => ({
-        ...conversation,
-        messages: persistedMessages(conversation),
-      })),
-    }))
+    if (privacyMode.value) return
+    if (storageProtected.value) {
+      scheduleSecureSave()
+      return
+    }
+    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(persistentConversations()))
+  }
+
+  function applySecureState(value: unknown): boolean {
+    if (!value || typeof value !== 'object') return false
+    const stored = value as Partial<SecureChatState>
+    if (stored.version !== 1 || !stored.conversations || typeof stored.conversations !== 'object') return false
+    const next = {} as Record<RoleId, ChatConversation[]>
+    for (const roleId of ['default', 'stock_expert'] as const) {
+      const raw = stored.conversations[roleId]
+      next[roleId] = Array.isArray(raw)
+        ? raw.map((item) => sanitizeConversation(item, roleId))
+          .filter((item): item is ChatConversation => Boolean(item))
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, CONVERSATION_LIMIT)
+        : []
+      if (!next[roleId].length) next[roleId].push(emptyConversation(roleId))
+    }
+    conversationsByRole.value = next
+    activeConversationByRole.value = {
+      default: typeof stored.active?.default === 'string'
+        && next.default.some((item) => item.id === stored.active?.default)
+        ? stored.active.default
+        : next.default[0].id,
+      stock_expert: typeof stored.active?.stock_expert === 'string'
+        && next.stock_expert.some((item) => item.id === stored.active?.stock_expert)
+        ? stored.active.stock_expert
+        : next.stock_expert[0].id,
+    }
+    draftsByConversation.value = {}
+    if (stored.drafts && typeof stored.drafts === 'object') {
+      for (const [conversationId, draft] of Object.entries(stored.drafts)) {
+        if (typeof draft === 'string') draftsByConversation.value[conversationId] = draft.slice(0, 12000)
+      }
+    }
+    requestRoleById.value = {}
+    requestConversationById.value = {}
+    bubbleVisible.value = false
+    return true
+  }
+
+  async function hydrateSecureStorage(): Promise<boolean> {
+    if (storageHydrated) return storageProtected.value
+    storageHydrated = true
+    const result = await window.electronAPI?.readSecureUserData('chat')
+    if (!result?.available) {
+      storageError.value = result?.error || 'macOS 钥匙串当前不可用，对话仍保存在本机旧存储中。'
+      return false
+    }
+    if (result.exists && result.error) {
+      storageError.value = '无法读取已加密的对话数据，未覆盖原文件。'
+      return false
+    }
+    if (result.exists) {
+      applySecureState(result.value)
+      if (privacyMode.value) {
+        standardSessionSnapshot = secureState()
+        replaceConversationState(privateConversations())
+      }
+    }
+    const stateToPersist = privacyMode.value
+      ? standardSessionSnapshot ?? persistentStateAtStartup
+      : secureState()
+    const saved = await window.electronAPI?.writeSecureUserData('chat', stateToPersist)
+    if (!saved) {
+      storageError.value = '无法完成对话数据安全迁移。'
+      return false
+    }
+    storageProtected.value = true
+    storageError.value = ''
+    for (const key of LEGACY_PERSISTENCE_KEYS) localStorage.removeItem(key)
+    return true
   }
 
   function touchConversation(conversation: ChatConversation, persist = false) {
@@ -391,13 +568,17 @@ export const useChatStore = defineStore('chat', () => {
       return current
     }
     const conversation = emptyConversation(normalized)
+    if (conversationsByRole.value[normalized].length >= CONVERSATION_LIMIT) {
+      storageNotice.value = `每个角色最多保留 ${CONVERSATION_LIMIT} 个会话，请先导出或删除旧会话。`
+      return current
+    }
     conversationsByRole.value[normalized].unshift(conversation)
-    conversationsByRole.value[normalized] = conversationsByRole.value[normalized].slice(0, CONVERSATION_LIMIT)
     activeConversationByRole.value[normalized] = conversation.id
     draftsByConversation.value[conversation.id] = ''
     persistActive()
     persistDrafts()
     persistMessages()
+    storageNotice.value = ''
     bubbleVisible.value = false
     return conversation
   }
@@ -425,7 +606,66 @@ export const useChatStore = defineStore('chat', () => {
     persistActive()
     persistDrafts()
     persistMessages()
+    storageNotice.value = ''
     bubbleVisible.value = false
+    return true
+  }
+
+  function replaceConversationState(next: Record<RoleId, ChatConversation[]>): void {
+    conversationsByRole.value = next
+    activeConversationByRole.value = {
+      default: next.default[0].id,
+      stock_expert: next.stock_expert[0].id,
+    }
+    draftsByConversation.value = {
+      [next.default[0].id]: '',
+      [next.stock_expert[0].id]: '',
+    }
+    requestRoleById.value = {}
+    requestConversationById.value = {}
+    bubbleVisible.value = false
+  }
+
+  function setPrivacyMode(enabled: boolean): void {
+    if (privacyMode.value === enabled) return
+    if (enabled) {
+      standardSessionSnapshot = secureState()
+      if (storageProtected.value) {
+        flushSecureSave(standardSessionSnapshot)
+      } else {
+        persistMessages()
+        persistActive()
+        persistDrafts()
+      }
+      privacyMode.value = true
+      localStorage.setItem(PRIVACY_MODE_KEY, 'true')
+      replaceConversationState(privateConversations())
+      return
+    }
+    privacyMode.value = false
+    localStorage.setItem(PRIVACY_MODE_KEY, 'false')
+    if (standardSessionSnapshot) {
+      applySecureState(standardSessionSnapshot)
+      standardSessionSnapshot = null
+    } else {
+      replaceConversationState(readConversations())
+    }
+  }
+
+  async function clearAllConversations(): Promise<boolean> {
+    if (secureSaveTimer) clearTimeout(secureSaveTimer)
+    secureSaveTimer = null
+    for (const key of LEGACY_PERSISTENCE_KEYS) localStorage.removeItem(key)
+    standardSessionSnapshot = null
+    replaceConversationState(privateConversations())
+    if (!storageProtected.value) return true
+    await secureWriteChain
+    const cleared = await window.electronAPI?.clearSecureUserData('chat')
+    if (!cleared) {
+      storageError.value = '无法清除加密对话，请检查 macOS 钥匙串和文件权限。'
+      return false
+    }
+    storageError.value = ''
     return true
   }
 
@@ -496,6 +736,7 @@ export const useChatStore = defineStore('chat', () => {
     roleId: RoleId = activeRole.value,
     attachments: ChatAttachment[] = [],
     replyTo?: ChatReplyReference,
+    inputKind: ChatInputKind = 'text',
   ) {
     const normalizedRole = normalizeRoleId(roleId)
     if (requestId) bindRequest(requestId, normalizedRole)
@@ -509,6 +750,7 @@ export const useChatStore = defineStore('chat', () => {
       type: 'text',
       ...(attachments.length ? { attachments } : {}),
       ...(replyTo ? { replyTo } : {}),
+      inputKind,
     })
     if (conversation.title === '新对话') conversation.title = titleFromMessages(conversation.messages)
     touchConversation(conversation, true)
@@ -622,6 +864,30 @@ export const useChatStore = defineStore('chat', () => {
   function getRequestReplyTo(requestId: string): ChatReplyReference | undefined {
     const message = roleMessages(requestId).find((item) => item.id === `user-${requestId}`)
     return message?.type === 'text' ? message.replyTo : undefined
+  }
+
+  function getRequestInputKind(requestId: string): ChatInputKind {
+    const message = roleMessages(requestId).find((item) => item.id === `user-${requestId}`)
+    if (message?.type !== 'text') return 'text'
+    return message.inputKind ?? (message.text.trim() === '分析当前屏幕' ? 'screenshot' : 'text')
+  }
+
+  function canRetryRequest(requestId: string): boolean {
+    return Boolean(getRequestText(requestId))
+  }
+
+  function resetRequestResponse(requestId: string): boolean {
+    const conversation = requestConversation(requestId)
+    const previousLength = conversation.messages.length
+    conversation.messages = conversation.messages.filter((message) => {
+      if (message.role !== 'assistant') return true
+      if (message.id === requestId) return false
+      return !('requestId' in message && message.requestId === requestId)
+    })
+    if (conversation.messages.length === previousLength) return false
+    bubbleVisible.value = false
+    touchConversation(conversation, true)
+    return true
   }
 
   function appendChatText(delta: string, requestId: string) {
@@ -747,10 +1013,16 @@ export const useChatStore = defineStore('chat', () => {
     requestRoleById,
     requestConversationById,
     bubbleVisible,
+    privacyMode,
+    storageProtected,
+    storageError,
+    storageNotice,
     chatBubble,
     createConversation,
     setActiveConversation,
     deleteConversation,
+    clearAllConversations,
+    setPrivacyMode,
     exportConversationMarkdown,
     addUserMessage,
     addEmojiMessage,
@@ -771,8 +1043,12 @@ export const useChatStore = defineStore('chat', () => {
     showStatusMessage,
     getRequestText,
     getRequestReplyTo,
+    getRequestInputKind,
+    canRetryRequest,
+    resetRequestResponse,
     setDraft,
     clearDraft,
+    hydrateSecureStorage,
   }
 })
 

@@ -29,7 +29,7 @@
         <div v-if="agent.confirmation" class="confirmation">
           <div class="warning-title"><ShieldAlert :size="17" />需要你的允许</div>
           <p>{{ agent.confirmation.summary }}</p>
-          <small>操作：{{ agent.confirmation.tool }} · 风险：{{ riskLabel }}</small>
+          <small>操作：{{ toolLabel }} · 风险：{{ riskLabel }}</small>
           <div class="commands">
             <button class="secondary" type="button" @click="$emit('confirm', false)">取消</button>
             <button class="primary" type="button" @click="$emit('confirm', true)">允许</button>
@@ -75,6 +75,13 @@ defineEmits<{
 const agent = useAgentStore()
 const steps = ['理解任务', '制定计划', '执行工具', '整理结果']
 const riskLabel = computed(() => ({ low: '低', medium: '中', high: '高' })[agent.confirmation?.risk || 'medium'])
+const toolLabel = computed(() => ({
+  create_reminder: '创建提醒',
+  cancel_reminder: '取消提醒',
+  write_clipboard: '写入剪贴板',
+  open_url: '打开网页',
+  reveal_path: '在 Finder 中显示文件',
+}[agent.confirmation?.tool || ''] || agent.confirmation?.tool || '系统操作'))
 const activeStepIndex = computed(() => {
   if (agent.state === 'success') return steps.length
   const thresholds = [0, 20, 45, 80]

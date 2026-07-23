@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { resolveBackendLaunch } from './backend-manager'
+import { readOrCreateBackendToken, resolveBackendLaunch } from './backend-manager'
 
 const temporaryDirectories: string[] = []
 
@@ -19,6 +19,15 @@ function temporaryDirectory(): string {
 }
 
 describe('backend launch resolution', () => {
+  it('creates and reuses a private local access token', () => {
+    const tokenPath = path.join(temporaryDirectory(), 'state', 'backend-token')
+    const generated = 'a'.repeat(64)
+
+    expect(readOrCreateBackendToken(tokenPath, () => generated)).toBe(generated)
+    expect(readOrCreateBackendToken(tokenPath, () => 'b'.repeat(64))).toBe(generated)
+    expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o600)
+  })
+
   it('uses the bundled backend executable in packaged apps', () => {
     const resourcesPath = temporaryDirectory()
     const executable = path.join(resourcesPath, 'backend', 'deskpet-backend')

@@ -31,6 +31,23 @@ export function buildPetContextMenuTemplate(
 
   return [
     { label: '设置...', click: () => emit({ type: 'settings' }) },
+    {
+      label: `角色：${request.currentRole === 'stock_expert' ? '炒股专家' : '麦麦'}`,
+      submenu: [
+        {
+          label: '麦麦',
+          type: 'radio',
+          checked: request.currentRole === 'default',
+          click: () => emit({ type: 'role', id: 'default' }),
+        },
+        {
+          label: '炒股专家',
+          type: 'radio',
+          checked: request.currentRole === 'stock_expert',
+          click: () => emit({ type: 'role', id: 'stock_expert' }),
+        },
+      ],
+    },
     { type: 'separator' },
     { label: '表情', submenu: capabilityItems(request.emotions, 'emotion', emit) },
     { label: '动作', submenu: capabilityItems(request.actions, 'action', emit) },

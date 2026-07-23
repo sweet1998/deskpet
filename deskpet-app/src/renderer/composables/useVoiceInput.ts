@@ -1,7 +1,12 @@
 import { useVad } from './useVad'
 
 function getSttUrl(): string {
-  try { return localStorage.getItem('deskpet/stt-url') || 'http://127.0.0.1:18530/stt' } catch { return 'http://127.0.0.1:18530/stt' }
+  try { return localStorage.getItem('deskpet/stt-url')?.trim() || '' } catch { return '' }
+}
+
+export interface VoiceInputResult {
+  text: string | null
+  error?: string
 }
 
 function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
@@ -32,7 +37,7 @@ export function useVoiceInput() {
   let recStream: MediaStream | null = null
   let chunks: Blob[] = []
   let recording = false
-  let resolvePromise: ((text: string | null) => void) | null = null
+  let resolvePromise: ((result: VoiceInputResult) => void) | null = null
   let vadActive = false
   let onTranscribed: ((text: string) => void) | null = null
   const vad = useVad()
@@ -49,27 +54,37 @@ export function useVoiceInput() {
         const blob = new Blob(chunks, { type: 'audio/webm' })
         const raw = await blob.arrayBuffer()
         const ctx = new AudioContext()
-        const audio = await ctx.decodeAudioData(raw)
-        const pcm = audio.getChannelData(0)
-        const wav = encodeWav(pcm, audio.sampleRate)
-        const text = await window.electronAPI?.sttTranscribe(wav, getSttUrl())
-        if (text && onTranscribed) onTranscribed(text)
-        resolvePromise?.(text || null)
-      } catch { resolvePromise?.(null) }
+        try {
+          const audio = await ctx.decodeAudioData(raw)
+          const pcm = audio.getChannelData(0)
+          const wav = encodeWav(pcm, audio.sampleRate)
+          const response = await window.electronAPI?.sttTranscribe(wav, getSttUrl() || undefined)
+          const text = response?.ok ? response.text?.trim() || null : null
+          if (text && onTranscribed) onTranscribed(text)
+          resolvePromise?.({ text, ...(response?.error ? { error: response.error } : {}) })
+        } finally {
+          await ctx.close()
+        }
+      } catch (error) {
+        resolvePromise?.({ text: null, error: error instanceof Error ? error.message : '语音识别失败' })
+      }
       resolvePromise = null
     }
     mediaRecorder.start()
     recording = true
   }
 
-  function stopRecording(): Promise<string | null> {
-    if (!mediaRecorder || mediaRecorder.state !== 'recording') { recording = false; return Promise.resolve(null) }
+  function stopRecording(): Promise<VoiceInputResult> {
+    if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+      recording = false
+      return Promise.resolve({ text: null })
+    }
     return new Promise((resolve) => { resolvePromise = resolve; mediaRecorder!.stop() })
   }
 
   // manual
   async function start(): Promise<void> { await startRecording() }
-  function stop(): Promise<string | null> { return stopRecording() }
+  function stop(): Promise<VoiceInputResult> { return stopRecording() }
   function isRecording(): boolean { return recording }
 
   // VAD auto

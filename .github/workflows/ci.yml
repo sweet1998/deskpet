@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: macos-14
+    env:
+      LIVE2D_ASSET_ARCHIVE_URL: ${{ secrets.LIVE2D_ASSET_ARCHIVE_URL }}
+      LIVE2D_ASSET_TOKEN: ${{ secrets.LIVE2D_ASSET_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: deskpet-app/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Restore licensed Live2D test assets
+        if: env.LIVE2D_ASSET_ARCHIVE_URL != ''
+        run: |
+          if [[ -n "${LIVE2D_ASSET_TOKEN}" ]]; then
+            curl --fail --location --header "Authorization: Bearer ${LIVE2D_ASSET_TOKEN}" "${LIVE2D_ASSET_ARCHIVE_URL}" -o /tmp/live2d-assets.zip
+          else
+            curl --fail --location "${LIVE2D_ASSET_ARCHIVE_URL}" -o /tmp/live2d-assets.zip
+          fi
+          ditto -x -k /tmp/live2d-assets.zip deskpet-app/src/renderer/public
+      - name: Install frontend dependencies
+        working-directory: deskpet-app
+        run: npm ci
+      - name: Verify dependency sources and advisories
+        working-directory: deskpet-app
+        run: npm run verify:lockfile && npm run audit:dependencies
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+      - name: Frontend tests
+        working-directory: deskpet-app
+        run: npm test
+      - name: Type check
+        working-directory: deskpet-app
+        run: npm run typecheck
+      - name: Electron production build
+        working-directory: deskpet-app
+        run: npm run build
+      - name: macOS Electron smoke test
+        if: env.LIVE2D_ASSET_ARCHIVE_URL != ''
+        working-directory: deskpet-app
+        run: npm run test:e2e
+      - name: Explain skipped Electron smoke test
+        if: env.LIVE2D_ASSET_ARCHIVE_URL == ''
+        run: echo "未配置授权 Live2D 测试素材，跳过依赖真实人物资源的 Electron 冒烟测试。"
+      - name: Backend tests
+        working-directory: backend
+        run: python -m pytest -q
