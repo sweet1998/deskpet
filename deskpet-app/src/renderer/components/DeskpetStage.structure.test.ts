@@ -51,6 +51,7 @@ describe('DeskpetStage model-only shell', () => {
     expect(shape.tags).toContain('AgentTaskPanel')
     expect(shape.template).toContain('v-if="agent.sourceName || agent.confirmation || agent.taskResult"')
     expect(shape.scriptSetup).toContain('requireLegalConsent')
+    expect(shape.scriptSetup).toContain('Promise.allSettled([')
     expect(shape.tags).not.toContain('ChatBubble')
     expect(shape.tags).not.toContain('QuickInput')
     expect(shape.classes).not.toContain('nav-bar')

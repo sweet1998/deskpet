@@ -408,12 +408,14 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function secureState(): SecureChatState {
-    return {
+    const state: SecureChatState = {
       version: 1,
       conversations: persistentConversations(),
       active: { ...activeConversationByRole.value },
       drafts: { ...draftsByConversation.value },
     }
+    // Electron IPC cannot clone Vue's nested reactive proxies.
+    return JSON.parse(JSON.stringify(state)) as SecureChatState
   }
 
   function queueSecureWrite(payload: SecureChatState): Promise<void> {

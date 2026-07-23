@@ -235,7 +235,10 @@ describe('chat store roles', () => {
   })
 
   it('migrates plaintext conversation data only after encrypted persistence succeeds', async () => {
-    const writeSecureUserData = vi.fn().mockResolvedValue(true)
+    const writeSecureUserData = vi.fn(async (_namespace: string, value: unknown) => {
+      expect(() => structuredClone(value)).not.toThrow()
+      return true
+    })
     Object.defineProperty(window, 'electronAPI', {
       configurable: true,
       value: {

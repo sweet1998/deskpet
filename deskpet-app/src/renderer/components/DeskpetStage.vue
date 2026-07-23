@@ -179,7 +179,7 @@ let pointerDownScreenPosition: { x: number; y: number } | null = null
 let compactLayoutPending = false
 
 onMounted(async () => {
-  await Promise.all([
+  await Promise.allSettled([
     aiConfig.load(),
     chat.hydrateSecureStorage(),
     agent.hydrateSecureStorage(),
