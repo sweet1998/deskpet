@@ -37,6 +37,16 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html')
+        },
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined
+            if (/node_modules\/(vue|@vue|pinia)\//.test(id)) return 'framework'
+            if (/node_modules\/(@pixi|pixi-live2d-display|animejs)\//.test(id)) return 'live2d'
+            if (/node_modules\/(marked|dompurify|highlight\.js)\//.test(id)) return 'markdown'
+            if (id.includes('node_modules/lucide-vue-next/')) return 'icons'
+            return undefined
+          }
         }
       }
     },

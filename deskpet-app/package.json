@@ -11,7 +11,8 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "npm run native:build && electron-vite dev",
-    "build": "npm run native:build && electron-vite build",
+    "build": "npm run native:build && electron-vite build && npm run renderer:prune",
+    "renderer:prune": "node scripts/prune-renderer-assets.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit",
     "native:build": "bash scripts/build-native-tools.sh",
     "backend:build": "bash scripts/build-backend.sh",
@@ -79,7 +80,15 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/exceljs/dist/**/*",
+      "!node_modules/mammoth/test/**/*",
+      "!node_modules/mammoth/browser/**/*",
+      "!node_modules/mammoth/mammoth.browser*.js",
+      "!node_modules/**/{test,tests,docs,example,examples}/**/*",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.md",
+      "!node_modules/**/*.ts"
     ],
     "extraResources": [
       {
