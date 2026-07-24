@@ -13,6 +13,7 @@ export type StockIntent =
   | 'market_snapshot'
   | 'market'
   | 'education'
+  | 'answer_followup'
   | 'clarification'
   | 'out_of_scope'
 

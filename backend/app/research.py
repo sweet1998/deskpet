@@ -86,6 +86,14 @@ CONTEXT_ONLY_WORDS = (
     "查一下", "查查", "帮我查", "看看", "看一下", "说说", "讲讲", "要", "可以", "好的", "好",
     "行", "嗯", "会", "能", "的", "了", "呢", "吗", "呀", "啊",
 )
+DATA_COVERAGE_FOLLOWUP_PATTERN = re.compile(
+    r"(?:为什么|为何).*(?:没|没有|不)(?:覆盖|包含|接入|提供|显示).*(?:消息面|新闻|公告|研报|舆情|数据)",
+)
+ANSWER_FOLLOWUP_PATTERNS = (
+    re.compile(r"(?:为什么|为何).*(?:没|没有|不)(?:覆盖|包含|考虑|分析|说明|提到|提供|显示)"),
+    re.compile(r"(?:你|刚才|上面|前面|上一条).{0,20}(?:为什么|为何|什么意思|依据|怎么得出|怎么判断)"),
+    re.compile(r"(?:这个|该|上述).{0,8}(?:结论|判断|说法|回答).{0,12}(?:为什么|为何|依据|怎么得出|什么意思)"),
+)
 
 SECTOR_THEMES: Dict[str, Tuple[str, ...]] = {
     "科技": ("半导体", "软件开发", "IT服务Ⅱ", "通信设备", "消费电子"),
@@ -129,6 +137,17 @@ def _is_context_only_question(text: str) -> bool:
     for word in sorted(CONTEXT_ONLY_WORDS, key=len, reverse=True):
         normalized = normalized.replace(word.lower(), "")
     return not normalized
+
+
+def _is_answer_followup(request: ResearchPrepareRequest) -> bool:
+    text = re.sub(r"[\s，。！？、,.!?：:；;（）()]+", "", request.text).lower()
+    if starts_new_topic(text) or _contains(text, OUT_OF_SCOPE_KEYWORDS):
+        return False
+    if DATA_COVERAGE_FOLLOWUP_PATTERN.search(text):
+        return True
+    if not any(item.role == "assistant" and item.content.strip() for item in request.history[-20:]):
+        return False
+    return any(pattern.search(text) for pattern in ANSWER_FOLLOWUP_PATTERNS)
 
 
 def _index_target(text: str) -> Optional[Dict[str, str]]:
@@ -601,6 +620,15 @@ class ResearchService:
         ) or _index_target(reference_query) is not None
         if _contains(text, OUT_OF_SCOPE_KEYWORDS) and not has_explicit_stock_signal:
             return self._out_of_scope(text)
+
+        if _is_answer_followup(request):
+            return ResearchPrepareResponse(
+                scope="in_scope",
+                intent="answer_followup",
+                requiresResearch=False,
+                targetKind="knowledge",
+                targets=[ResearchTarget(kind="knowledge", name="上一条回答")],
+            )
 
         index = _index_target(reference_query)
         if index:

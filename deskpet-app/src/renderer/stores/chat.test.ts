@@ -168,6 +168,36 @@ describe('chat store roles', () => {
     })
   })
 
+  it('captures the previous conversation before adding a direct follow-up', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('最近科技板块怎么样', 'req-sector', 'stock_expert')
+    chat.appendChatText('科技板块近期整体回调，现有数据没有覆盖消息面。', 'req-sector')
+    chat.finishChatStream('req-sector')
+
+    chat.addUserMessage('为什么你手上的数据没有覆盖消息面', 'req-direct-followup', 'stock_expert')
+
+    expect(chat.getRequestHistory('req-direct-followup')).toEqual([
+      { role: 'user', content: '最近科技板块怎么样' },
+      { role: 'assistant', content: '科技板块近期整体回调，现有数据没有覆盖消息面。' },
+    ])
+  })
+
+  it('includes an explicitly referenced answer when it is outside recent history', () => {
+    const chat = useChatStore()
+    for (let index = 0; index < 22; index += 1) {
+      chat.addUserMessage(`问题 ${index}`, `req-history-${index}`, 'stock_expert')
+    }
+
+    chat.addUserMessage('这个判断的依据是什么', 'req-old-reference', 'stock_expert', [], {
+      messageId: 'answer-old',
+      preview: '这是较早回答中的关键判断。',
+    })
+
+    const history = chat.getRequestHistory('req-old-reference')
+    expect(history).toHaveLength(20)
+    expect(history.at(-1)).toEqual({ role: 'assistant', content: '这是较早回答中的关键判断。' })
+  })
+
   it('keeps native input kinds so retries use the original workflow', () => {
     const chat = useChatStore()
     chat.addUserMessage('分析当前屏幕', 'req-screen', 'default', [], undefined, 'screenshot')

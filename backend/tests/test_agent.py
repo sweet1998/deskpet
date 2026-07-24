@@ -94,6 +94,31 @@ async def test_simple_stock_quote_uses_compact_output_budget():
 
 
 @pytest.mark.asyncio
+async def test_answer_followup_reaches_model_with_previous_assistant_message():
+    model = FakeModel()
+    service = AgentService(FakeMarket(), model)
+    previous_answer = "我手上的数据没有覆盖消息面，没法确认具体催化。"
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-answer-followup",
+        roleId="stock_expert",
+        text="为什么没有覆盖消息面",
+        history=[
+            ChatMessage(role="user", content="今天半导体板块怎么样"),
+            ChatMessage(role="assistant", content=previous_answer),
+        ],
+    ))]
+
+    assert any("event: delta" in event for event in events)
+    assert model.messages[1:3] == [
+        {"role": "user", "content": "今天半导体板块怎么样"},
+        {"role": "assistant", "content": previous_answer},
+    ]
+    assert "针对你上一条回答提出的解释性追问" in model.messages[0]["content"]
+    assert model.max_tokens == 1400
+
+
+@pytest.mark.asyncio
 async def test_research_prepare_stream_emits_progress_before_result():
     service = AgentService(FakeMarket(), FakeModel())
     events = [event async for event in service.stream_prepare(ResearchPrepareRequest(

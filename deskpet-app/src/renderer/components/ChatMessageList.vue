@@ -74,9 +74,9 @@
             <FileText :size="12" /> {{ attachment.name }}
           </span>
         </div>
-        <div v-if="message.role === 'assistant' && !message.streaming" class="message-actions">
+        <div v-if="!message.streaming" class="message-actions">
           <button
-            v-if="message.truncated"
+            v-if="message.role === 'assistant' && message.truncated"
             type="button"
             title="继续生成"
             :disabled="workspaceBusy"
@@ -84,12 +84,16 @@
           >
             <MessageCircleMore :size="13" /><span>继续生成</span>
           </button>
-          <button type="button" :title="copiedMessageId === message.id ? '已复制' : '复制回答'" @click="copyAnswer(message.id, message.text)">
+          <button
+            type="button"
+            :title="copiedMessageId === message.id ? '已复制' : message.role === 'user' ? '复制问题' : '复制回答'"
+            @click="copyMessage(message.id, message.text)"
+          >
             <Check v-if="copiedMessageId === message.id" :size="13" />
             <Copy v-else :size="13" />
           </button>
           <button
-            v-if="chat.canRetryRequest(message.id)"
+            v-if="message.role === 'assistant' && chat.canRetryRequest(message.id)"
             type="button"
             title="重新生成"
             :disabled="workspaceBusy"
@@ -97,7 +101,12 @@
           >
             <RotateCcw :size="13" />
           </button>
-          <button type="button" title="继续追问" @click="continueQuestion(message.id, message.text)">
+          <button
+            v-if="message.role === 'assistant'"
+            type="button"
+            title="继续追问"
+            @click="continueQuestion(message.id, message.text)"
+          >
             <MessageCircleMore :size="13" /><span>追问</span>
           </button>
         </div>
@@ -173,7 +182,7 @@ function scrollToBottom(): void {
   if (list) list.scrollTop = list.scrollHeight
 }
 
-async function copyAnswer(messageId: string, text: string): Promise<void> {
+async function copyMessage(messageId: string, text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
   } catch {
@@ -237,7 +246,7 @@ defineExpose({ isNearBottom, scrollToBottom })
 <style scoped>
 .message-list { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .message { max-width: 88%; padding: 8px 10px; border-radius: 7px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-.message.user { align-self: flex-end; color: #fff; background: #425d82; }
+.message.user { position: relative; align-self: flex-end; color: #fff; background: #425d82; }
 .message.assistant { align-self: flex-start; background: #edf0f5; }
 .generation-placeholder { min-width: 112px; display: flex; align-items: center; gap: 8px; color: #748196; }
 .generation-dots { display: inline-flex; align-items: center; gap: 3px; }
@@ -281,10 +290,13 @@ defineExpose({ isNearBottom, scrollToBottom })
 .sent-reply-reference svg { flex: none; }
 .sent-reply-reference span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-actions { height: 24px; margin: 6px -3px -3px; display: flex; align-items: center; gap: 1px; opacity: .52; }
-.message.assistant:hover .message-actions, .message-actions:focus-within { opacity: 1; }
+.message:hover .message-actions, .message-actions:focus-within { opacity: 1; }
 .message-actions button { height: 26px; min-width: 26px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; border: 0; border-radius: 4px; color: #607087; background: transparent; cursor: pointer; font-size: 11px; }
 .message-actions button:hover { background: #dfe4eb; }
 .message-actions button:disabled { opacity: .35; cursor: default; }
+.message.user .message-actions { position: absolute; right: calc(100% + 4px); bottom: 4px; height: 26px; margin: 0; opacity: .52; }
+.message.user .message-actions button { color: #607087; }
+.message.user .message-actions button:hover { background: #e4e8ee; }
 .sent-attachments { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
 .sent-attachments span { max-width: 100%; padding: 4px 6px; display: flex; align-items: center; gap: 5px; overflow: hidden; border-radius: 4px; background: rgba(255,255,255,.15); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .message.market { width: 100%; max-width: 100%; box-sizing: border-box; padding: 9px; color: #293548; background: #f6f7f9; border: 1px solid #dde2e9; white-space: normal; }

@@ -103,10 +103,7 @@ export function useChimeraTransport(): DeskpetTransport {
     const controller = new AbortController()
     backendRequests.get(requestId)?.abort()
     backendRequests.set(requestId, controller)
-    const history = selectConversationContext(chat.getRequestMessages(requestId)
-      .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
-        ? [{ role: message.role, content: message.text }]
-        : []), text)
+    const history = roleHistory(requestId, text)
     try {
       await streamBackendChat({
         requestId,
@@ -150,6 +147,8 @@ export function useChimeraTransport(): DeskpetTransport {
       lines.push(JSON.stringify(compactResearchContext(prepared.context)))
     } else if (prepared.intent === 'education') {
       lines.push('这是股票知识问题，直接解释概念和必要边界，不要虚构实时行情。')
+    } else if (prepared.intent === 'answer_followup') {
+      lines.push('这是用户针对上一条回答提出的解释性追问。结合最近对话直接解释上一条说法、依据和数据边界；不要重新要求股票代码。若上一条说法不准确或依据不足，应明确纠正。')
     }
     return lines.join('\n')
   }
@@ -168,10 +167,10 @@ export function useChimeraTransport(): DeskpetTransport {
       agent.memories.length ? `你需要记住这些信息：${agent.memories.join('；')}` : '',
       roleId === 'stock_expert' ? researchInstruction(prepared) : '',
     ].filter(Boolean).join('\n')
-    const history = selectConversationContext(chat.getRequestMessages(requestId)
-      .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
-        ? [{ role: message.role, content: message.text }]
-        : []), typeof userContent === 'string' ? userContent : '') as DoubaoMessage[]
+    const history = roleHistory(
+      requestId,
+      typeof userContent === 'string' ? userContent : '',
+    ) as DoubaoMessage[]
     return [{ role: 'system', content: identity }, ...history, { role: 'user', content: userContent }]
   }
 
@@ -262,10 +261,7 @@ export function useChimeraTransport(): DeskpetTransport {
   }
 
   function roleHistory(requestId: string, text: string) {
-    return selectConversationContext(chat.getRequestMessages(requestId)
-      .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
-        ? [{ role: message.role, content: message.text }]
-        : []), text)
+    return selectConversationContext(chat.getRequestHistory(requestId), text)
   }
 
   function completeLocalReply(requestId: string, roleId: RoleId, text: string): void {

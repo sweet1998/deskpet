@@ -91,6 +91,11 @@ export interface ChatConversation {
   messages: ChatMessage[]
 }
 
+export interface ChatHistoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 const LEGACY_HISTORY_KEY = 'deskpet/chat-history-v1'
 const LEGACY_DRAFTS_KEY = 'deskpet/chat-drafts-v1'
 const CONVERSATIONS_KEY = 'deskpet/chat-conversations-v2'
@@ -364,6 +369,7 @@ export const useChatStore = defineStore('chat', () => {
   const activeRole = ref<RoleId>('default')
   const requestRoleById = ref<Record<string, RoleId>>({})
   const requestConversationById = ref<Record<string, string>>({})
+  const requestHistoryById = ref<Record<string, ChatHistoryMessage[]>>({})
   const bubbleVisible = ref(false)
   const storageProtected = ref(false)
   const storageError = ref('')
@@ -734,6 +740,16 @@ export const useChatStore = defineStore('chat', () => {
     return requestConversationById.value[requestId]
   }
 
+  function getRequestHistory(requestId: string): ChatHistoryMessage[] {
+    const snapshot = requestHistoryById.value[requestId]
+    if (snapshot) return snapshot.map((item) => ({ ...item }))
+    return roleMessages(requestId).flatMap((message) => (
+      message.type === 'text' && message.id !== `user-${requestId}`
+        ? [{ role: message.role, content: message.text }]
+        : []
+    ))
+  }
+
   function addUserMessage(
     text: string,
     requestId?: string,
@@ -745,6 +761,17 @@ export const useChatStore = defineStore('chat', () => {
     const normalizedRole = normalizeRoleId(roleId)
     if (requestId) bindRequest(requestId, normalizedRole)
     const conversation = requestConversation(requestId)
+    if (requestId) {
+      const history = conversation.messages.flatMap((message) => (
+        message.type === 'text'
+          ? [{ role: message.role, content: message.text }]
+          : []
+      )).slice(-20)
+      if (replyTo && !history.some((item) => item.role === 'assistant' && item.content === replyTo.preview)) {
+        history.push({ role: 'assistant', content: replyTo.preview })
+      }
+      requestHistoryById.value[requestId] = history.slice(-20)
+    }
     conversation.messages.push({
       id: requestId ? `user-${requestId}` : createId('user'),
       role: 'user',
@@ -1049,6 +1076,7 @@ export const useChatStore = defineStore('chat', () => {
     getRequestRole,
     getRequestMessages,
     getRequestConversationId,
+    getRequestHistory,
     beginThought,
     appendThought,
     finishThought,

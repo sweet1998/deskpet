@@ -459,6 +459,33 @@ async def test_implicit_follow_up_inherits_security_without_pronouns():
 
 
 @pytest.mark.asyncio
+async def test_answer_explanation_follow_up_uses_history_without_resolving_a_new_target():
+    result, market = await prepare("为什么没有覆盖消息面", [
+        ChatMessage(role="user", content="今天半导体板块怎么样"),
+        ChatMessage(
+            role="assistant",
+            content="我手上的数据没有覆盖消息面，没法确认具体催化。",
+        ),
+    ])
+
+    assert result.scope == "in_scope"
+    assert result.intent == "answer_followup"
+    assert result.requiresResearch is False
+    assert result.targetKind == "knowledge"
+    assert result.thoughts == []
+    assert market.calls == []
+
+
+@pytest.mark.asyncio
+async def test_data_coverage_question_remains_in_scope_when_client_history_is_missing():
+    result, market = await prepare("为什么你手上的数据没有覆盖消息面")
+
+    assert result.scope == "in_scope"
+    assert result.intent == "answer_followup"
+    assert market.calls == []
+
+
+@pytest.mark.asyncio
 async def test_implicit_follow_up_inherits_previous_sector():
     result, _ = await prepare("为什么最近跌这么厉害", [
         ChatMessage(role="user", content="白酒板块最近怎么样"),

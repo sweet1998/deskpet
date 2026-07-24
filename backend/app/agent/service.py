@@ -26,6 +26,11 @@ def research_prompt(prepared: ResearchPrepareResponse) -> str:
         ])
     elif prepared.intent == "education":
         lines.append("这是股票知识问题，直接解释核心概念和必要边界，不要虚构实时行情。")
+    elif prepared.intent == "answer_followup":
+        lines.append(
+            "这是用户针对你上一条回答提出的解释性追问。结合最近对话直接解释上一条说法、依据和数据边界；"
+            "不要重新要求股票代码。若上一条说法不准确或依据不足，应明确纠正。"
+        )
     return "\n".join(lines)
 
 
