@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import ChatMessage, MarketContextResponse, ResearchPrepareRequest, SecurityContext
+from app.models import ChatMessage, MarketContextResponse, ResearchPrepareRequest, SecurityContext, StockRouteHint
 from app.research import ResearchService
 
 
@@ -145,14 +145,131 @@ class FakeResearchMarket:
         }
 
 
-async def prepare(text, history=None):
+async def prepare(text, history=None, route=None):
     market = FakeResearchMarket()
     result = await ResearchService(market).prepare(ResearchPrepareRequest(
         text=text,
         roleId="stock_expert",
         history=history or [],
+        routeHint=route,
     ))
     return result, market
+
+
+@pytest.mark.asyncio
+async def test_high_confidence_model_route_resolves_only_terms_present_in_history():
+    result, market = await prepare("它最近表现怎么样", [
+        ChatMessage(role="user", content="看看白酒板块"),
+        ChatMessage(role="assistant", content="白酒板块今天震荡。"),
+    ], StockRouteHint(
+        scope="in_scope",
+        intent="sector",
+        relation="followup",
+        targetKind="sector",
+        targetTerms=["白酒", "新能源"],
+        requiresResearch=True,
+        confidence=0.96,
+    ))
+
+    assert result.intent == "sector"
+    assert result.targets[0].name == "白酒"
+    assert ("sector", "白酒") in market.calls
+    assert all("新能源" not in query for _, query in market.calls)
+
+
+@pytest.mark.asyncio
+async def test_constituent_followup_overrides_incorrect_model_out_of_scope_route():
+    result, market = await prepare("上涨的是哪几家", [
+        ChatMessage(role="user", content="最近白酒行情怎么样 为什么"),
+        ChatMessage(role="assistant", content="白酒板块有 8 家上涨、4 家下跌。"),
+    ], StockRouteHint(
+        scope="out_of_scope",
+        intent="out_of_scope",
+        relation="standalone",
+        targetKind="none",
+        requiresResearch=False,
+        confidence=0.98,
+    ))
+
+    assert result.scope == "in_scope"
+    assert result.intent == "sector_snapshot"
+    assert result.targets[0].name == "白酒"
+    assert ("sector", "白酒") in market.calls
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_model_route_falls_back_to_deterministic_router():
+    result, _ = await prepare("它最近表现怎么样", route=StockRouteHint(
+        scope="in_scope",
+        intent="sector",
+        relation="followup",
+        targetKind="sector",
+        targetTerms=["白酒"],
+        requiresResearch=True,
+        confidence=0.4,
+    ))
+
+    assert result.intent == "clarification"
+
+
+@pytest.mark.asyncio
+async def test_explicit_security_code_takes_priority_over_model_out_of_scope_hint():
+    result, _ = await prepare("600519 现在多少钱", route=StockRouteHint(
+        scope="out_of_scope",
+        intent="out_of_scope",
+        relation="standalone",
+        targetKind="none",
+        confidence=0.99,
+    ))
+
+    assert result.scope == "in_scope"
+    assert result.intent == "security_quote"
+
+
+@pytest.mark.asyncio
+async def test_new_topic_model_route_cannot_reuse_target_term_from_old_history():
+    result, market = await prepare("换个话题，看看别的", [
+        ChatMessage(role="user", content="分析白酒板块"),
+        ChatMessage(role="assistant", content="白酒板块近期震荡。"),
+    ], StockRouteHint(
+        scope="needs_clarification",
+        intent="clarification",
+        relation="new_topic",
+        targetKind="none",
+        targetTerms=["白酒"],
+        confidence=0.95,
+    ))
+
+    assert result.intent == "clarification"
+    assert all("白酒" not in query for _, query in market.calls)
+
+
+@pytest.mark.asyncio
+async def test_model_answer_followup_route_takes_priority_over_explicit_code():
+    result, market = await prepare("为什么你说 600519 风险较高", route=StockRouteHint(
+        scope="in_scope",
+        intent="answer_followup",
+        relation="answer_explanation",
+        targetKind="knowledge",
+        confidence=0.94,
+    ))
+
+    assert result.intent == "answer_followup"
+    assert market.calls == []
+
+
+@pytest.mark.asyncio
+async def test_model_can_classify_stock_term_not_in_static_education_dictionary():
+    result, market = await prepare("股票里的 Alpha 是什么", route=StockRouteHint(
+        scope="in_scope",
+        intent="education",
+        relation="standalone",
+        targetKind="knowledge",
+        confidence=0.93,
+    ))
+
+    assert result.intent == "education"
+    assert market.calls == []
 
 
 @pytest.mark.asyncio
@@ -170,6 +287,23 @@ async def test_out_of_scope_and_education_skip_research_data():
     assert education.intent == "education"
     assert education.requiresResearch is False
     assert education_market.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "你对什么领域很了解",
+    "你擅长什么",
+    "你能帮我做什么",
+    "你是谁",
+])
+async def test_role_capability_questions_skip_market_data(query):
+    result, market = await prepare(query)
+
+    assert result.scope == "in_scope"
+    assert result.intent == "role_capability"
+    assert result.requiresResearch is False
+    assert result.reply is None
+    assert market.calls == []
 
 
 @pytest.mark.asyncio

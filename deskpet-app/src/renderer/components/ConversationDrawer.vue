@@ -18,7 +18,9 @@
     </button>
     <p v-if="chat.storageNotice" class="session-warning">{{ chat.storageNotice }}</p>
     <div class="session-list">
-      <div v-if="filteredConversations.length === 0" class="session-empty">没有匹配的会话</div>
+      <div v-if="filteredConversations.length === 0" class="session-empty">
+        {{ query.trim() ? '没有匹配的会话' : '暂无会话记录' }}
+      </div>
       <div
         v-for="conversation in filteredConversations"
         :key="conversation.id"

@@ -116,9 +116,9 @@
       v-if="waitingForFirstToken"
       class="message assistant generation-placeholder"
       role="status"
-      aria-label="正在组织回答"
+      :aria-label="waitingLabel"
     >
-      <span>正在组织回答</span>
+      <span>{{ waitingLabel }}</span>
       <span class="generation-dots" aria-hidden="true"><i /><i /><i /></span>
     </div>
   </div>
@@ -157,15 +157,18 @@ const agent = useAgentStore()
 const chat = useChatStore()
 const listRef = ref<HTMLElement>()
 const copiedMessageId = ref('')
+const responseStarted = computed(() => chat.messages.some((message) => (
+  (message.type === 'text' && message.role === 'assistant' && message.id === agent.activeRequestId)
+  || (message.type === 'thought' && message.requestId === agent.activeRequestId)
+  || (message.type === 'market' && message.requestId === agent.activeRequestId)
+  || (message.type === 'status' && message.requestId === agent.activeRequestId)
+)))
 const waitingForFirstToken = computed(() => (
-  agent.state === 'speaking'
+  ['thinking', 'planning', 'executing', 'speaking'].includes(agent.state)
   && agent.interruptible
-  && !chat.messages.some((message) => (
-    message.type === 'text'
-    && message.role === 'assistant'
-    && message.id === agent.activeRequestId
-  ))
+  && !responseStarted.value
 ))
+const waitingLabel = computed(() => agent.state === 'speaking' ? '正在组织回答' : '正在理解问题')
 let copiedTimer: ReturnType<typeof setTimeout> | null = null
 
 onUnmounted(() => {

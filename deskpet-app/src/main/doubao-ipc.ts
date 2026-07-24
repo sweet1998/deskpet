@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { BrowserWindow, type IpcMain } from 'electron'
 import {
+  classifyStockIntent,
   detectDoubaoCapabilities,
   normalizeDoubaoConfig,
   requestDoubao,
@@ -21,6 +22,7 @@ import {
   type DoubaoConfigInput,
   type DoubaoConfigView,
 } from '../shared/doubao'
+import type { StockRouteRequest, StockRouteResult } from '../shared/research'
 
 interface DoubaoIpcOptions {
   userDataPath: string
@@ -123,11 +125,47 @@ export class DoubaoIpcController {
         if (this.requests.get(input.requestId) === controller) this.requests.delete(input.requestId)
       }
     })
+    ipcMain.handle('doubao-stock-route', async (event, input: StockRouteRequest): Promise<StockRouteResult> => {
+      if (!this.isMainSender(event)) return { ok: false, error: '无效的调用来源' }
+      if (
+        !input || typeof input.requestId !== 'string' || !input.requestId
+        || typeof input.text !== 'string' || !input.text.trim()
+        || !Array.isArray(input.history)
+      ) return { ok: false, error: '无效的意图识别请求' }
+      const request = {
+        requestId: input.requestId.slice(0, 100),
+        text: input.text.slice(0, 4000),
+        history: input.history.slice(-20).flatMap((message) => (
+          message
+          && ['user', 'assistant'].includes(message.role)
+          && typeof message.content === 'string'
+          && message.content.trim()
+            ? [{ role: message.role, content: message.content.slice(0, 12000) }]
+            : []
+        )),
+      } as StockRouteRequest
+      const key = `route:${request.requestId}`
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 1_500)
+      this.requests.get(key)?.abort()
+      this.requests.set(key, controller)
+      try {
+        return await classifyStockIntent(this.getConfig(), request, {
+          signal: controller.signal,
+          baseUrl: this.baseUrl,
+        })
+      } finally {
+        clearTimeout(timeout)
+        if (this.requests.get(key) === controller) this.requests.delete(key)
+      }
+    })
     ipcMain.handle('cancel-doubao-chat', (event, requestId: unknown) => {
       if (!this.isMainSender(event) || typeof requestId !== 'string') return false
       const controller = this.requests.get(requestId)
+      const routeController = this.requests.get(`route:${requestId}`)
       controller?.abort()
-      return Boolean(controller)
+      routeController?.abort()
+      return Boolean(controller || routeController)
     })
   }
 

@@ -80,6 +80,7 @@ interface ElectronAPI {
   testDoubaoConnection: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoResult>
   detectDoubaoCapabilities: (input: import('../shared/doubao').DoubaoConfigInput) => Promise<import('../shared/doubao').DoubaoCapabilityReport>
   doubaoChat: (input: import('../shared/doubao').DoubaoChatRequest) => Promise<import('../shared/doubao').DoubaoResult>
+  classifyStockIntent: (input: import('../shared/research').StockRouteRequest) => Promise<import('../shared/research').StockRouteResult>
   onDoubaoChatDelta: (callback: (event: import('../shared/doubao').DoubaoStreamDelta) => void) => () => void
   cancelDoubaoChat: (requestId: string) => Promise<boolean>
   getMarketConfig: () => Promise<import('../shared/market').MarketBridgeConfig>

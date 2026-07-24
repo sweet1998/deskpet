@@ -38,6 +38,7 @@ interface ExposedElectronAPI {
   captureScreen: () => Promise<string | null>
   captureScreenRegion: () => Promise<string | null>
   detectDoubaoCapabilities: (value: { apiKey?: string; model?: string }) => Promise<DoubaoCapabilityReport>
+  classifyStockIntent: (value: import('../shared/research').StockRouteRequest) => Promise<import('../shared/research').StockRouteResult>
   clearDoubaoConfig: () => Promise<boolean>
   getAppVersion: () => Promise<string>
   openProductDocument: (kind: 'privacy' | 'terms') => Promise<boolean>
@@ -150,6 +151,14 @@ describe('pet context menu preload API', () => {
     electronAPI.detectDoubaoCapabilities(input)
 
     expect(electronMocks.invoke).toHaveBeenCalledWith('detect-doubao-capabilities', input)
+  })
+
+  it('forwards stock intent classification without exposing the router prompt', () => {
+    const input = { requestId: 'route-1', text: '它为什么下跌', history: [] }
+
+    electronAPI.classifyStockIntent(input)
+
+    expect(electronMocks.invoke).toHaveBeenCalledWith('doubao-stock-route', input)
   })
 
   it('forwards secure credential deletion', () => {

@@ -17,6 +17,7 @@ import type {
 } from '../shared/secure-user-data'
 import type { SttTranscriptionResult, VoicePermissionStatus } from '../shared/voice'
 import type { DesktopBackendAccess } from '../shared/backend'
+import type { StockRouteRequest } from '../shared/research'
 import type {
   NativeFileExtractionInput,
   NativeFileExtractionResult,
@@ -160,6 +161,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detectDoubaoCapabilities: (input: DoubaoConfigInput): Promise<DoubaoCapabilityReport> =>
     ipcRenderer.invoke('detect-doubao-capabilities', input),
   doubaoChat: (input: DoubaoChatRequest) => ipcRenderer.invoke('doubao-chat', input),
+  classifyStockIntent: (input: StockRouteRequest) => ipcRenderer.invoke('doubao-stock-route', input),
   onDoubaoChatDelta: (callback: (event: DoubaoStreamDelta) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, value: DoubaoStreamDelta) => callback(value)
     ipcRenderer.on('doubao-chat-delta', listener)

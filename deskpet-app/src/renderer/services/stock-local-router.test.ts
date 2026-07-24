@@ -12,6 +12,16 @@ describe('stock local fallback router', () => {
     expect(localStockPreparation('天气变化会影响哪些股票')).toBeUndefined()
   })
 
+  it.each(['你对什么领域很了解', '你擅长什么', '你能帮我做什么', '你是谁'])(
+    'routes role capability questions without hard-coding the answer: %s',
+    (query) => {
+      const result = localStockPreparation(query)
+      expect(result?.intent).toBe('role_capability')
+      expect(result?.requiresResearch).toBe(false)
+      expect(result?.reply).toBeUndefined()
+    },
+  )
+
   it('detects unavailable market contexts without treating education as unavailable', () => {
     expect(researchContextUnavailable({
       scope: 'in_scope', intent: 'market_snapshot', requiresResearch: false,

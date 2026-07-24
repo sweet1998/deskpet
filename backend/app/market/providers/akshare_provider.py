@@ -7,6 +7,9 @@ import time
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+import requests
+from bs4 import BeautifulSoup
+
 from .base import MarketProvider
 from .eastmoney import _market_name, map_symbol
 
@@ -32,6 +35,31 @@ def _number(value: Any) -> Optional[float]:
         return result if math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
+
+
+def _display_number(value: Any, default_scale: float = 1.0) -> Optional[float]:
+    raw = _text(value)
+    if raw is None:
+        return None
+    normalized = raw.replace(",", "").replace("%", "").strip()
+    scales = {"万手": 10_000, "亿": 100_000_000, "万": 10_000}
+    for suffix, scale in scales.items():
+        if normalized.endswith(suffix):
+            number = _number(normalized[:-len(suffix)])
+            return number * scale if number is not None else None
+    number = _number(normalized)
+    return number * default_scale if number is not None else None
+
+
+def _breadth(value: Any) -> tuple[Optional[int], Optional[int]]:
+    raw = _text(value)
+    if not raw or "/" not in raw:
+        return None, None
+    advancers, decliners = raw.split("/", 1)
+    try:
+        return int(advancers.strip()), int(decliners.strip())
+    except ValueError:
+        return None, None
 
 
 def _text(value: Any) -> Optional[str]:
@@ -60,6 +88,29 @@ def _records(frame: Any) -> List[Dict[str, Any]]:
     if getattr(frame, "empty", False):
         return []
     return [dict(item) for item in frame.to_dict(orient="records")]
+
+
+def _ths_sector_constituent_rows(category: str, code: str, timeout: float) -> List[Dict[str, Any]]:
+    path = "thshy" if category == "industry_ths" else "gn"
+    response = requests.get(
+        f"https://q.10jqka.com.cn/{path}/detail/code/{code}/",
+        headers={"User-Agent": "Mozilla/5.0 DeskpetMarket/1.0"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, features="lxml")
+    table = soup.select_one("table.m-pager-table")
+    if table is None:
+        raise RuntimeError("同花顺板块页面没有返回成分股表格")
+    headers = [item.get_text(" ", strip=True) for item in table.select("thead th")]
+    if not headers:
+        headers = [item.get_text(" ", strip=True) for item in table.select("tr th")]
+    output = []
+    for row in table.select("tbody tr"):
+        values = [item.get_text(" ", strip=True) for item in row.select("td")]
+        if headers and len(values) == len(headers):
+            output.append(dict(zip(headers, values)))
+    return output
 
 
 class AkshareProvider(MarketProvider):
@@ -372,23 +423,28 @@ class AkshareProvider(MarketProvider):
     async def sector_snapshot(self, category: str, code: str, name: str) -> Dict[str, Any]:
         if category.endswith("_ths"):
             function = (
-                self.ak.stock_board_industry_summary_ths
+                self.ak.stock_board_industry_info_ths
                 if category == "industry_ths"
-                else self.ak.stock_board_concept_summary_ths
+                else self.ak.stock_board_concept_info_ths
             )
-            rows = _records(await self._call(function))
-            row = next((item for item in rows if str(item.get("板块") or item.get("概念名称") or "") == name), None)
-            if not row:
-                raise RuntimeError(f"AKShare 同花顺数据中没有板块 {name}")
+            values = {
+                str(row.get("项目") or "").strip(): row.get("值")
+                for row in _records(await self._call(function, symbol=name))
+            }
+            if not values:
+                raise RuntimeError(f"AKShare 同花顺没有返回板块 {name} 的快照")
+            advancers, decliners = _breadth(values.get("涨跌家数"))
             return {
-                "changePercent": _number(row.get("涨跌幅")),
-                "volume": _number(row.get("总成交量")),
-                "amount": _number(row.get("总成交额")),
-                "advancers": _number(row.get("上涨家数")),
-                "decliners": _number(row.get("下跌家数")),
-                "leader": _text(row.get("领涨股")),
-                "leaderPrice": _number(row.get("领涨股-最新价")),
-                "leaderChangePercent": _number(row.get("领涨股-涨跌幅")),
+                "open": _display_number(values.get("今开")),
+                "previousClose": _display_number(values.get("昨收")),
+                "low": _display_number(values.get("最低")),
+                "high": _display_number(values.get("最高")),
+                "changePercent": _display_number(values.get("板块涨幅")),
+                "volume": _display_number(values.get("成交量(万手)"), 10_000),
+                "amount": _display_number(values.get("成交额(亿)"), 100_000_000),
+                "netInflow": _display_number(values.get("资金净流入(亿)"), 100_000_000),
+                "advancers": advancers,
+                "decliners": decliners,
                 "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
             }
         function = (
@@ -466,14 +522,27 @@ class AkshareProvider(MarketProvider):
 
     async def sector_constituents(self, category: str, code: str, name: str) -> List[Dict[str, Any]]:
         if category.endswith("_ths"):
-            raise RuntimeError("同花顺板块源未提供标准化成分股列表")
-        function = (
-            self.ak.stock_board_industry_cons_em
-            if category == "industry"
-            else self.ak.stock_board_concept_cons_em
-        )
+            function_name = (
+                "stock_board_industry_cons_ths"
+                if category == "industry_ths"
+                else "stock_board_concept_cons_ths"
+            )
+            function = getattr(self.ak, function_name, None)
+            frame = await self._call(function, symbol=name) if function else await self._call(
+                _ths_sector_constituent_rows,
+                category,
+                code,
+                self.timeout,
+            )
+        else:
+            function = (
+                self.ak.stock_board_industry_cons_em
+                if category == "industry"
+                else self.ak.stock_board_concept_cons_em
+            )
+            frame = await self._call(function, symbol=code)
         output = []
-        for row in _records(await self._call(function, symbol=code)):
+        for row in _records(frame):
             symbol = str(row.get("代码") or "").strip()
             normalized = map_symbol(symbol)
             if not normalized:
@@ -481,12 +550,18 @@ class AkshareProvider(MarketProvider):
             output.append({
                 "code": normalized,
                 "name": _text(row.get("名称")) or symbol,
-                "price": _number(row.get("最新价")),
-                "changePercent": _number(row.get("涨跌幅")),
-                "amount": _number(row.get("成交额")),
-                "turnoverRate": _number(row.get("换手率")),
-                "peRatio": _number(row.get("市盈率-动态")),
-                "pbRatio": _number(row.get("市净率")),
+                "price": _display_number(row.get("最新价") if "最新价" in row else row.get("现价")),
+                "changePercent": _display_number(
+                    row.get("涨跌幅") if "涨跌幅" in row else row.get("涨跌幅(%)"),
+                ),
+                "amount": _display_number(row.get("成交额")),
+                "turnoverRate": _display_number(
+                    row.get("换手率") if "换手率" in row else row.get("换手(%)"),
+                ),
+                "peRatio": _display_number(
+                    row.get("市盈率-动态") if "市盈率-动态" in row else row.get("市盈率"),
+                ),
+                "pbRatio": _display_number(row.get("市净率")),
             })
         if not output:
             raise RuntimeError(f"AKShare 没有返回板块 {code} 的成分股")

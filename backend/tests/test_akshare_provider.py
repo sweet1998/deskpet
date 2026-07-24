@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.market.providers.akshare_provider import AkshareProvider
+from app.market.providers.akshare_provider import AkshareProvider, _ths_sector_constituent_rows
 
 
 class FakeFrame:
@@ -140,6 +140,32 @@ class FakeAkshare:
             {"代码": "000858", "名称": "五粮液", "最新价": 120, "涨跌幅": -0.5},
         ])
 
+    def stock_board_concept_info_ths(self, symbol):
+        assert symbol == "创新药"
+        return FakeFrame([
+            {"项目": "今开", "值": "1219.28"},
+            {"项目": "昨收", "值": "1229.17"},
+            {"项目": "板块涨幅", "值": "-3.97%"},
+            {"项目": "涨跌家数", "值": "6/273"},
+            {"项目": "资金净流入(亿)", "值": "-88.67"},
+            {"项目": "成交额(亿)", "值": "827.02"},
+        ])
+
+    def stock_board_concept_cons_ths(self, symbol):
+        assert symbol == "创新药"
+        return FakeFrame([
+            {
+                "代码": "600538", "名称": "国发股份", "现价": "4.77",
+                "涨跌幅(%)": "6.95", "换手(%)": "4.03", "成交额": "0.98亿",
+                "市盈率": "--",
+            },
+            {
+                "代码": "300639", "名称": "凯普生物", "现价": "5.35",
+                "涨跌幅(%)": "4.49", "换手(%)": "5.93", "成交额": "2.04亿",
+                "市盈率": "35.2",
+            },
+        ])
+
     def stock_zh_index_spot_em(self, symbol):
         assert symbol == "沪深重要指数"
         return FakeFrame([{"代码": "000300", "名称": "沪深300", "最新价": 4200, "涨跌幅": 0.8}])
@@ -269,3 +295,46 @@ async def test_akshare_sector_catalog_falls_back_to_ths():
     assert catalog == [{"kind": "industry_ths", "code": "881273", "name": "白酒"}]
     assert scan_snapshot[0]["kind"] == "industry_ths"
     assert scan_snapshot[0]["source"] == "akshare-ths"
+
+
+@pytest.mark.asyncio
+async def test_akshare_maps_ths_concept_snapshot_and_constituents():
+    provider = AkshareProvider(timeout=1, ak_module=FakeAkshare())
+    try:
+        snapshot = await provider.sector_snapshot("concept_ths", "308014", "创新药")
+        constituents = await provider.sector_constituents("concept_ths", "308014", "创新药")
+    finally:
+        await provider.close()
+
+    assert snapshot["changePercent"] == -3.97
+    assert snapshot["advancers"] == 6
+    assert snapshot["decliners"] == 273
+    assert snapshot["amount"] == 82_702_000_000
+    assert constituents[0]["code"] == "SH.600538"
+    assert constituents[0]["changePercent"] == 6.95
+    assert constituents[0]["amount"] == 98_000_000
+    assert constituents[1]["code"] == "SZ.300639"
+
+
+def test_ths_constituent_parser_uses_structured_table(monkeypatch):
+    html = """
+    <table class="m-table m-pager-table">
+      <thead><tr><th>代码</th><th>名称</th><th>现价</th></tr></thead>
+      <tbody><tr><td>600538</td><td>国发股份</td><td>4.77</td></tr></tbody>
+    </table>
+    """
+
+    class Response:
+        text = html
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(
+        "app.market.providers.akshare_provider.requests.get",
+        lambda *args, **kwargs: Response(),
+    )
+    assert _ths_sector_constituent_rows("concept_ths", "308014", 1) == [{
+        "代码": "600538", "名称": "国发股份", "现价": "4.77",
+    }]

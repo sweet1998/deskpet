@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  classifyStockIntent,
   detectDoubaoCapabilities,
   normalizeDoubaoConfig,
   requestDoubao,
@@ -65,6 +66,64 @@ describe('doubao client', () => {
 
     expect(result.ok).toBe(false)
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('classifies an ambiguous follow-up with deterministic JSON settings', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({
+        scope: 'in_scope',
+        intent: 'sector',
+        relation: 'followup',
+        targetKind: 'sector',
+        targetTerms: ['白酒', '新能源'],
+        requiresResearch: true,
+        confidence: 0.96,
+      }) } }] }),
+    })
+    const input = {
+      requestId: 'route-1',
+      text: '它最近怎么样',
+      history: [
+        { role: 'user' as const, content: '看看白酒板块' },
+        { role: 'assistant' as const, content: '白酒板块近期震荡。' },
+      ],
+    }
+
+    const result = await classifyStockIntent(
+      { apiKey: 'secret', model: 'ep-test' },
+      input,
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    )
+
+    expect(result).toMatchObject({
+      ok: true,
+      decision: { intent: 'sector', relation: 'followup', targetTerms: ['白酒'], confidence: 0.96 },
+    })
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1].body))
+    expect(body).toMatchObject({
+      temperature: 0,
+      max_tokens: 350,
+      stream: false,
+      response_format: { type: 'json_object' },
+    })
+  })
+
+  it('rejects malformed stock routing output', async () => {
+    const result = await classifyStockIntent(
+      { apiKey: 'secret', model: 'ep-test' },
+      { requestId: 'route-bad', text: '它怎么样', history: [] },
+      {
+        fetchImpl: vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: '{"intent":"sector"}' } }] }),
+        }) as unknown as typeof fetch,
+      },
+    )
+
+    expect(result).toMatchObject({ ok: false, error: '意图模型返回了无效的结构化结果' })
   })
 
   it.each([

@@ -13,9 +13,13 @@ export type StockIntent =
   | 'market_snapshot'
   | 'market'
   | 'education'
+  | 'role_capability'
   | 'answer_followup'
   | 'clarification'
   | 'out_of_scope'
+
+export type StockRouteRelation = 'standalone' | 'followup' | 'answer_explanation' | 'new_topic'
+export type StockRouteTargetKind = 'security' | 'sector' | 'index' | 'market' | 'knowledge' | 'none'
 
 export interface ResearchHistoryMessage {
   role: 'user' | 'assistant'
@@ -32,6 +36,29 @@ export interface ResearchPrepareInput {
   text: string
   roleId: RoleId
   history: ResearchHistoryMessage[]
+  routeHint?: StockRouteDecision
+}
+
+export interface StockRouteDecision {
+  scope: 'in_scope' | 'needs_clarification' | 'out_of_scope'
+  intent: StockIntent
+  relation: StockRouteRelation
+  targetKind: StockRouteTargetKind
+  targetTerms: string[]
+  requiresResearch: boolean
+  confidence: number
+}
+
+export interface StockRouteRequest {
+  requestId: string
+  text: string
+  history: ResearchHistoryMessage[]
+}
+
+export interface StockRouteResult {
+  ok: boolean
+  decision?: StockRouteDecision
+  error?: string
 }
 
 export interface ResearchPrepareResult {

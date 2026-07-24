@@ -103,6 +103,22 @@ class FailingSectorDataProvider(FakeProvider):
         raise RuntimeError("sector constituents failed")
 
 
+class PartialSectorProvider(FakeProvider):
+    name = "akshare-eastmoney"
+
+    async def sector_snapshot(self, category, code, name):
+        return {"changePercent": -4.03, "advancers": 6, "decliners": 273}
+
+    async def sector_bars(self, category, name, count):
+        return [{"time": "2026-07-23", "close": 1200}]
+
+    async def sector_constituents(self, category, code, name):
+        return [
+            {"code": "SH.600538", "name": "国发股份", "changePercent": 6.95},
+            {"code": "SZ.300639", "name": "凯普生物", "changePercent": 4.88},
+        ]
+
+
 def test_a_share_code_mapping():
     assert map_symbol("600519") == "SH.600519"
     assert map_symbol("000001") == "SZ.000001"
@@ -172,6 +188,20 @@ async def test_known_sector_uses_disclosed_constituent_proxy_when_board_data_fai
     assert result["snapshot"]["changePercent"] == 1.2
     assert result["dataSources"]["snapshot"] == "fake-market-sector-proxy"
     assert any("代表性成分股的等权估算" in warning for warning in result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_sector_context_prefers_full_snapshot_breadth_over_partial_rankings():
+    service = MarketService(PartialSectorProvider(), TTLCache())
+
+    result = await service.sector_context("concept_ths", "308014", "创新药")
+
+    assert result["breadth"] == {"advancers": 6, "decliners": 273, "unchanged": 0}
+    assert result["dataSources"]["constituents"] == "akshare-ths"
+    assert result["leaders"][0]["name"] == "国发股份"
+    assert [item["name"] for item in result["advancingConstituents"]] == ["国发股份", "凯普生物"]
+    assert result["laggards"] == []
+    assert any("不代表完整成分股列表" in warning for warning in result["warnings"])
 
 
 @pytest.mark.asyncio

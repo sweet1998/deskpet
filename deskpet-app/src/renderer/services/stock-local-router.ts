@@ -14,6 +14,7 @@ const OUT_OF_SCOPE_TERMS = [
 const STOCK_SIGNALS = [
   ...EDUCATION_TERMS, '股票', '个股', '板块', '行业', '概念', '指数', '大盘', 'a股', '股市', '行情',
 ]
+const ROLE_CAPABILITY_PATTERN = /你是谁|你叫什么|你(?:会|能|可以)(?:做|回答|分析)(?:什么|哪些)|你(?:能|可以)帮我(?:做|分析)?(?:什么|哪些)|你能干什么|你擅长(?:什么|哪些|哪方面)|你对(?:什么|哪些)领域(?:很)?了解|你了解(?:什么|哪些)领域|你的(?:能力|功能|服务范围)(?:是什么|有哪些)?/
 
 function contains(text: string, values: string[]): boolean {
   const normalized = text.toLocaleLowerCase()
@@ -23,6 +24,16 @@ function contains(text: string, values: string[]): boolean {
 export function localStockPreparation(text: string): ResearchPrepareResult | undefined {
   const normalized = text.trim()
   if (!normalized || /(?<!\d)\d{6}(?!\d)/.test(normalized)) return undefined
+  if (ROLE_CAPABILITY_PATTERN.test(normalized)) {
+    return {
+      scope: 'in_scope',
+      intent: 'role_capability',
+      requiresResearch: false,
+      targetKind: 'knowledge',
+      targets: [{ kind: 'knowledge', name: '角色能力' }],
+      thoughts: [],
+    }
+  }
   if (contains(normalized, OUT_OF_SCOPE_TERMS) && !contains(normalized, STOCK_SIGNALS)) {
     return {
       scope: 'out_of_scope',

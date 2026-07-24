@@ -183,6 +183,29 @@ function sanitizeMarketCard(value: unknown): ChatMarketCard | null {
   }
 }
 
+function marketCardIdentity(card: ChatMarketCard): string {
+  return card.items
+    .map((item) => String(item.code || item.name).trim().toLocaleLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join('|')
+}
+
+function dedupeMarketMessages(messages: ChatMessage[]): ChatMessage[] {
+  const seen = new Set<string>()
+  return messages.filter((message) => {
+    if (message.type !== 'market') return true
+    const identity = marketCardIdentity(message.card)
+    if (!identity || seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
+}
+
+function hasUserMessage(messages: ChatMessage[]): boolean {
+  return messages.some((message) => message.type === 'text' && message.role === 'user')
+}
+
 function sanitizeStoredMessage(value: unknown): ChatMessage | null {
   if (!value || typeof value !== 'object') return null
   const item = value as Record<string, unknown>
@@ -263,8 +286,11 @@ function sanitizeConversation(value: unknown, roleId: RoleId): ChatConversation 
   if (typeof item.id !== 'string' || !item.id) return null
   const createdAt = typeof item.createdAt === 'number' ? item.createdAt : Date.now()
   const messages = Array.isArray(item.messages)
-    ? item.messages.map(sanitizeStoredMessage).filter((entry): entry is ChatMessage => Boolean(entry)).slice(-MESSAGE_LIMIT)
+    ? dedupeMarketMessages(
+      item.messages.map(sanitizeStoredMessage).filter((entry): entry is ChatMessage => Boolean(entry)),
+    ).slice(-MESSAGE_LIMIT)
     : []
+  if (!hasUserMessage(messages)) return null
   return {
     id: item.id,
     roleId,
@@ -387,7 +413,9 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   const activeConversation = computed(() => activeForRole(activeRole.value))
-  const conversations = computed(() => conversationsByRole.value[activeRole.value])
+  const conversations = computed(() => (
+    conversationsByRole.value[activeRole.value].filter((conversation) => hasUserMessage(conversation.messages))
+  ))
   const messages = computed(() => activeConversation.value.messages)
   const messagesByRole = computed<Record<RoleId, ChatMessage[]>>(() => ({
     default: activeForRole('default').messages,
@@ -404,14 +432,20 @@ export const useChatStore = defineStore('chat', () => {
       storageNotice.value = `单个会话最多长期保留 ${MESSAGE_LIMIT} 条消息，请及时导出重要内容。`
     }
     return {
-      default: conversationsByRole.value.default.slice(0, CONVERSATION_LIMIT).map((conversation) => ({
-        ...conversation,
-        messages: persistedMessages(conversation),
-      })),
-      stock_expert: conversationsByRole.value.stock_expert.slice(0, CONVERSATION_LIMIT).map((conversation) => ({
-        ...conversation,
-        messages: persistedMessages(conversation),
-      })),
+      default: conversationsByRole.value.default
+        .filter((conversation) => hasUserMessage(conversation.messages))
+        .slice(0, CONVERSATION_LIMIT)
+        .map((conversation) => ({
+          ...conversation,
+          messages: persistedMessages(conversation),
+        })),
+      stock_expert: conversationsByRole.value.stock_expert
+        .filter((conversation) => hasUserMessage(conversation.messages))
+        .slice(0, CONVERSATION_LIMIT)
+        .map((conversation) => ({
+          ...conversation,
+          messages: persistedMessages(conversation),
+        })),
     }
   }
 
@@ -847,6 +881,11 @@ export const useChatStore = defineStore('chat', () => {
     if (existing?.type === 'market') {
       existing.card = card
     } else {
+      const identity = marketCardIdentity(card)
+      const duplicate = conversation.messages.some((message) => (
+        message.type === 'market' && marketCardIdentity(message.card) === identity
+      ))
+      if (duplicate) return
       conversation.messages.push({
         id: `market-${requestId}`,
         requestId,

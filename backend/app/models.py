@@ -19,10 +19,13 @@ StockIntent = Literal[
     "market_snapshot",
     "market",
     "education",
+    "role_capability",
     "answer_followup",
     "clarification",
     "out_of_scope",
 ]
+StockRouteRelation = Literal["standalone", "followup", "answer_explanation", "new_topic"]
+StockRouteTargetKind = Literal["security", "sector", "index", "market", "knowledge", "none"]
 
 
 class MarketContextRequest(BaseModel):
@@ -141,10 +144,26 @@ class ResearchTarget(BaseModel):
     code: Optional[str] = None
 
 
+class StockRouteHint(BaseModel):
+    scope: Literal["in_scope", "needs_clarification", "out_of_scope"]
+    intent: StockIntent
+    relation: StockRouteRelation = "standalone"
+    targetKind: StockRouteTargetKind = "none"
+    targetTerms: List[str] = Field(default_factory=list, max_length=3)
+    requiresResearch: bool = False
+    confidence: float = Field(default=0, ge=0, le=1)
+
+    @field_validator("targetTerms")
+    @classmethod
+    def validate_target_terms(cls, values: List[str]) -> List[str]:
+        return list(dict.fromkeys(value.strip()[:60] for value in values if value.strip()))[:3]
+
+
 class ResearchPrepareRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     roleId: RoleId = "stock_expert"
     history: List[ChatMessage] = Field(default_factory=list, max_length=20)
+    routeHint: Optional[StockRouteHint] = None
 
 
 class ResearchPrepareResponse(BaseModel):

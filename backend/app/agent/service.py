@@ -1,10 +1,17 @@
 import asyncio
 import json
-from typing import Any, AsyncIterator, Dict, List, Tuple, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
-from ..market.service import MarketService
+from ..market.service import CODE_PATTERN, MarketService
 from ..models import AgentChatRequest, ResearchPrepareRequest, ResearchPrepareResponse
-from ..research import ResearchService, compact_research_context, research_context_unavailable, starts_new_topic
+from ..research import (
+    CONSTITUENT_FOLLOWUP_PATTERN,
+    ROLE_CAPABILITY_PATTERN,
+    ResearchService,
+    compact_research_context,
+    research_context_unavailable,
+    starts_new_topic,
+)
 from ..roles import get_role
 from .model_client import ModelOutputTruncatedError, OpenAICompatibleModel
 
@@ -22,10 +29,16 @@ def research_prompt(prepared: ResearchPrepareResponse) -> str:
     if prepared.context:
         lines.extend([
             "以下 JSON 是精简后的研究事实。只引用与问题直接相关的数据；时效会影响判断时再自然说明时间和来源，缺失项只有影响答案时才提，不得补造数据。",
+            "严格按数据自身日期描述：没有当日快照时，只能说“最近一个数据日”或给出具体日期；不得写“今天”“当前”“盘中”“实时”。历史区间的结束日期不是实时行情时间。",
             json.dumps(compact_research_context(prepared.context), ensure_ascii=False, separators=(",", ":")),
         ])
     elif prepared.intent == "education":
         lines.append("这是股票知识问题，直接解释核心概念和必要边界，不要虚构实时行情。")
+    elif prepared.intent == "role_capability":
+        lines.append(
+            "这是角色身份或能力问题。根据用户的具体问法自然回答：问“你是谁”时先介绍当前角色身份，"
+            "问“会什么”时说明能提供的帮助；结合最近对话，但不要逐字复用上一条能力介绍。不要查询或编造行情。"
+        )
     elif prepared.intent == "answer_followup":
         lines.append(
             "这是用户针对你上一条回答提出的解释性追问。结合最近对话直接解释上一条说法、依据和数据边界；"
@@ -35,10 +48,16 @@ def research_prompt(prepared: ResearchPrepareResponse) -> str:
 
 
 class AgentService:
-    def __init__(self, market: MarketService, model: OpenAICompatibleModel):
+    def __init__(
+        self,
+        market: MarketService,
+        model: OpenAICompatibleModel,
+        intent_model: Optional[OpenAICompatibleModel] = None,
+    ):
         self.market = market
         self.research = ResearchService(market)
         self.model = model
+        self.intent_model = intent_model or model
 
     def messages(
         self,
@@ -79,6 +98,7 @@ class AgentService:
         self,
         request: ResearchPrepareRequest,
     ) -> AsyncIterator[Tuple[str, Union[str, ResearchPrepareResponse]]]:
+        request = await self._with_model_route(request)
         queue: asyncio.Queue[str] = asyncio.Queue()
         task = asyncio.create_task(self.research.prepare(request, queue.put))
         try:
@@ -95,6 +115,35 @@ class AgentService:
         finally:
             if not task.done():
                 task.cancel()
+
+    async def _with_model_route(self, request: ResearchPrepareRequest) -> ResearchPrepareRequest:
+        explicit_code = bool(CODE_PATTERN.search(request.text))
+        contextual_constituent_followup = bool(
+            request.history and CONSTITUENT_FOLLOWUP_PATTERN.search(request.text)
+        )
+        explicit_market_scope = any(word.lower() in request.text.lower() for word in (
+            "股票", "个股", "板块", "行业", "概念", "指数", "大盘", "A股", "股市", "行情",
+        ))
+        context_dependent = any(word in request.text for word in (
+            "你说", "刚才", "上面", "前面", "上一条", "这个结论", "这个判断", "为什么这么说", "依据是什么",
+        ))
+        if (
+            request.roleId != "stock_expert"
+            or request.routeHint is not None
+            or ROLE_CAPABILITY_PATTERN.search(request.text)
+            or contextual_constituent_followup
+            or ((explicit_code or explicit_market_scope) and not context_dependent)
+            or not getattr(self.intent_model, "configured", False)
+        ):
+            return request
+        try:
+            route = await self.intent_model.classify_stock_intent(request.text, request.history[-20:])
+        except Exception:
+            route = None
+        return request.model_copy(update={"routeHint": route}) if route else request
+
+    async def prepare_research(self, request: ResearchPrepareRequest) -> ResearchPrepareResponse:
+        return await self.research.prepare(await self._with_model_route(request))
 
     async def stream_prepare(self, request: ResearchPrepareRequest) -> AsyncIterator[str]:
         try:
@@ -161,6 +210,14 @@ class AgentService:
             yield sse("done", {"requestId": request.requestId})
             return
 
+        if prepared.reply:
+            yield sse("result", {
+                "requestId": request.requestId,
+                "text": prepared.reply,
+            })
+            yield sse("done", {"requestId": request.requestId})
+            return
+
         if request.roleId == "stock_expert" and research_context_unavailable(prepared):
             yield sse("result", {
                 "requestId": request.requestId,
@@ -200,3 +257,5 @@ class AgentService:
 
     async def close(self) -> None:
         await self.model.close()
+        if self.intent_model is not self.model:
+            await self.intent_model.close()

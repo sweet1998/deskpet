@@ -1,6 +1,12 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
+
+from dotenv import load_dotenv
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 
 def _csv(value: str) -> List[str]:
@@ -22,6 +28,10 @@ class Settings:
     model_api_key: str
     model_name: str
     model_timeout: float
+    router_model_base_url: str
+    router_model_api_key: str
+    router_model_name: str
+    router_model_timeout: float
     rate_limit_per_minute: int
 
     @classmethod
@@ -46,6 +56,16 @@ class Settings:
             model_api_key=os.getenv("MODEL_API_KEY", ""),
             model_name=os.getenv("MODEL_NAME", ""),
             model_timeout=float(os.getenv("MODEL_TIMEOUT", "60")),
+            router_model_base_url=os.getenv(
+                "ROUTER_MODEL_BASE_URL",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ).rstrip("/"),
+            router_model_api_key=(
+                os.getenv("ROUTER_MODEL_API_KEY")
+                or os.getenv("DASHSCOPE_API_KEY", "")
+            ),
+            router_model_name=os.getenv("ROUTER_MODEL_NAME", "qwen3-8b"),
+            router_model_timeout=float(os.getenv("ROUTER_MODEL_TIMEOUT", "5")),
             rate_limit_per_minute=max(1, int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))),
         )
 

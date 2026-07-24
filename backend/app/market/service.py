@@ -804,6 +804,9 @@ class MarketService:
         if category.endswith("_ths"):
             snapshot_source = "akshare-ths" if snapshot_source == self.provider.name else snapshot_source
             bars_source = "akshare-ths" if bars_source == self.provider.name else bars_source
+            constituents_source = (
+                "akshare-ths" if constituents_source == self.provider.name else constituents_source
+            )
         changes = [
             item["changePercent"]
             for item in constituents
@@ -825,7 +828,7 @@ class MarketService:
                 "price": snapshot.get("leaderPrice"),
                 "changePercent": snapshot.get("leaderChangePercent"),
             }]
-        if not changes and snapshot.get("advancers") is not None:
+        if snapshot.get("advancers") is not None and snapshot.get("decliners") is not None:
             breadth = {
                 "advancers": int(snapshot.get("advancers") or 0),
                 "decliners": int(snapshot.get("decliners") or 0),
@@ -837,6 +840,16 @@ class MarketService:
                 "decliners": sum(value < 0 for value in changes),
                 "unchanged": sum(value == 0 for value in changes),
             }
+        expected_constituents = breadth["advancers"] + breadth["decliners"] + breadth["unchanged"]
+        constituents_partial = bool(
+            sorted_constituents
+            and expected_constituents
+            and len(sorted_constituents) < expected_constituents
+        )
+        if constituents_partial:
+            warnings.append(
+                f"成分股榜单当前展示涨幅排序前 {len(sorted_constituents)} 只，不代表完整成分股列表"
+            )
         data_sources = {
             key: source
             for key, source in {
@@ -861,7 +874,11 @@ class MarketService:
             "technical": technical_summary(bars),
             "breadth": breadth,
             "leaders": sorted_constituents[:5],
-            "laggards": list(reversed(sorted_constituents[-5:])),
+            "advancingConstituents": [
+                item for item in sorted_constituents
+                if item.get("changePercent") is not None and item["changePercent"] > 0
+            ][:20],
+            "laggards": [] if constituents_partial else list(reversed(sorted_constituents[-5:])),
             "dataSources": data_sources,
             "stale": any("本机最近一次成功缓存" in warning for warning in warnings),
             "warnings": warnings,

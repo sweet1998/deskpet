@@ -14,6 +14,7 @@ from .models import (
 OUT_OF_SCOPE_MESSAGE = "我是 A 股研究助手，只能回答个股、板块、指数和股票知识问题。其他问题请切换到麦麦。"
 CLARIFY_MESSAGE = "请补充具体的六位股票代码、股票名称、板块或指数名称。"
 ProgressCallback = Callable[[str], Awaitable[None]]
+ROUTE_HINT_CONFIDENCE = 0.72
 
 OUT_OF_SCOPE_KEYWORDS = (
     "天气", "气温", "下雨", "空气质量", "菜谱", "做饭", "翻译", "写诗", "小说", "电影", "音乐",
@@ -94,6 +95,15 @@ ANSWER_FOLLOWUP_PATTERNS = (
     re.compile(r"(?:你|刚才|上面|前面|上一条).{0,20}(?:为什么|为何|什么意思|依据|怎么得出|怎么判断)"),
     re.compile(r"(?:这个|该|上述).{0,8}(?:结论|判断|说法|回答).{0,12}(?:为什么|为何|依据|怎么得出|什么意思)"),
 )
+CONSTITUENT_FOLLOWUP_PATTERN = re.compile(
+    r"(?:上涨|下跌|领涨|领跌|涨停|跌停).{0,10}(?:哪些|哪几|都有谁|是谁|几家|几只)"
+)
+ROLE_CAPABILITY_PATTERN = re.compile(
+    r"你是谁|你叫什么|你(?:会|能|可以)(?:做|回答|分析)(?:什么|哪些)|"
+    r"你(?:能|可以)帮我(?:做|分析)?(?:什么|哪些)|你能干什么|"
+    r"你擅长(?:什么|哪些|哪方面)|你对(?:什么|哪些)领域(?:很)?了解|"
+    r"你了解(?:什么|哪些)领域|你的(?:能力|功能|服务范围)(?:是什么|有哪些)?"
+)
 
 SECTOR_THEMES: Dict[str, Tuple[str, ...]] = {
     "科技": ("半导体", "软件开发", "IT服务Ⅱ", "通信设备", "消费电子"),
@@ -125,6 +135,10 @@ INDEXES: Dict[str, Dict[str, str]] = {
 def _contains(text: str, values: Tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(value.lower() in lowered for value in values)
+
+
+def _normalized_route_text(text: str) -> str:
+    return re.sub(r"[\s，。！？、,.!?：:；;（）()\[\]【】\"'“”‘’]+", "", text).lower()
 
 
 def starts_new_topic(text: str) -> bool:
@@ -313,7 +327,10 @@ class ResearchService:
     @staticmethod
     def _reference_query(request: ResearchPrepareRequest) -> str:
         text = request.text.strip()
-        if starts_new_topic(text) or _contains(text, OUT_OF_SCOPE_KEYWORDS):
+        if (
+            starts_new_topic(text)
+            or _contains(text, OUT_OF_SCOPE_KEYWORDS)
+        ):
             return request.text
         has_explicit_target = (
             bool(CODE_PATTERN.search(text))
@@ -325,7 +342,11 @@ class ResearchService:
                 _contains(text, EDUCATION_KEYWORDS)
                 and _contains(text, EDUCATION_QUESTION_WORDS)
             )
-            or (bool(_named_target_terms(text)) and not _is_context_only_question(text))
+            or (
+                bool(_named_target_terms(text))
+                and not _is_context_only_question(text)
+                and not CONSTITUENT_FOLLOWUP_PATTERN.search(text)
+            )
         )
         if has_explicit_target:
             return request.text
@@ -519,12 +540,13 @@ class ResearchService:
         text: str,
         market_context,
         progress: Optional[ProgressCallback] = None,
+        intent_override: Optional[StockIntent] = None,
     ) -> ResearchPrepareResponse:
         targets = [
             ResearchTarget(kind="security", name=item.name, code=item.code)
             for item in market_context.securities
         ]
-        intent = _intent_for_security(text, len(targets))
+        intent = intent_override or _intent_for_security(text, len(targets))
         requires = _requires_research(intent, text)
         context = compact_research_context({
             "kind": "security",
@@ -549,8 +571,9 @@ class ResearchService:
         self,
         text: str,
         progress: Optional[ProgressCallback] = None,
+        intent_override: Optional[StockIntent] = None,
     ) -> ResearchPrepareResponse:
-        intent = _intent_for_market(text)
+        intent = intent_override or _intent_for_market(text)
         requires = _requires_research(intent, text)
         if requires:
             await self._report(progress, "正在获取全市场涨跌、成交额和市场宽度数据")
@@ -572,8 +595,9 @@ class ResearchService:
         text: str,
         sector: Dict[str, str],
         progress: Optional[ProgressCallback] = None,
+        intent_override: Optional[StockIntent] = None,
     ) -> ResearchPrepareResponse:
-        intent = _intent_for_sector(text)
+        intent = intent_override or _intent_for_sector(text)
         requires = _requires_research(intent, text)
         if requires:
             await self._report(progress, f"正在获取{sector['name']}板块的行情、成分股和历史数据")
@@ -606,7 +630,69 @@ class ResearchService:
             )
 
         text = request.text.strip()
+        if ROLE_CAPABILITY_PATTERN.search(text):
+            return ResearchPrepareResponse(
+                scope="in_scope",
+                intent="role_capability",
+                requiresResearch=False,
+                targetKind="knowledge",
+                targets=[ResearchTarget(kind="knowledge", name="角色能力")],
+            )
         reference_query = self._reference_query(request)
+        contextual_constituent_followup = bool(
+            CONSTITUENT_FOLLOWUP_PATTERN.search(text)
+            and reference_query != text
+        )
+        route = request.routeHint if request.routeHint and request.routeHint.confidence >= ROUTE_HINT_CONFIDENCE else None
+        if contextual_constituent_followup:
+            route = None
+        strong_target = (
+            bool(CODE_PATTERN.search(text))
+            or _index_target(text) is not None
+            or _sector_theme(text) is not None
+        )
+        route_terms: List[str] = []
+        if route:
+            route_material = [text] if route.relation == "new_topic" else [
+                text,
+                *(item.content for item in request.history[-20:]),
+            ]
+            material = _normalized_route_text("\n".join(route_material))
+            route_terms = [
+                term for term in route.targetTerms
+                if _normalized_route_text(term) and _normalized_route_text(term) in material
+            ][:3]
+            if (
+                route.scope == "in_scope"
+                and (route.intent == "answer_followup" or route.relation == "answer_explanation")
+                and not _contains(text, OUT_OF_SCOPE_KEYWORDS)
+            ):
+                return ResearchPrepareResponse(
+                    scope="in_scope",
+                    intent="answer_followup",
+                    requiresResearch=False,
+                    targetKind="knowledge",
+                    targets=[ResearchTarget(kind="knowledge", name="上一条回答")],
+                )
+            if not strong_target and route.scope == "out_of_scope":
+                return self._out_of_scope(text)
+            if not strong_target and route.scope == "needs_clarification":
+                return self._clarification()
+            if (
+                route.scope == "in_scope"
+                and route.intent == "education"
+                and not _contains(text, OUT_OF_SCOPE_KEYWORDS)
+            ):
+                return ResearchPrepareResponse(
+                    scope="in_scope",
+                    intent="education",
+                    requiresResearch=False,
+                    targetKind="knowledge",
+                    targets=[ResearchTarget(kind="knowledge", name="股票知识")],
+                )
+        if route_terms:
+            reference_query = f"{text} {' '.join(route_terms)}".strip()
+        route_intent = route.intent if route and route.scope == "in_scope" else None
         has_explicit_stock_signal = bool(CODE_PATTERN.search(reference_query)) or _contains(
             reference_query,
             EDUCATION_KEYWORDS + MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS
@@ -665,7 +751,10 @@ class ResearchService:
                 targets=[ResearchTarget(kind="knowledge", name="股票知识")],
             )
 
-        if _is_sector_scan_query(reference_query):
+        if route_intent == "sector_scan" or (
+            _is_sector_scan_query(reference_query)
+            and not contextual_constituent_followup
+        ):
             await self._report(progress, "正在读取全市场行业快照")
             context = compact_research_context(
                 await self.market.scan_sectors(limit=5, window_days=60, progress=progress),
@@ -738,8 +827,9 @@ class ResearchService:
                 context=context,
             )
 
-        if _is_generic_market_query(reference_query):
-            return await self._market_response(text, progress)
+        if (route and route.targetKind == "market") or _is_generic_market_query(reference_query):
+            market_intent = route_intent if route_intent in {"market", "market_snapshot"} else None
+            return await self._market_response(text, progress, market_intent)
 
         sector = None
         sector_candidates: List[Dict[str, str]] = []
@@ -749,7 +839,8 @@ class ResearchService:
             names = "、".join(item["name"] for item in sector_candidates)
             return self._clarification(f"找到多个可能的板块：{names}。请补充更准确的板块名称。")
         if sector:
-            return await self._sector_response(text, sector, progress)
+            sector_intent = route_intent if route_intent in {"sector", "sector_snapshot"} else None
+            return await self._sector_response(text, sector, progress, sector_intent)
 
         explicit_sector = _contains(reference_query, ("板块", "行业", "概念"))
         if not CODE_PATTERN.search(reference_query) and not explicit_sector:
@@ -758,16 +849,20 @@ class ResearchService:
                 choices = "、".join(f"{item['name']}（{item['code']}）" for item in candidates)
                 return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
             if securities:
-                intent = _intent_for_security(text, len(securities))
+                intent = route_intent if route_intent in {
+                    "security_quote", "security_trend", "fundamental", "valuation", "comparison",
+                } else _intent_for_security(text, len(securities))
                 if _requires_research(intent, text):
                     names = "、".join(item["name"] for item in securities)
                     await self._report(progress, f"正在获取{names}的行情、财务和历史数据")
                 market_context = await self.market.context(reference_query, 120)
                 if market_context.status in {"ok", "unavailable"}:
-                    return await self._security_response(text, market_context, progress)
+                    return await self._security_response(text, market_context, progress, intent)
 
         target_count = max(1, len(CODE_PATTERN.findall(reference_query)))
-        likely_intent = _intent_for_security(text, target_count)
+        likely_intent = route_intent if route_intent in {
+            "security_quote", "security_trend", "fundamental", "valuation", "comparison",
+        } else _intent_for_security(text, target_count)
         if CODE_PATTERN.search(reference_query) and _requires_research(likely_intent, text):
             await self._report(progress, "正在解析标的并获取行情、财务和历史数据")
         market_context = await self.market.context(reference_query, 120)
@@ -775,8 +870,8 @@ class ResearchService:
             choices = "、".join(f"{item.name}（{item.code}）" for item in market_context.candidates)
             return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
         if market_context.status in {"ok", "unavailable"}:
-            return await self._security_response(text, market_context, progress)
+            return await self._security_response(text, market_context, progress, likely_intent)
 
-        if has_stock_signal:
+        if has_stock_signal or route and route.scope == "in_scope":
             return self._clarification()
         return self._out_of_scope(text)

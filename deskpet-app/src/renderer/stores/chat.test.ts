@@ -100,6 +100,37 @@ describe('chat store roles', () => {
     expect(chat.activeConversation.id).toBe(firstId)
   })
 
+  it('does not expose or persist an empty conversation as history', () => {
+    const chat = useChatStore()
+    const initialId = chat.activeConversation.id
+
+    const first = chat.createConversation('default')
+    const second = chat.createConversation('default')
+
+    expect(first.id).toBe(initialId)
+    expect(second.id).toBe(initialId)
+    expect(chat.conversations).toEqual([])
+    expect(JSON.parse(localStorage.getItem('deskpet/chat-conversations-v2') || '{}').default).toEqual([])
+
+    chat.addUserMessage('真正开始对话', 'req-started', 'default')
+    expect(chat.conversations).toHaveLength(1)
+  })
+
+  it('drops empty conversations restored from old history', () => {
+    localStorage.setItem('deskpet/chat-conversations-v2', JSON.stringify({
+      default: [{
+        id: 'empty-default', roleId: 'default', title: '新对话', createdAt: 1, updatedAt: 1, messages: [],
+      }],
+      stock_expert: [],
+    }))
+    setActivePinia(createPinia())
+
+    const restored = useChatStore()
+
+    expect(restored.conversations).toEqual([])
+    expect(restored.activeConversation.messages).toEqual([])
+  })
+
   it('keeps a late streamed answer in the conversation that started the request', () => {
     const chat = useChatStore()
     chat.addUserMessage('旧会话问题', 'req-bound', 'default')
@@ -133,6 +164,66 @@ describe('chat store roles', () => {
       type: 'market',
       card: { items: [{ code: '600519', price: 1488, changePercent: 1.2 }] },
     })
+  })
+
+  it('shows the same market target only once per conversation', () => {
+    const chat = useChatStore()
+    const innovationDrug = {
+      title: '创新药行情',
+      items: [{ code: '308014', name: '创新药', price: null, changePercent: -4.07 }],
+    }
+
+    chat.addUserMessage('创新药行情怎么样', 'req-market-first', 'stock_expert')
+    chat.showMarketCard('req-market-first', innovationDrug)
+    chat.addUserMessage('上涨的是哪几家', 'req-market-followup', 'stock_expert')
+    chat.showMarketCard('req-market-followup', { ...innovationDrug, asOf: '2026-07-24T15:27:00+08:00' })
+
+    const cards = chat.messagesByRole.stock_expert.filter((message) => message.type === 'market')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toMatchObject({ requestId: 'req-market-first' })
+  })
+
+  it('still shows a market card for a different target', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('创新药行情怎么样', 'req-sector', 'stock_expert')
+    chat.showMarketCard('req-sector', {
+      title: '创新药行情',
+      items: [{ code: '308014', name: '创新药', price: null, changePercent: -4.07 }],
+    })
+    chat.addUserMessage('茅台现在多少钱', 'req-stock', 'stock_expert')
+    chat.showMarketCard('req-stock', {
+      title: '个股行情',
+      items: [{ code: '600519', name: '贵州茅台', price: 1400, changePercent: 1.2 }],
+    })
+
+    expect(chat.messagesByRole.stock_expert.filter((message) => message.type === 'market')).toHaveLength(2)
+  })
+
+  it('removes duplicate market targets when restoring existing history', () => {
+    const card = {
+      title: '创新药行情',
+      items: [{ code: '308014', name: '创新药', price: null, changePercent: -4.07 }],
+    }
+    localStorage.setItem('deskpet/chat-conversations-v2', JSON.stringify({
+      default: [],
+      stock_expert: [{
+        id: 'conversation-stock', roleId: 'stock_expert', title: '创新药', createdAt: 1, updatedAt: 2,
+        messages: [
+          {
+            id: 'user-first', role: 'user', text: '创新药行情怎么样', streaming: false,
+            timestamp: 1, type: 'text', inputKind: 'text',
+          },
+          { id: 'market-first', requestId: 'first', role: 'assistant', card, timestamp: 1, type: 'market' },
+          { id: 'market-second', requestId: 'second', role: 'assistant', card, timestamp: 2, type: 'market' },
+        ],
+      }],
+    }))
+    setActivePinia(createPinia())
+
+    const restored = useChatStore()
+
+    expect(restored.messagesByRole.stock_expert.filter((message) => message.type === 'market')).toHaveLength(1)
+    expect(restored.messagesByRole.stock_expert[1]).toMatchObject({ requestId: 'first' })
   })
 
   it('exports the active conversation as Markdown', () => {

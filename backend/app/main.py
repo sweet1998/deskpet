@@ -56,7 +56,14 @@ def create_services():
         model=settings.model_name,
         timeout=settings.model_timeout,
     )
-    return market, AgentService(market, model)
+    intent_model = OpenAICompatibleModel(
+        base_url=settings.router_model_base_url,
+        api_key=settings.router_model_api_key,
+        model=settings.router_model_name,
+        timeout=settings.router_model_timeout,
+        route_extra_body={"enable_thinking": False},
+    )
+    return market, AgentService(market, model, intent_model)
 
 
 async def maintain_sector_scan_cache(market: MarketService) -> None:
@@ -125,6 +132,8 @@ async def health() -> dict:
         "marketProvider": settings.market_provider,
         "marketFallbackProvider": settings.market_fallback_provider,
         "modelConfigured": bool(settings.model_api_key and settings.model_name),
+        "routerModel": settings.router_model_name,
+        "routerModelConfigured": bool(settings.router_model_api_key and settings.router_model_name),
         "redisConfigured": bool(settings.redis_url),
         "databaseConfigured": bool(settings.database_url),
     }
@@ -197,7 +206,7 @@ async def prepare_research(
     request: Request,
     _identity: str = Depends(authorize),
 ) -> ResearchPrepareResponse:
-    return await request.app.state.agent.research.prepare(body)
+    return await request.app.state.agent.prepare_research(body)
 
 
 @app.post("/v1/research/prepare/stream")

@@ -4,7 +4,7 @@ import pytest
 
 from app.agent.service import AgentService
 from app.agent.model_client import ModelOutputTruncatedError
-from app.models import AgentChatRequest, ChatMessage, MarketContextResponse, ResearchPrepareRequest, ResearchPrepareResponse, SecurityContext
+from app.models import AgentChatRequest, ChatMessage, MarketContextResponse, ResearchPrepareRequest, ResearchPrepareResponse, SecurityContext, StockRouteHint
 
 
 class FakeMarket:
@@ -47,6 +47,24 @@ class FakeModel:
         return None
 
 
+class RoutingFakeModel(FakeModel):
+    configured = True
+
+    def __init__(self):
+        super().__init__()
+        self.route_inputs = []
+
+    async def classify_stock_intent(self, text, history):
+        self.route_inputs.append((text, history))
+        return StockRouteHint(
+            scope="in_scope",
+            intent="answer_followup",
+            relation="answer_explanation",
+            targetKind="knowledge",
+            confidence=0.98,
+        )
+
+
 @pytest.mark.asyncio
 async def test_stock_agent_injects_market_and_streams_events():
     model = FakeModel()
@@ -76,6 +94,7 @@ async def test_stock_agent_injects_market_and_streams_events():
     assert "风险偏好较低" in system
     assert "不得承诺收益" in system
     assert "不要默认使用标题、编号" in system
+    assert "没有当日快照时" in system
 
 
 @pytest.mark.asyncio
@@ -119,6 +138,88 @@ async def test_answer_followup_reaches_model_with_previous_assistant_message():
 
 
 @pytest.mark.asyncio
+async def test_backend_mode_uses_model_route_before_answering_ambiguous_followup():
+    model = RoutingFakeModel()
+    service = AgentService(FakeMarket(), model)
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-model-route",
+        roleId="stock_expert",
+        text="为什么这么说",
+        history=[ChatMessage(role="assistant", content="白酒板块近期偏弱。")],
+    ))]
+
+    assert model.route_inputs[0][0] == "为什么这么说"
+    assert any("event: delta" in event for event in events)
+    assert "解释性追问" in model.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_dedicated_intent_model_does_not_generate_the_answer():
+    answer_model = FakeModel()
+    intent_model = RoutingFakeModel()
+    service = AgentService(FakeMarket(), answer_model, intent_model)
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-dedicated-router",
+        roleId="stock_expert",
+        text="为什么这么说",
+        history=[ChatMessage(role="assistant", content="白酒板块近期偏弱。")],
+    ))]
+
+    assert intent_model.route_inputs[0][0] == "为什么这么说"
+    assert intent_model.messages == []
+    assert answer_model.messages
+    assert any("event: delta" in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_backend_mode_skips_model_route_for_explicit_market_scope():
+    model = RoutingFakeModel()
+    service = AgentService(FakeMarket(), model)
+    request = ResearchPrepareRequest(
+        roleId="stock_expert",
+        text="最近创新药行情怎么样 为什么",
+    )
+
+    routed = await service._with_model_route(request)
+
+    assert routed.routeHint is None
+    assert model.route_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_backend_mode_skips_model_route_for_constituent_followup():
+    model = RoutingFakeModel()
+    service = AgentService(FakeMarket(), model)
+    request = ResearchPrepareRequest(
+        roleId="stock_expert",
+        text="上涨的是哪几家",
+        history=[ChatMessage(role="user", content="今天白酒板块怎么样")],
+    )
+
+    routed = await service._with_model_route(request)
+
+    assert routed.routeHint is None
+    assert model.route_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_backend_mode_skips_model_route_for_role_capability():
+    model = RoutingFakeModel()
+    service = AgentService(FakeMarket(), model)
+    request = ResearchPrepareRequest(
+        roleId="stock_expert",
+        text="你对什么领域很了解",
+    )
+
+    routed = await service._with_model_route(request)
+
+    assert routed.routeHint is None
+    assert model.route_inputs == []
+
+
+@pytest.mark.asyncio
 async def test_research_prepare_stream_emits_progress_before_result():
     service = AgentService(FakeMarket(), FakeModel())
     events = [event async for event in service.stream_prepare(ResearchPrepareRequest(
@@ -135,6 +236,23 @@ class NoCallModel(FakeModel):
     async def stream(self, messages, max_tokens=1400):
         raise AssertionError("out-of-scope request must not call the model")
         yield ""
+
+
+@pytest.mark.asyncio
+async def test_role_capability_uses_model_without_research_events():
+    model = FakeModel()
+    service = AgentService(FakeMarket(), model)
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-capability",
+        roleId="stock_expert",
+        text="你对什么领域很了解",
+    ))]
+
+    assert any("event: delta" in event and "结论" in event for event in events)
+    assert not any("event: reasoning" in event for event in events)
+    assert "这是角色身份或能力问题" in model.messages[0]["content"]
+    assert events[-1].startswith("event: done")
 
 
 class TruncatedModel(FakeModel):
