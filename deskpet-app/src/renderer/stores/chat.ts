@@ -43,6 +43,7 @@ export type ChatMessage =
       attachments?: ChatAttachment[]
       replyTo?: ChatReplyReference
       inputKind?: ChatInputKind
+      truncated?: boolean
     }
   | {
       id: string
@@ -202,6 +203,7 @@ function sanitizeStoredMessage(value: unknown): ChatMessage | null {
       ...(attachments.length ? { attachments } : {}),
       ...(replyTo ? { replyTo } : {}),
       inputKind,
+      ...(item.truncated === true ? { truncated: true } : {}),
     }
   }
   if (item.type === 'thought' && role === 'assistant' && item.complete === true) {
@@ -921,6 +923,14 @@ export const useChatStore = defineStore('chat', () => {
     touchConversation(conversation, true)
   }
 
+  function markChatTruncated(requestId: string, truncated = true) {
+    const conversation = requestConversation(requestId)
+    const message = conversation.messages.find((item) => item.id === requestId)
+    if (message?.type !== 'text' || message.role !== 'assistant') return
+    message.truncated = truncated
+    touchConversation(conversation, true)
+  }
+
   function showChatMessage(text: string, requestId?: string) {
     if (!requestId || (
       getRequestRole(requestId) === activeRole.value
@@ -1030,6 +1040,7 @@ export const useChatStore = defineStore('chat', () => {
     addEmojiMessage,
     appendChatText,
     finishChatStream,
+    markChatTruncated,
     showChatMessage,
     showMarketCard,
     hideChatBubble,

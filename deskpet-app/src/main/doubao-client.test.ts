@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { detectDoubaoCapabilities, normalizeDoubaoConfig, requestDoubao } from './doubao-client'
+import {
+  detectDoubaoCapabilities,
+  normalizeDoubaoConfig,
+  requestDoubao,
+  requestDoubaoConversation,
+} from './doubao-client'
 
 describe('doubao client', () => {
   it('keeps an existing key when the settings form submits an empty key', () => {
@@ -116,6 +121,69 @@ describe('doubao client', () => {
     expect(onDelta.mock.calls.map(([delta]) => delta)).toEqual(['贵州', '茅台'])
     const request = fetchImpl.mock.calls[0][1] as RequestInit
     expect(JSON.parse(String(request.body))).toMatchObject({ stream: true })
+  })
+
+  it('marks a streamed answer as truncated when the provider reaches its token limit', async () => {
+    const encoder = new TextEncoder()
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"回答到一半"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }), { status: 200 })
+
+    const result = await requestDoubao(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'user', content: '详细分析' }],
+      { fetchImpl: vi.fn().mockResolvedValue(response) as unknown as typeof fetch, onDelta: vi.fn() },
+    )
+
+    expect(result).toEqual({
+      ok: true,
+      text: '回答到一半',
+      finishReason: 'length',
+      truncated: true,
+    })
+  })
+
+  it('automatically continues a truncated streamed answer from the cutoff', async () => {
+    const encoder = new TextEncoder()
+    const streamResponse = (data: string) => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(data))
+        controller.close()
+      },
+    }), { status: 200 })
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(streamResponse(
+        'data: {"choices":[{"delta":{"content":"我不方便瞎"}}]}\n\n'
+        + 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ))
+      .mockResolvedValueOnce(streamResponse(
+        'data: {"choices":[{"delta":{"content":"猜，仍需核实消息面。"}}]}\n\n'
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ))
+    const onDelta = vi.fn()
+
+    const result = await requestDoubaoConversation(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'system', content: '保持严谨' }, { role: 'user', content: '分析医药板块' }],
+      { fetchImpl: fetchImpl as unknown as typeof fetch, onDelta, maxTokens: 4096 },
+    )
+
+    expect(result).toMatchObject({ ok: true, text: '我不方便瞎猜，仍需核实消息面。' })
+    expect(result.truncated).toBeUndefined()
+    expect(onDelta.mock.calls.map(([delta]) => delta).join('')).toBe(result.text)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const firstBody = JSON.parse(String(fetchImpl.mock.calls[0][1].body))
+    const secondBody = JSON.parse(String(fetchImpl.mock.calls[1][1].body))
+    expect(firstBody.max_tokens).toBe(4096)
+    expect(secondBody.messages.at(-2)).toEqual({ role: 'assistant', content: '我不方便瞎' })
+    expect(secondBody.messages.at(-1).content).toContain('从中断处直接续写')
   })
 
   it('keeps image content blocks for screen understanding', async () => {

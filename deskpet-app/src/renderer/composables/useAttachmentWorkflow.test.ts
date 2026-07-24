@@ -23,7 +23,6 @@ function createHarness(sendUserText = vi.fn(() => true)) {
     requireLegalConsent: vi.fn(() => true),
     cancelSpeech: vi.fn(),
     createRequestId: vi.fn(() => 'request-1'),
-    followUpPrompt: vi.fn((text: string) => text),
     startRequestTimer: vi.fn(),
     clearRequestTimer: vi.fn(),
   }

@@ -11,12 +11,35 @@ export interface StoredDoubaoConfig {
 }
 
 interface DoubaoApiResponse {
-  choices?: Array<{ message?: { content?: string } }>
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string | null }>
   error?: { message?: string }
 }
 
 interface DoubaoStreamChunk {
-  choices?: Array<{ delta?: { content?: string } }>
+  choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>
+}
+
+interface DoubaoRequestOptions {
+  signal?: AbortSignal
+  maxTokens?: number
+  fetchImpl?: typeof fetch
+  baseUrl?: string
+  onDelta?: (delta: string) => void
+  temperature?: number
+  jsonMode?: boolean
+}
+
+const DEFAULT_MAX_TOKENS = 4096
+const MAX_CONVERSATION_MESSAGES = 24
+const MAX_AUTO_CONTINUATIONS = 1
+const CONTINUATION_PROMPT = '刚才的回答因长度限制中断。请从中断处直接续写，不要重复已经回答的内容，直到完整结束。'
+
+function limitedMessages(messages: DoubaoMessage[]): DoubaoMessage[] {
+  if (messages.length <= MAX_CONVERSATION_MESSAGES) return messages
+  if (messages[0]?.role === 'system') {
+    return [messages[0], ...messages.slice(-(MAX_CONVERSATION_MESSAGES - 1))]
+  }
+  return messages.slice(-MAX_CONVERSATION_MESSAGES)
 }
 
 function doubaoHttpError(status: number, detail = ''): string {
@@ -50,15 +73,7 @@ export function normalizeDoubaoConfig(
 export async function requestDoubao(
   config: StoredDoubaoConfig,
   messages: DoubaoMessage[],
-  options: {
-    signal?: AbortSignal
-    maxTokens?: number
-    fetchImpl?: typeof fetch
-    baseUrl?: string
-    onDelta?: (delta: string) => void
-    temperature?: number
-    jsonMode?: boolean
-  } = {},
+  options: DoubaoRequestOptions = {},
 ): Promise<DoubaoResult> {
   if (!config.apiKey) return { ok: false, error: '请先在设置中填写豆包 API Key' }
   if (!config.model) return { ok: false, error: '请先填写豆包 Endpoint ID 或模型名称' }
@@ -77,9 +92,9 @@ export async function requestDoubao(
       },
       body: JSON.stringify({
         model: config.model,
-        messages: messages.slice(-20),
+        messages: limitedMessages(messages),
         temperature: options.temperature ?? 0.7,
-        max_tokens: options.maxTokens ?? 1200,
+        max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
         stream: streaming,
         ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
@@ -93,8 +108,14 @@ export async function requestDoubao(
     if (!streaming) {
       const body = await response.json() as DoubaoApiResponse
       const text = body.choices?.[0]?.message?.content?.trim()
+      const finishReason = body.choices?.[0]?.finish_reason || undefined
       return text
-        ? { ok: true, text }
+        ? {
+            ok: true,
+            text,
+            ...(finishReason ? { finishReason } : {}),
+            ...(finishReason === 'length' ? { truncated: true } : {}),
+          }
         : { ok: false, error: '豆包没有返回文字内容' }
     }
     if (!response.body) return { ok: false, error: '豆包没有返回流式响应' }
@@ -103,6 +124,7 @@ export async function requestDoubao(
     const decoder = new TextDecoder()
     let buffer = ''
     let answer = ''
+    let finishReason = ''
 
     const consume = (block: string) => {
       for (const line of block.split(/\r?\n/)) {
@@ -111,7 +133,9 @@ export async function requestDoubao(
         if (!payload || payload === '[DONE]') continue
         try {
           const chunk = JSON.parse(payload) as DoubaoStreamChunk
-          const delta = chunk.choices?.[0]?.delta?.content
+          const choice = chunk.choices?.[0]
+          if (choice?.finish_reason) finishReason = choice.finish_reason
+          const delta = choice?.delta?.content
           if (!delta) continue
           answer += delta
           options.onDelta?.(delta)
@@ -130,7 +154,12 @@ export async function requestDoubao(
     if (buffer.trim()) consume(buffer)
     const text = answer.trim()
     return text
-      ? { ok: true, text }
+      ? {
+          ok: true,
+          text,
+          ...(finishReason ? { finishReason } : {}),
+          ...(finishReason === 'length' ? { truncated: true } : {}),
+        }
       : { ok: false, error: '豆包没有返回文字内容' }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
@@ -139,6 +168,32 @@ export async function requestDoubao(
     if (error instanceof TypeError) return { ok: false, error: '无法连接豆包服务，请检查网络后重试' }
     return { ok: false, error: error instanceof Error ? error.message : '无法连接豆包服务' }
   }
+}
+
+export async function requestDoubaoConversation(
+  config: StoredDoubaoConfig,
+  messages: DoubaoMessage[],
+  options: DoubaoRequestOptions = {},
+): Promise<DoubaoResult> {
+  let conversation = [...messages]
+  let answer = ''
+
+  for (let continuation = 0; continuation <= MAX_AUTO_CONTINUATIONS; continuation += 1) {
+    const result = await requestDoubao(config, conversation, options)
+    if (!result.ok || !result.text) return result
+    answer += result.text
+    if (!result.truncated) return { ...result, text: answer }
+    if (continuation === MAX_AUTO_CONTINUATIONS) {
+      return { ...result, text: answer, truncated: true }
+    }
+    conversation = [
+      ...conversation,
+      { role: 'assistant', content: result.text },
+      { role: 'user', content: CONTINUATION_PROMPT },
+    ]
+  }
+
+  return { ok: true, text: answer }
 }
 
 export async function detectDoubaoCapabilities(

@@ -18,31 +18,22 @@ import { marketCardFromResearch } from '@/services/market-card'
 import { localStockPreparation, researchContextUnavailable } from '@/services/stock-local-router'
 import { hasLegalConsent } from '../../../shared/legal'
 import { createNativeToolTransport } from '@/services/native-tool-transport'
-
-const REASONING_STEP_INTERVAL_MS = 220
+import { selectConversationContext } from '@/services/conversation-context'
 
 export function useChimeraTransport(): DeskpetTransport {
   const { connect, disconnect, send, stopOutput } = useWebSocket()
   const agent = useAgentStore()
   const chat = useChatStore()
   const backendRequests = new Map<string, AbortController>()
-  const lastReasoningAt = new Map<string, number>()
 
   async function presentReasoning(requestId: string, roleId: RoleId, text: string): Promise<void> {
     const normalized = text.trim()
     if (!normalized) return
-    const wait = Math.max(
-      0,
-      (lastReasoningAt.get(requestId) || 0) + REASONING_STEP_INTERVAL_MS - Date.now(),
-    )
-    if (wait) await new Promise((resolve) => setTimeout(resolve, wait))
     if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
     chat.appendThought(requestId, normalized)
-    lastReasoningAt.set(requestId, Date.now())
   }
 
   function finishReasoning(requestId: string): void {
-    lastReasoningAt.delete(requestId)
     chat.finishThought(requestId)
   }
 
@@ -90,6 +81,10 @@ export function useChimeraTransport(): DeskpetTransport {
     } else if (event.event === 'delta' || event.event === 'result') {
       finishReasoning(requestId)
       chat.appendChatText(String(data.text || ''), requestId)
+    } else if (event.event === 'truncated') {
+      finishReasoning(requestId)
+      chat.finishChatStream(requestId)
+      chat.markChatTruncated(requestId)
     } else if (event.event === 'done') {
       finishReasoning(requestId)
       chat.finishChatStream(requestId)
@@ -108,11 +103,10 @@ export function useChimeraTransport(): DeskpetTransport {
     const controller = new AbortController()
     backendRequests.get(requestId)?.abort()
     backendRequests.set(requestId, controller)
-    const history = chat.getRequestMessages(requestId)
+    const history = selectConversationContext(chat.getRequestMessages(requestId)
       .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
         ? [{ role: message.role, content: message.text }]
-        : [])
-      .slice(-20)
+        : []), text)
     try {
       await streamBackendChat({
         requestId,
@@ -174,11 +168,10 @@ export function useChimeraTransport(): DeskpetTransport {
       agent.memories.length ? `你需要记住这些信息：${agent.memories.join('；')}` : '',
       roleId === 'stock_expert' ? researchInstruction(prepared) : '',
     ].filter(Boolean).join('\n')
-    const history = chat.getRequestMessages(requestId)
+    const history = selectConversationContext(chat.getRequestMessages(requestId)
       .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
-        ? [{ role: message.role, content: message.text } as DoubaoMessage]
-        : [])
-      .slice(-12)
+        ? [{ role: message.role, content: message.text }]
+        : []), typeof userContent === 'string' ? userContent : '') as DoubaoMessage[]
     return [{ role: 'system', content: identity }, ...history, { role: 'user', content: userContent }]
   }
 
@@ -200,9 +193,19 @@ export function useChimeraTransport(): DeskpetTransport {
       }
     })
     try {
+      if (agent.currentRole === roleId) {
+        agent.applyState({
+          requestId,
+          state: 'speaking',
+          progress: 75,
+          step: '正在组织回答',
+          interruptible: true,
+        })
+      }
       const result = await window.electronAPI?.doubaoChat({
         requestId,
         messages: buildDoubaoMessages(roleId, requestId, userContent, prepared),
+        maxTokens: prepared?.requiresResearch ? 4096 : Array.isArray(userContent) ? 2048 : 1400,
       })
       if (!result?.ok || !result.text) {
         finishReasoning(requestId)
@@ -236,6 +239,7 @@ export function useChimeraTransport(): DeskpetTransport {
       finishReasoning(requestId)
       if (!receivedDelta) chat.appendChatText(result.text, requestId)
       chat.finishChatStream(requestId)
+      if (result.truncated) chat.markChatTruncated(requestId)
       if (agent.currentRole === roleId) {
         agent.applyState({ requestId, state: 'success', progress: 100, step: '回答完成' })
       }
@@ -257,12 +261,11 @@ export function useChimeraTransport(): DeskpetTransport {
     }
   }
 
-  function roleHistory(requestId: string) {
-    return chat.getRequestMessages(requestId)
+  function roleHistory(requestId: string, text: string) {
+    return selectConversationContext(chat.getRequestMessages(requestId)
       .flatMap((message) => message.type === 'text' && message.id !== `user-${requestId}`
         ? [{ role: message.role, content: message.text }]
-        : [])
-      .slice(-6)
+        : []), text)
   }
 
   function completeLocalReply(requestId: string, roleId: RoleId, text: string): void {
@@ -300,7 +303,7 @@ export function useChimeraTransport(): DeskpetTransport {
           prepared = await streamResearchPreparation({
             text,
             roleId,
-            history: roleHistory(requestId),
+            history: roleHistory(requestId, text),
           }, async (thought) => {
             if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
             await presentReasoning(requestId, roleId, thought)

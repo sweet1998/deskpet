@@ -3,7 +3,8 @@ import base64
 import pytest
 
 from app.agent.service import AgentService
-from app.models import AgentChatRequest, MarketContextResponse, ResearchPrepareRequest, SecurityContext
+from app.agent.model_client import ModelOutputTruncatedError
+from app.models import AgentChatRequest, ChatMessage, MarketContextResponse, ResearchPrepareRequest, ResearchPrepareResponse, SecurityContext
 
 
 class FakeMarket:
@@ -35,9 +36,11 @@ class FakeMarket:
 class FakeModel:
     def __init__(self):
         self.messages = []
+        self.max_tokens = None
 
-    async def stream(self, messages):
+    async def stream(self, messages, max_tokens=1400):
         self.messages = messages
+        self.max_tokens = max_tokens
         yield "结论"
 
     async def close(self):
@@ -63,6 +66,7 @@ async def test_stock_agent_injects_market_and_streams_events():
     assert any("event: reasoning" in event and "现价" in event for event in events)
     assert any("event: reasoning" in event and "最大回撤 -6.50%" in event for event in events)
     assert any("event: delta" in event and "结论" in event for event in events)
+    assert model.max_tokens == 4096
     system = model.messages[0]["content"]
     assert "test-provider" in system
     assert "akshare-eastmoney" in system
@@ -72,6 +76,21 @@ async def test_stock_agent_injects_market_and_streams_events():
     assert "风险偏好较低" in system
     assert "不得承诺收益" in system
     assert "不要默认使用标题、编号" in system
+
+
+@pytest.mark.asyncio
+async def test_simple_stock_quote_uses_compact_output_budget():
+    model = FakeModel()
+    service = AgentService(FakeMarket(), model)
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-quote-budget",
+        roleId="stock_expert",
+        text="600519 现在多少钱",
+    ))]
+
+    assert any("event: done" in event for event in events)
+    assert model.max_tokens == 1400
 
 
 @pytest.mark.asyncio
@@ -88,9 +107,67 @@ async def test_research_prepare_stream_emits_progress_before_result():
 
 
 class NoCallModel(FakeModel):
-    async def stream(self, messages):
+    async def stream(self, messages, max_tokens=1400):
         raise AssertionError("out-of-scope request must not call the model")
         yield ""
+
+
+class TruncatedModel(FakeModel):
+    async def stream(self, messages, max_tokens=1400):
+        self.messages = messages
+        self.max_tokens = max_tokens
+        yield "未完成的回答"
+        raise ModelOutputTruncatedError("output limit")
+
+
+def test_model_history_respects_explicit_topic_boundaries():
+    service = AgentService(FakeMarket(), FakeModel())
+    prepared = ResearchPrepareResponse(
+        scope="in_scope",
+        intent="education",
+        targetKind="knowledge",
+    )
+    history = [
+        ChatMessage(role="user", content="分析 600519"),
+        ChatMessage(role="assistant", content="贵州茅台近期震荡。"),
+        ChatMessage(role="user", content="换个话题，解释市盈率"),
+        ChatMessage(role="assistant", content="市盈率用于衡量估值。"),
+    ]
+
+    messages = service.messages(AgentChatRequest(
+        requestId="req-history",
+        roleId="stock_expert",
+        text="那市净率呢",
+        history=history,
+    ), prepared)
+    assert [item["content"] for item in messages[1:-1]] == [
+        "换个话题，解释市盈率",
+        "市盈率用于衡量估值。",
+    ]
+
+    reset_messages = service.messages(AgentChatRequest(
+        requestId="req-reset",
+        roleId="stock_expert",
+        text="忽略前面，什么是市净率",
+        history=history,
+    ), prepared)
+    assert len(reset_messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_marks_answer_truncated_after_auto_continuation_limit():
+    service = AgentService(FakeMarket(), TruncatedModel())
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-truncated",
+        roleId="default",
+        text="详细解释这个问题",
+    ))]
+
+    event_names = [event.splitlines()[0].removeprefix("event: ") for event in events]
+    assert "delta" in event_names
+    assert event_names[-2:] == ["truncated", "done"]
+    assert "error" not in event_names
 
 
 @pytest.mark.asyncio
@@ -143,6 +220,7 @@ async def test_default_agent_sends_confirmed_screenshot_as_multimodal_content():
     ))]
 
     assert any("event: delta" in event for event in events)
+    assert model.max_tokens == 2048
     assert model.messages[-1] == {
         "role": "user",
         "content": [

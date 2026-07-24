@@ -70,7 +70,22 @@ QUOTE_KEYWORDS = ("多少钱", "当前价格", "现在价格", "股价", "涨跌
 REFERENCE_WORDS = (
     "它", "那", "那么", "那只", "这只", "该股", "这个板块", "该板块", "这个指数", "其", "今天呢", "现在呢",
 )
+NEW_TOPIC_WORDS = (
+    "换个话题", "换一个话题", "说点别的", "聊点别的", "不聊这个了", "不说这个了",
+    "忽略前面", "不用管前面", "忘掉前面", "重新开始", "新话题", "另一个问题", "另外一个问题",
+)
 COMPARISON_WORDS = ("对比", "比较", "相比", "vs", "VS")
+CONTEXT_ONLY_WORDS = (
+    "为什么", "什么原因", "怎么回事", "怎么看", "为何", "怎么", "最近", "近期", "这段时间",
+    "今天", "现在", "目前", "接下来", "后续", "后面", "这么", "那么", "如此", "特别", "厉害",
+    "严重", "大幅", "持续", "一直", "突然", "是不是", "有没有", "上涨", "下跌", "大涨", "大跌",
+    "走强", "走弱", "走高", "走低", "回撤", "反弹", "涨", "跌", "风险", "估值", "基本面",
+    "财报", "趋势", "走势", "支撑", "压力", "后市", "前景", "它", "那只", "这只", "该股",
+    "这个板块", "该板块", "这个指数", "这个", "那么", "那", "其", "很", "太", "又", "还",
+    "继续分析", "继续看看", "继续", "接着说", "接着", "展开说说", "展开", "详细说说", "详细说",
+    "查一下", "查查", "帮我查", "看看", "看一下", "说说", "讲讲", "要", "可以", "好的", "好",
+    "行", "嗯", "会", "能", "的", "了", "呢", "吗", "呀", "啊",
+)
 
 SECTOR_THEMES: Dict[str, Tuple[str, ...]] = {
     "科技": ("半导体", "软件开发", "IT服务Ⅱ", "通信设备", "消费电子"),
@@ -102,6 +117,18 @@ INDEXES: Dict[str, Dict[str, str]] = {
 def _contains(text: str, values: Tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(value.lower() in lowered for value in values)
+
+
+def starts_new_topic(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text).lower()
+    return any(value.lower() in normalized for value in NEW_TOPIC_WORDS)
+
+
+def _is_context_only_question(text: str) -> bool:
+    normalized = re.sub(r"[\s，。！？、,.!?：:；;（）()]+", "", text).lower()
+    for word in sorted(CONTEXT_ONLY_WORDS, key=len, reverse=True):
+        normalized = normalized.replace(word.lower(), "")
+    return not normalized
 
 
 def _index_target(text: str) -> Optional[Dict[str, str]]:
@@ -266,12 +293,29 @@ class ResearchService:
 
     @staticmethod
     def _reference_query(request: ResearchPrepareRequest) -> str:
-        if not _contains(request.text, REFERENCE_WORDS):
+        text = request.text.strip()
+        if starts_new_topic(text) or _contains(text, OUT_OF_SCOPE_KEYWORDS):
             return request.text
-        for item in reversed(request.history[-6:]):
+        has_explicit_target = (
+            bool(CODE_PATTERN.search(text))
+            or _index_target(text) is not None
+            or _sector_theme(text) is not None
+            or _contains(text, MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS)
+            or _contains(text, ("股票", "个股", "板块", "行业", "概念", "指数", "a股"))
+            or (
+                _contains(text, EDUCATION_KEYWORDS)
+                and _contains(text, EDUCATION_QUESTION_WORDS)
+            )
+            or (bool(_named_target_terms(text)) and not _is_context_only_question(text))
+        )
+        if has_explicit_target:
+            return request.text
+        for item in reversed(request.history[-20:]):
             if item.role != "user":
                 continue
             content = item.content.strip()
+            if starts_new_topic(content):
+                break
             if (
                 CODE_PATTERN.search(content)
                 or _index_target(content)

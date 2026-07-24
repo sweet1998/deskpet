@@ -22,15 +22,15 @@
         v-if="agent.chatOpen"
         ref="controlsRef"
         class="interaction-controls expanded conversation-expanded"
-        :class="{ dragging: draggingSurface }"
+        :class="{ dragging: draggingSurface, resizing: resizingSurface }"
         data-pet-ui
         @mousedown.stop
       >
-        <div class="panel-drag-handle" title="拖动对话面板" @pointerdown="startControlsDrag">
-          <GripHorizontal :size="16" />
-        </div>
+        <div class="panel-resize-edge top" @pointerdown="startSurfaceResize($event, 'height')" />
+        <div class="panel-resize-edge right" @pointerdown="startSurfaceResize($event, 'width')" />
+        <div class="panel-resize-corner" @pointerdown="startSurfaceResize($event, 'both')" />
         <section class="conversation-section">
-          <header class="chat-header">
+          <header class="chat-header" @pointerdown="startSurfaceDrag">
             <div class="header-leading">
               <button class="icon-button compact" type="button" title="会话记录" @click="toggleSessionDrawer">
                 <PanelLeft :size="16" />
@@ -92,6 +92,7 @@
             :follow-up-target="followUpTarget"
             :workspace-busy="workspaceBusy"
             @retry="$emit('retry', $event)"
+            @continue-generation="$emit('continue-generation', $event)"
             @continue-question="continueQuestion"
           />
         </section>
@@ -177,7 +178,6 @@ import {
   ChevronDown,
   FileText,
   FilePlus2,
-  GripHorizontal,
   Mic,
   PanelLeft,
   Paperclip,
@@ -194,7 +194,8 @@ import ConversationDrawer from './ConversationDrawer.vue'
 import { useAgentStore } from '@/stores/agent'
 import { useAiConfigStore } from '@/stores/ai-config'
 import { useChatStore, type ChatReplyReference } from '@/stores/chat'
-import { clampPetSurfacePosition, placePetSurface } from '@/services/interaction/pet-ui-position'
+import { clampPetSurfacePosition, clampPetSurfaceSize, placePetSurface } from '@/services/interaction/pet-ui-position'
+import { CHAT_COMPOSER_MIN_HEIGHT, chatComposerHeight } from '@/services/interaction/chat-composer-size'
 import { ROLE_IDS, ROLE_PROFILES, type RoleId } from '../../shared/roles'
 
 const props = defineProps<{
@@ -211,6 +212,7 @@ const emit = defineEmits<{
   'voice-stop': []
   interrupt: []
   retry: [requestId: string]
+  'continue-generation': [requestId: string]
   'capture-screen': []
   'confirm-screenshot': []
   'cancel-screenshot': []
@@ -237,11 +239,42 @@ const messageListRef = ref<{
 const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const controlsOffset = ref<{ x: number; y: number } | null>(null)
+const CHAT_PANEL_SIZE_KEY = 'deskpet/chat-panel-size-v1'
+const MIN_CONTROLS_WIDTH = 280
+const MIN_CONTROLS_HEIGHT = 280
+const controlsSize = ref(loadControlsSize())
 const draggingSurface = ref(false)
+const resizingSurface = ref(false)
 let dragPointerId = -1
 let dragOffsetX = 0
 let dragOffsetY = 0
+let resizePointerId = -1
+let resizeStartX = 0
+let resizeStartY = 0
+let resizeStartWidth = 0
+let resizeStartHeight = 0
+let resizeStartLeft = 0
+let resizeStartBottom = 0
+let resizeAxis: 'width' | 'height' | 'both' = 'both'
 let viewportObserver: ResizeObserver | null = null
+
+function loadControlsSize(): { width: number; height: number } | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(CHAT_PANEL_SIZE_KEY) || 'null') as Record<string, unknown> | null
+    if (!value || typeof value.width !== 'number' || typeof value.height !== 'number') return null
+    if (!Number.isFinite(value.width) || !Number.isFinite(value.height)) return null
+    return { width: value.width, height: value.height }
+  } catch {
+    return null
+  }
+}
+
+function persistControlsSize() {
+  try {
+    if (controlsSize.value) localStorage.setItem(CHAT_PANEL_SIZE_KEY, JSON.stringify(controlsSize.value))
+    else localStorage.removeItem(CHAT_PANEL_SIZE_KEY)
+  } catch { /* localStorage unavailable */ }
+}
 
 function updateViewport() {
   viewportWidth.value = window.innerWidth
@@ -255,16 +288,22 @@ onMounted(() => {
   viewportObserver = new ResizeObserver(updateViewport)
   viewportObserver.observe(document.documentElement)
   window.addEventListener('pointermove', onSurfacePointerMove)
+  window.addEventListener('pointermove', onSurfaceResizeMove)
   window.addEventListener('pointerup', stopSurfaceDrag)
+  window.addEventListener('pointerup', stopSurfaceResize)
   window.addEventListener('pointercancel', stopSurfaceDrag)
+  window.addEventListener('pointercancel', stopSurfaceResize)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', updateViewport)
   viewportObserver?.disconnect()
   viewportObserver = null
   window.removeEventListener('pointermove', onSurfacePointerMove)
+  window.removeEventListener('pointermove', onSurfaceResizeMove)
   window.removeEventListener('pointerup', stopSurfaceDrag)
+  window.removeEventListener('pointerup', stopSurfaceResize)
   window.removeEventListener('pointercancel', stopSurfaceDrag)
+  window.removeEventListener('pointercancel', stopSurfaceResize)
 })
 
 function surfacePosition(width: number, height: number) {
@@ -311,7 +350,11 @@ const stateLabels: Record<string, string> = {
 
 const stateLabel = computed(() => stateLabels[agent.state] || '')
 const activeStateLabel = computed(() => (
-  ['idle', 'success'].includes(agent.state) ? '' : stateLabel.value
+  ['idle', 'success'].includes(agent.state)
+    ? ''
+    : agent.state === 'speaking' && agent.currentStep
+      ? agent.currentStep
+      : stateLabel.value
 ))
 const currentProfile = computed(() => ROLE_PROFILES[agent.currentRole])
 const workspaceBusy = computed(() => agent.interruptible || Boolean(agent.confirmation))
@@ -329,8 +372,13 @@ const messageActivity = computed(() => chat.messages.map((message) => (
 function resizeComposer() {
   const input = inputRef.value
   if (!input) return
-  input.style.height = '0'
-  composerHeight.value = Math.min(88, Math.max(34, input.scrollHeight))
+  if (!input.value) {
+    composerHeight.value = chatComposerHeight('', input.scrollHeight)
+    input.style.height = `${CHAT_COMPOSER_MIN_HEIGHT}px`
+    return
+  }
+  input.style.height = `${CHAT_COMPOSER_MIN_HEIGHT}px`
+  composerHeight.value = chatComposerHeight(input.value, input.scrollHeight)
   input.style.height = `${composerHeight.value}px`
 }
 
@@ -347,6 +395,11 @@ watch(messageActivity, async () => {
   const nearBottom = list.isNearBottom()
   await nextTick()
   if (nearBottom) list.scrollToBottom()
+})
+
+watch(draftText, async () => {
+  await nextTick()
+  resizeComposer()
 })
 
 watch(() => agent.chatOpen, async (open) => {
@@ -382,17 +435,25 @@ const bubbleText = computed(() => {
   return ''
 })
 const anchorStyle = computed(() => {
-  const controlsWidth = Math.max(260, Math.min(320, viewportWidth.value - 24))
+  const defaultControlsWidth = Math.max(260, Math.min(320, viewportWidth.value - 24))
   const composerExtras = (currentProfile.value.riskNotice ? 30 : 0)
     + (composerHeight.value - 34)
     + (followUpTarget.value ? 50 : 0)
     + (pendingAttachments.value.length ? 48 : 0)
     + (props.screenshotPreview ? 58 : 0)
     + (attachmentError.value ? 20 : 0)
-  const conversationHeight = Math.max(180, Math.min(360, viewportHeight.value - 110 - composerExtras))
-  const controlsHeight = 64
+  const defaultConversationHeight = Math.max(180, Math.min(360, viewportHeight.value - 110 - composerExtras))
+  const defaultControlsHeight = 64
     + composerExtras
-    + conversationHeight
+    + defaultConversationHeight
+  const controlsWidth = Math.max(
+    Math.min(MIN_CONTROLS_WIDTH, viewportWidth.value - 24),
+    Math.min(controlsSize.value?.width ?? defaultControlsWidth, viewportWidth.value - 24),
+  )
+  const controlsHeight = Math.max(
+    Math.min(MIN_CONTROLS_HEIGHT, viewportHeight.value - 24),
+    Math.min(controlsSize.value?.height ?? defaultControlsHeight, viewportHeight.value - 24),
+  )
   const controls = resolveSurfacePosition(
     controlsOffset.value,
     surfacePosition(controlsWidth, controlsHeight),
@@ -405,14 +466,15 @@ const anchorStyle = computed(() => {
     '--controls-bottom': `${Math.max(12, viewportHeight.value - controls.top - controlsHeight)}px`,
     '--controls-width': `${controlsWidth}px`,
     '--controls-height': `${controlsHeight}px`,
-    '--conversation-height': `${conversationHeight}px`,
+    '--composer-height': `${composerHeight.value}px`,
     '--bubble-left': `${bubble.left}px`,
     '--bubble-top': `${bubble.top}px`,
   }
 })
 
 function startSurfaceDrag(event: PointerEvent) {
-  if (event.button !== 0) return
+  if (event.button !== 0 || resizingSurface.value) return
+  if (event.target instanceof Element && event.target.closest('button, input, textarea, select, a')) return
   const element = controlsRef.value
   if (!element) return
   const rect = element.getBoundingClientRect()
@@ -424,8 +486,63 @@ function startSurfaceDrag(event: PointerEvent) {
   event.stopPropagation()
 }
 
-function startControlsDrag(event: PointerEvent) {
-  startSurfaceDrag(event)
+function startSurfaceResize(event: PointerEvent, axis: 'width' | 'height' | 'both') {
+  if (event.button !== 0 || draggingSurface.value) return
+  const element = controlsRef.value
+  if (!element) return
+  const rect = element.getBoundingClientRect()
+  resizingSurface.value = true
+  resizePointerId = event.pointerId
+  resizeStartX = event.clientX
+  resizeStartY = event.clientY
+  resizeStartWidth = rect.width
+  resizeStartHeight = rect.height
+  resizeStartLeft = rect.left
+  resizeStartBottom = rect.bottom
+  resizeAxis = axis
+  if (event.currentTarget instanceof Element) event.currentTarget.setPointerCapture?.(event.pointerId)
+  event.stopPropagation()
+}
+
+function onSurfaceResizeMove(event: PointerEvent) {
+  if (!resizingSurface.value || event.pointerId !== resizePointerId) return
+  const nextSize = clampPetSurfaceSize({
+    width: resizeAxis === 'height'
+      ? resizeStartWidth
+      : resizeStartWidth + event.clientX - resizeStartX,
+    height: resizeAxis === 'width'
+      ? resizeStartHeight
+      : resizeStartHeight + resizeStartY - event.clientY,
+    left: resizeStartLeft,
+    top: 0,
+    viewportWidth: viewportWidth.value,
+    viewportHeight: viewportHeight.value,
+    minWidth: MIN_CONTROLS_WIDTH,
+    minHeight: MIN_CONTROLS_HEIGHT,
+    maxHeight: resizeStartBottom - 12,
+  })
+  controlsSize.value = nextSize
+  const automatic = surfacePosition(nextSize.width, nextSize.height)
+  const anchored = clampPetSurfacePosition({
+    left: resizeStartLeft,
+    top: resizeStartBottom - nextSize.height,
+    viewportWidth: viewportWidth.value,
+    viewportHeight: viewportHeight.value,
+    surfaceWidth: nextSize.width,
+    surfaceHeight: nextSize.height,
+  })
+  controlsOffset.value = {
+    x: anchored.left - automatic.left,
+    y: anchored.top - automatic.top,
+  }
+  event.preventDefault()
+}
+
+function stopSurfaceResize(event: PointerEvent) {
+  if (!resizingSurface.value || event.pointerId !== resizePointerId) return
+  resizingSurface.value = false
+  resizePointerId = -1
+  persistControlsSize()
 }
 
 function onSurfacePointerMove(event: PointerEvent) {
@@ -606,17 +723,21 @@ function formatFileSize(size: number): string {
 .interaction-controls {
   right: var(--controls-right);
   bottom: var(--controls-bottom);
+  container-type: inline-size;
   box-sizing: border-box; width: var(--controls-width); height: var(--controls-height); padding: 6px; display: flex; flex-direction: column; overflow: hidden;
   background: rgba(250,250,248,0.97); border: 1px solid rgba(46,61,84,0.16); border-radius: 8px;
   box-shadow: 0 8px 26px rgba(25,34,48,0.16); backdrop-filter: blur(16px);
   transition: width .18s ease, height .2s ease;
 }
 .interaction-controls.dragging { transition: none; }
-.panel-drag-handle { position: absolute; z-index: 2; top: 2px; left: 0; right: 0; height: 10px; display: grid; place-items: center; color: #9aa5b5; cursor: grab; touch-action: none; }
-.panel-drag-handle:active, .interaction-controls.dragging .panel-drag-handle { cursor: grabbing; }
-.input-row { flex: none; min-height: 42px; padding: 6px 2px 0; display: flex; align-items: flex-end; gap: 4px; border-top: 1px solid #e2e6ec; }
-.input-row textarea { min-width: 0; flex: 1; height: 36px; max-height: 92px; box-sizing: border-box; resize: none; border: 0; border-radius: 6px; padding: 8px 10px; color: #293548; background: #f1f4f8; outline: none; font-family: inherit; font-size: 13px; line-height: 19px; overflow-y: auto; }
-.input-row textarea:focus { box-shadow: inset 0 0 0 1px #7b96bb; }
+.interaction-controls.resizing { transition: none; user-select: none; }
+.panel-resize-edge, .panel-resize-corner { position: absolute; z-index: 6; touch-action: none; }
+.panel-resize-edge.top { top: 0; left: 10px; right: 10px; height: 4px; cursor: ns-resize; }
+.panel-resize-edge.right { top: 12px; right: 0; bottom: 12px; width: 5px; cursor: ew-resize; }
+.panel-resize-corner { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.input-row { height: calc(var(--composer-height) + 6px); min-height: 40px; max-height: 94px; flex: none; box-sizing: border-box; padding: 6px 2px 0; display: flex; align-items: flex-end; gap: 4px; border-top: 1px solid #e2e6ec; }
+.input-row textarea { min-width: 0; height: var(--composer-height); min-height: 34px; max-height: 88px; flex: 1 1 auto; box-sizing: border-box; resize: none; border: 0; border-radius: 6px; padding: 8px 10px; color: #293548; background: #f1f4f8; outline: none; font-family: inherit; font-size: 13px; line-height: 19px; overflow-y: auto; }
+.input-row textarea:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px #7b96bb; }
 .file-input { display: none; }
 .role-menu { position: absolute; z-index: 4; top: 45px; left: 10px; right: 10px; padding: 5px; display: grid; gap: 3px; border: 1px solid #dce1e9; border-radius: 6px; background: rgba(246,247,249,.98); box-shadow: 0 8px 20px rgba(25,34,48,.12); }
 .role-menu button { height: 31px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 5px; color: #40516c; background: transparent; cursor: pointer; }
@@ -636,14 +757,16 @@ function formatFileSize(size: number): string {
 .icon-button.accent { color: #fff; background: #5577a7; }
 .icon-button.danger { color: #a74650; }
 .icon-button.recording { color: #fff; background: #b85b65; animation: record-pulse 1s ease-in-out infinite; }
-.conversation-section { flex: none; height: var(--conversation-height); display: flex; flex-direction: column; overflow: hidden; }
-.chat-header { min-height: 44px; flex: none; padding: 7px 0 0 4px; display: flex; align-items: center; justify-content: space-between; color: #293548; }
+.conversation-section { min-height: 180px; flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+.chat-header { min-height: 44px; flex: none; padding: 4px 0 0 4px; display: flex; align-items: center; justify-content: space-between; color: #293548; cursor: grab; touch-action: none; }
+.interaction-controls.dragging .chat-header { cursor: grabbing; }
+.chat-header button { cursor: pointer; touch-action: auto; }
 .header-leading { min-width: 0; display: flex; align-items: center; gap: 1px; }
 .role-switcher { min-width: 0; height: 32px; padding: 0 7px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 6px; color: #293548; background: transparent; cursor: pointer; }
 .role-switcher:hover { background: #e9edf3; }
 .role-switcher span { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
 .header-actions { min-width: 0; display: flex; align-items: center; gap: 2px; }
-.agent-state { max-width: 100px; display: flex; align-items: center; gap: 5px; overflow: hidden; color: #738095; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.agent-state { min-width: 0; max-width: 100px; display: flex; align-items: center; gap: 5px; overflow: hidden; color: #738095; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
 .followup-context { flex: none; height: 46px; margin: 4px 2px 0; padding: 0 6px 0 8px; box-sizing: border-box; display: flex; align-items: center; gap: 7px; border: 1px solid #cfd9e7; border-radius: 6px; color: #526986; background: #eef2f7; }
 .followup-context > svg { flex: none; }
 .followup-context > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
@@ -666,7 +789,8 @@ function formatFileSize(size: number): string {
 .screenshot-preview button:hover { background: #e2e6ec; }
 .screenshot-preview button.confirm { color: #fff; background: #5577a7; }
 .attachment-error { flex: none; margin: 3px 6px 0; color: #a74650; font-size: 11px; }
-button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid #6f8fbc; outline-offset: 2px; }
+button:focus-visible, input:focus-visible { outline: 2px solid #6f8fbc; outline-offset: 2px; }
+@container (max-width: 360px) { .agent-state { display: none; } .role-switcher span { max-width: 92px; } }
 .bubble-pop-enter-active, .bubble-pop-leave-active, .toolbar-pop-enter-active, .toolbar-pop-leave-active { transition: opacity .18s ease, transform .18s ease; }
 .bubble-pop-enter-from, .bubble-pop-leave-to, .toolbar-pop-enter-from, .toolbar-pop-leave-to { opacity: 0; transform: translateY(6px); }
 @keyframes record-pulse { 50% { transform: scale(.92); } }

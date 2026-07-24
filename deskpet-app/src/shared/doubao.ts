@@ -35,6 +35,7 @@ export interface DoubaoMessage {
 export interface DoubaoChatRequest {
   requestId: string
   messages: DoubaoMessage[]
+  maxTokens?: number
 }
 
 export interface DoubaoStreamDelta {
@@ -46,4 +47,6 @@ export interface DoubaoResult {
   ok: boolean
   text?: string
   error?: string
+  truncated?: boolean
+  finishReason?: string
 }

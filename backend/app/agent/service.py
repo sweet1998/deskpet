@@ -4,9 +4,9 @@ from typing import Any, AsyncIterator, Dict, List, Tuple, Union
 
 from ..market.service import MarketService
 from ..models import AgentChatRequest, ResearchPrepareRequest, ResearchPrepareResponse
-from ..research import ResearchService, compact_research_context, research_context_unavailable
+from ..research import ResearchService, compact_research_context, research_context_unavailable, starts_new_topic
 from ..roles import get_role
-from .model_client import OpenAICompatibleModel
+from .model_client import ModelOutputTruncatedError, OpenAICompatibleModel
 
 
 def sse(event: str, data: Dict) -> str:
@@ -49,7 +49,12 @@ class AgentService:
             request.roleId == "stock_expert" and research_prompt(prepared),
         ]
         messages = [{"role": "system", "content": "\n".join(str(item) for item in identity if item)}]
-        messages.extend({"role": item.role, "content": item.content} for item in request.history[-20:])
+        history = [] if starts_new_topic(request.text) else request.history[-20:]
+        for index in range(len(history) - 1, -1, -1):
+            if history[index].role == "user" and starts_new_topic(history[index].content):
+                history = history[index:]
+                break
+        messages.extend({"role": item.role, "content": item.content} for item in history)
         user_content: Union[str, List[Dict[str, Any]]] = request.text
         if request.image:
             user_content = [
@@ -112,7 +117,7 @@ class AgentService:
             async for event, value in self._prepare_events(ResearchPrepareRequest(
                 text=request.text,
                 roleId=request.roleId,
-                history=request.history[-6:],
+                history=request.history[-20:],
             )):
                 if event == "reasoning":
                     if not executing:
@@ -175,8 +180,12 @@ class AgentService:
             "interruptible": True,
         })
         try:
-            async for delta in self.model.stream(self.messages(request, prepared)):
+            max_tokens = 4096 if prepared.requiresResearch else 2048 if request.image else 1400
+            async for delta in self.model.stream(self.messages(request, prepared), max_tokens=max_tokens):
                 yield sse("delta", {"requestId": request.requestId, "text": delta})
+            yield sse("done", {"requestId": request.requestId})
+        except ModelOutputTruncatedError:
+            yield sse("truncated", {"requestId": request.requestId})
             yield sse("done", {"requestId": request.requestId})
         except Exception as error:
             yield sse("error", {

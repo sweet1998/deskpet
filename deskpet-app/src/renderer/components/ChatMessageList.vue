@@ -75,6 +75,15 @@
           </span>
         </div>
         <div v-if="message.role === 'assistant' && !message.streaming" class="message-actions">
+          <button
+            v-if="message.truncated"
+            type="button"
+            title="继续生成"
+            :disabled="workspaceBusy"
+            @click="$emit('continue-generation', message.id)"
+          >
+            <MessageCircleMore :size="13" /><span>继续生成</span>
+          </button>
           <button type="button" :title="copiedMessageId === message.id ? '已复制' : '复制回答'" @click="copyAnswer(message.id, message.text)">
             <Check v-if="copiedMessageId === message.id" :size="13" />
             <Copy v-else :size="13" />
@@ -94,11 +103,20 @@
         </div>
       </template>
     </div>
+    <div
+      v-if="waitingForFirstToken"
+      class="message assistant generation-placeholder"
+      role="status"
+      aria-label="正在组织回答"
+    >
+      <span>正在组织回答</span>
+      <span class="generation-dots" aria-hidden="true"><i /><i /><i /></span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import {
   BrainCircuit,
   Check,
@@ -122,6 +140,7 @@ defineProps<{
 
 const emit = defineEmits<{
   retry: [requestId: string]
+  'continue-generation': [requestId: string]
   'continue-question': [reference: ChatReplyReference]
 }>()
 
@@ -129,6 +148,15 @@ const agent = useAgentStore()
 const chat = useChatStore()
 const listRef = ref<HTMLElement>()
 const copiedMessageId = ref('')
+const waitingForFirstToken = computed(() => (
+  agent.state === 'speaking'
+  && agent.interruptible
+  && !chat.messages.some((message) => (
+    message.type === 'text'
+    && message.role === 'assistant'
+    && message.id === agent.activeRequestId
+  ))
+))
 let copiedTimer: ReturnType<typeof setTimeout> | null = null
 
 onUnmounted(() => {
@@ -211,6 +239,12 @@ defineExpose({ isNearBottom, scrollToBottom })
 .message { max-width: 88%; padding: 8px 10px; border-radius: 7px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.user { align-self: flex-end; color: #fff; background: #425d82; }
 .message.assistant { align-self: flex-start; background: #edf0f5; }
+.generation-placeholder { min-width: 112px; display: flex; align-items: center; gap: 8px; color: #748196; }
+.generation-dots { display: inline-flex; align-items: center; gap: 3px; }
+.generation-dots i { width: 4px; height: 4px; border-radius: 50%; background: #8c99aa; animation: generation-pulse 1.1s ease-in-out infinite; }
+.generation-dots i:nth-child(2) { animation-delay: .15s; }
+.generation-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes generation-pulse { 0%, 70%, 100% { opacity: .3; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
 .message.assistant.followup-target { box-shadow: 0 0 0 2px rgba(85,119,167,.38); }
 .message.thought { width: 100%; max-width: 100%; box-sizing: border-box; padding: 2px 0 8px; color: #8791a2; background: transparent; border-bottom: 1px solid #e4e7ec; }
 .message.status { width: 100%; max-width: 100%; box-sizing: border-box; color: #7f3f49; background: #fff4f3; border: 1px solid #efcfcc; }

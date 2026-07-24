@@ -56,3 +56,33 @@ export function clampPetSurfacePosition(input: {
     )),
   }
 }
+
+export function clampPetSurfaceSize(input: {
+  width: number
+  height: number
+  left: number
+  top: number
+  viewportWidth: number
+  viewportHeight: number
+  minWidth?: number
+  minHeight?: number
+  maxWidth?: number
+  maxHeight?: number
+  margin?: number
+}) {
+  const margin = input.margin ?? 12
+  const availableWidth = Math.max(1, Math.min(
+    input.maxWidth ?? Number.POSITIVE_INFINITY,
+    input.viewportWidth - input.left - margin,
+  ))
+  const availableHeight = Math.max(1, Math.min(
+    input.maxHeight ?? Number.POSITIVE_INFINITY,
+    input.viewportHeight - input.top - margin,
+  ))
+  const minWidth = Math.min(input.minWidth ?? 280, availableWidth)
+  const minHeight = Math.min(input.minHeight ?? 280, availableHeight)
+  return {
+    width: Math.round(clamp(input.width, minWidth, availableWidth)),
+    height: Math.round(clamp(input.height, minHeight, availableHeight)),
+  }
+}

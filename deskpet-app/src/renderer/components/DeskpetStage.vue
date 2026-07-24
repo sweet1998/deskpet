@@ -26,6 +26,7 @@
       @voice-stop="stopVoiceInput"
       @interrupt="interruptAgent"
       @retry="retryRequest"
+      @continue-generation="continueGeneration"
       @capture-screen="captureCurrentScreen"
       @confirm-screenshot="confirmScreenshot"
       @cancel-screenshot="pendingScreenshot = ''"
@@ -145,6 +146,7 @@ const {
   pendingScreenshot,
   submitUserMessage,
   retryRequest,
+  continueGeneration,
   startVoiceInput,
   stopVoiceInput,
   interruptAgent,

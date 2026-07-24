@@ -143,7 +143,7 @@ class ResearchTarget(BaseModel):
 class ResearchPrepareRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     roleId: RoleId = "stock_expert"
-    history: List[ChatMessage] = Field(default_factory=list, max_length=6)
+    history: List[ChatMessage] = Field(default_factory=list, max_length=20)
 
 
 class ResearchPrepareResponse(BaseModel):

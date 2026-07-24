@@ -29,7 +29,6 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     requireLegalConsent: options.requireLegalConsent,
     cancelSpeech: options.cancelSpeech,
     createRequestId,
-    followUpPrompt,
     startRequestTimer,
     clearRequestTimer,
   })
@@ -65,11 +64,6 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     }, REQUEST_TIMEOUT_MS))
   }
 
-  function followUpPrompt(text: string, replyTo?: ChatReplyReference): string {
-    if (!replyTo) return text
-    return `请基于本会话中这段回答继续回应。回答摘录：“${replyTo.preview}”\n用户追问：${text}`
-  }
-
   function submitUserText(text: string, replyTo?: ChatReplyReference): void {
     const value = text.trim()
     if (!value || agent.interruptible || agent.confirmation || !options.requireLegalConsent()) return
@@ -81,7 +75,7 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
     agent.chatOpen = true
     startRequestTimer(requestId)
-    if (!transport.sendUserText(followUpPrompt(value, replyTo), requestId)) {
+    if (!transport.sendUserText(value, requestId)) {
       clearRequestTimer(requestId)
       chat.finishThought(requestId)
       chat.showStatusMessage(requestId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
@@ -161,8 +155,35 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     agent.chatOpen = true
     agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在重新生成', interruptible: true })
     startRequestTimer(requestId)
-    if (!transport.sendUserText(followUpPrompt(text, chat.getRequestReplyTo(requestId)), requestId)) {
+    if (!transport.sendUserText(text, requestId)) {
       clearRequestTimer(requestId)
+      chat.showStatusMessage(requestId, 'AI 服务当前不可用，请检查连接设置后重试。', 'network')
+      agent.applyState({ requestId, state: 'error', error: 'AI 服务当前不可用', interruptible: false })
+    }
+  }
+
+  function continueGeneration(sourceRequestId: string): void {
+    if (agent.interruptible || agent.confirmation || !options.requireLegalConsent()) return
+    const roleId = chat.getRequestRole(sourceRequestId) ?? agent.currentRole
+    if (roleId !== agent.currentRole) return
+    options.cancelSpeech()
+    const requestId = createRequestId()
+    chat.bindRequest(requestId, roleId)
+    chat.markChatTruncated(sourceRequestId, false)
+    agent.beginRequest(requestId, '继续生成')
+    agent.taskPanelOpen = false
+    agent.chatOpen = true
+    agent.applyState({
+      requestId,
+      state: 'thinking',
+      progress: 10,
+      step: '正在继续回答',
+      interruptible: true,
+    })
+    startRequestTimer(requestId)
+    if (!transport.sendUserText('继续', requestId)) {
+      clearRequestTimer(requestId)
+      chat.markChatTruncated(sourceRequestId)
       chat.showStatusMessage(requestId, 'AI 服务当前不可用，请检查连接设置后重试。', 'network')
       agent.applyState({ requestId, state: 'error', error: 'AI 服务当前不可用', interruptible: false })
     }
@@ -258,6 +279,7 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     submitUserMessage,
     submitFiles: attachmentWorkflow.submitUserFiles,
     retryRequest,
+    continueGeneration,
     startVoiceInput,
     stopVoiceInput,
     interruptAgent,

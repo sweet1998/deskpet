@@ -447,6 +447,67 @@ async def test_follow_up_inherits_previous_security_target():
 
 
 @pytest.mark.asyncio
+async def test_implicit_follow_up_inherits_security_without_pronouns():
+    result, market = await prepare("为什么最近跌这么厉害", [
+        ChatMessage(role="user", content="分析 600519"),
+        ChatMessage(role="assistant", content="贵州茅台近期表现偏震荡。"),
+    ])
+
+    assert result.intent == "security_trend"
+    assert result.targets[0].code == "SH.600519"
+    assert any("600519" in query for kind, query in market.calls if kind == "security")
+
+
+@pytest.mark.asyncio
+async def test_implicit_follow_up_inherits_previous_sector():
+    result, _ = await prepare("为什么最近跌这么厉害", [
+        ChatMessage(role="user", content="白酒板块最近怎么样"),
+        ChatMessage(role="assistant", content="白酒板块近期走弱。"),
+    ])
+
+    assert result.intent == "sector"
+    assert result.targets[0].name == "白酒"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["要", "可以，查一下", "继续看看", "展开说说"])
+async def test_short_confirmation_inherits_previous_sector(query):
+    result, _ = await prepare(query, [
+        ChatMessage(role="user", content="今天科技板块行情怎么样"),
+        ChatMessage(role="assistant", content="要不要继续看看板块里的核心个股近期表现？"),
+    ])
+
+    assert result.scope == "in_scope"
+    assert result.intent == "sector"
+    assert result.targetKind == "sector"
+    assert {target.name for target in result.targets} == {
+        "半导体", "软件开发", "IT服务Ⅱ", "通信设备", "消费电子",
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_new_topic_does_not_inherit_previous_target():
+    result, market = await prepare("换个话题，为什么最近跌这么厉害", [
+        ChatMessage(role="user", content="分析 600519"),
+        ChatMessage(role="assistant", content="贵州茅台近期表现偏震荡。"),
+    ])
+
+    assert result.intent == "clarification"
+    assert all("600519" not in query for _, query in market.calls)
+
+
+@pytest.mark.asyncio
+async def test_explicit_current_target_takes_priority_over_conversation_memory():
+    result, market = await prepare("五粮液为什么最近跌", [
+        ChatMessage(role="user", content="分析 600519"),
+        ChatMessage(role="assistant", content="贵州茅台近期表现偏震荡。"),
+    ])
+
+    assert result.targets[0].code == "SZ.000858"
+    assert all("600519" not in query for kind, query in market.calls if kind == "security")
+
+
+@pytest.mark.asyncio
 async def test_follow_up_uses_the_most_recent_explicit_target_only():
     result, market = await prepare("那它的风险呢", [
         ChatMessage(role="user", content="先看 600519"),

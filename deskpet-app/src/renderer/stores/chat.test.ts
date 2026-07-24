@@ -207,6 +207,25 @@ describe('chat store roles', () => {
     expect(chat.resetRequestResponse('req-retry')).toBe(false)
   })
 
+  it('marks a truncated answer so the user can continue it', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('详细分析医药板块', 'req-truncated')
+    chat.appendChatText('回答到一半', 'req-truncated')
+    chat.finishChatStream('req-truncated')
+
+    chat.markChatTruncated('req-truncated')
+    expect(chat.messages.find((message) => message.id === 'req-truncated')).toMatchObject({
+      type: 'text',
+      truncated: true,
+    })
+
+    chat.markChatTruncated('req-truncated', false)
+    expect(chat.messages.find((message) => message.id === 'req-truncated')).toMatchObject({
+      type: 'text',
+      truncated: false,
+    })
+  })
+
   it('uses an isolated non-persistent conversation in privacy mode', () => {
     const chat = useChatStore()
     chat.addUserMessage('普通历史', 'req-normal')
