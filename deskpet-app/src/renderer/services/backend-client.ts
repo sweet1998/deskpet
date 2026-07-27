@@ -1,5 +1,5 @@
 import type { RoleId } from '../../shared/roles'
-import type { MarketContextResult } from '../../shared/market'
+import type { MarketContextResult, TradingCalendar } from '../../shared/market'
 import type { ResearchPrepareInput, ResearchPrepareResult } from '../../shared/research'
 import { DESKTOP_BACKEND_URL, type DesktopBackendAccess, type MarketHealth } from '../../shared/backend'
 
@@ -9,6 +9,8 @@ const DEVICE_ID_KEY = 'deskpet/device-id'
 const MARKET_SOURCE_KEY = 'deskpet/market-source'
 
 export type MarketSource = 'backend' | 'opend'
+
+let calendarCache: { day: string; value: TradingCalendar } | null = null
 
 export interface BackendChatInput {
   requestId: string
@@ -81,6 +83,28 @@ function backendHeaders(access: DesktopBackendAccess): Record<string, string> {
     'Content-Type': 'application/json',
     'X-Device-Id': getDeviceId(),
     ...(access.token ? { Authorization: `Bearer ${access.token}` } : {}),
+  }
+}
+
+export async function getTradingCalendar(): Promise<TradingCalendar | null> {
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+  if (calendarCache && calendarCache.day === today) return calendarCache.value
+  try {
+    const access = await backendAccess()
+    const response = await fetch(`${access.url}/v1/market/calendar`, {
+      headers: backendHeaders(access),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const calendar = await response.json() as TradingCalendar
+    calendarCache = { day: today, value: calendar }
+    return calendar
+  } catch {
+    return null
   }
 }
 

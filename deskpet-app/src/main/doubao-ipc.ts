@@ -110,11 +110,15 @@ export class DoubaoIpcController {
       const controller = new AbortController()
       this.requests.get(input.requestId)?.abort()
       this.requests.set(input.requestId, controller)
+      const thinking = ['enabled', 'disabled', 'auto'].includes(input.thinking as string)
+        ? input.thinking
+        : undefined
       try {
         return await requestDoubaoConversation(this.getConfig(), input.messages, {
           signal: controller.signal,
           baseUrl: this.baseUrl,
           maxTokens: Math.max(512, Math.min(4096, Number(input.maxTokens) || 1400)),
+          ...(thinking ? { thinking } : {}),
           onDelta: (delta) => {
             if (!event.sender.isDestroyed()) {
               event.sender.send('doubao-chat-delta', { requestId: input.requestId, delta })

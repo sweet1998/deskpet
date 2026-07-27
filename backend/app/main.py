@@ -157,6 +157,14 @@ async def sector_scan(
     return await request.app.state.market.scan_sectors(body.limit, body.windowDays)
 
 
+@app.get("/v1/market/calendar")
+async def market_calendar(
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await request.app.state.market.trading_calendar()
+
+
 @app.get("/v1/market/health")
 async def market_health(
     request: Request,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  DESKPET_COMPLETION_MARKER,
   classifyStockIntent,
   detectDoubaoCapabilities,
   normalizeDoubaoConfig,
@@ -35,6 +36,48 @@ describe('doubao client', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
       }),
     )
+  })
+
+  it('forwards the thinking directive so reasoning models stop eating the output budget', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '完整回答' } }] }),
+    })
+
+    await requestDoubao(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'user', content: '明天可以炒股吗' }],
+      { fetchImpl: fetchImpl as unknown as typeof fetch, thinking: 'disabled' },
+    )
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1].body))
+    expect(body.thinking).toEqual({ type: 'disabled' })
+  })
+
+  it('retries without the thinking directive when the model rejects it', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: { message: 'thinking is not supported' } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: '兜底回答' } }] }),
+      })
+
+    const result = await requestDoubao(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'user', content: '你好' }],
+      { fetchImpl: fetchImpl as unknown as typeof fetch, thinking: 'disabled' },
+    )
+
+    expect(result).toEqual({ ok: true, text: '兜底回答' })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1].body)).thinking).toEqual({ type: 'disabled' })
+    expect(JSON.parse(String(fetchImpl.mock.calls[1][1].body))).not.toHaveProperty('thinking')
   })
 
   it('allows an explicit local base URL for offline integration tests', async () => {
@@ -207,6 +250,29 @@ describe('doubao client', () => {
     })
   })
 
+  it('marks a partial stream as truncated when the connection closes without DONE', async () => {
+    const encoder = new TextEncoder()
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"市场风格偏"}}]}\n\n'))
+        controller.close()
+      },
+    }), { status: 200 })
+
+    const result = await requestDoubao(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'user', content: '今天行情怎么样' }],
+      { fetchImpl: vi.fn().mockResolvedValue(response) as unknown as typeof fetch, onDelta: vi.fn() },
+    )
+
+    expect(result).toMatchObject({
+      ok: true,
+      text: '市场风格偏',
+      finishReason: 'connection_closed',
+      truncated: true,
+    })
+  })
+
   it('automatically continues a truncated streamed answer from the cutoff', async () => {
     const encoder = new TextEncoder()
     const streamResponse = (data: string) => new Response(new ReadableStream({
@@ -222,10 +288,15 @@ describe('doubao client', () => {
         + 'data: [DONE]\n\n',
       ))
       .mockResolvedValueOnce(streamResponse(
-        'data: {"choices":[{"delta":{"content":"猜，仍需核实消息面。"}}]}\n\n'
+        `data: {"choices":[{"delta":{"content":"猜，仍需核实消息面。${DESKPET_COMPLETION_MARKER}"}}]}\n\n`
         + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
         + 'data: [DONE]\n\n',
       ))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: '{"complete":true}' } }] }),
+      })
     const onDelta = vi.fn()
 
     const result = await requestDoubaoConversation(
@@ -237,12 +308,57 @@ describe('doubao client', () => {
     expect(result).toMatchObject({ ok: true, text: '我不方便瞎猜，仍需核实消息面。' })
     expect(result.truncated).toBeUndefined()
     expect(onDelta.mock.calls.map(([delta]) => delta).join('')).toBe(result.text)
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
     const firstBody = JSON.parse(String(fetchImpl.mock.calls[0][1].body))
     const secondBody = JSON.parse(String(fetchImpl.mock.calls[1][1].body))
     expect(firstBody.max_tokens).toBe(4096)
     expect(secondBody.messages.at(-2)).toEqual({ role: 'assistant', content: '我不方便瞎' })
-    expect(secondBody.messages.at(-1).content).toContain('从中断处直接续写')
+    expect(secondBody.messages.at(-1).content).toContain('从断点直接续写')
+    expect(JSON.stringify(firstBody.messages)).toContain(DESKPET_COMPLETION_MARKER)
+    expect(onDelta.mock.calls.map(([delta]) => delta).join('')).not.toContain(DESKPET_COMPLETION_MARKER)
+  })
+
+  it('continues when the model puts the completion marker after an unfinished sentence', async () => {
+    const encoder = new TextEncoder()
+    const streamResponse = (data: string) => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(data))
+        controller.close()
+      },
+    }), { status: 200 })
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(streamResponse(
+        `data: {"choices":[{"delta":{"content":"市场风格偏${DESKPET_COMPLETION_MARKER}"}}]}\n\n`
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: '{"complete":false}' } }] }),
+      })
+      .mockResolvedValueOnce(streamResponse(
+        `data: {"choices":[{"delta":{"content":"成长。${DESKPET_COMPLETION_MARKER}"}}]}\n\n`
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: '{"complete":true}' } }] }),
+      })
+    const onDelta = vi.fn()
+
+    const result = await requestDoubaoConversation(
+      { apiKey: 'secret', model: 'ep-test' },
+      [{ role: 'user', content: '今天行情怎么样' }],
+      { fetchImpl: fetchImpl as unknown as typeof fetch, onDelta },
+    )
+
+    expect(result).toMatchObject({ ok: true, text: '市场风格偏成长。' })
+    expect(result.truncated).toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(4)
+    expect(onDelta.mock.calls.map(([delta]) => delta).join('')).toBe('市场风格偏成长。')
   })
 
   it('keeps image content blocks for screen understanding', async () => {

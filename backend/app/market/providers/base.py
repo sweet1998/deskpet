@@ -47,5 +47,8 @@ class MarketProvider(ABC):
     async def market_overview(self) -> Dict[str, Any]:
         return {}
 
+    async def trade_calendar(self) -> List[str]:
+        return []
+
     async def close(self) -> None:
         return None

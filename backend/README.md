@@ -2,6 +2,8 @@
 
 FastAPI 单体服务，统一处理角色提示词、A 股行情、模型调用、用户记忆、鉴权和限流。桌宠客户端只提交白名单 `roleId`，不能提交系统提示词或供应商 URL。
 
+角色文案统一维护在 `deskpet-app/src/shared/role-profiles.json`，路由、研究、日期和回答完整性提示词统一维护在 `deskpet-app/src/shared/prompt-contract.json`。后端、豆包直连和 MaiBot 都读取这两份共享配置，不应在各自代码中复制提示词文案。
+
 ## 本地启动
 
 ```bash

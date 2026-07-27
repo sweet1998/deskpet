@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, time as clock_time
+from datetime import datetime, time as clock_time, timedelta
 import math
 import re
 from statistics import stdev
@@ -14,6 +14,7 @@ from .providers.eastmoney import map_symbol
 
 CODE_PATTERN = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 ProgressCallback = Callable[[str], Awaitable[None]]
+WEEKDAY_NAMES = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 STOP_WORDS = (
     "请", "帮我", "分析一下", "分析", "看看", "研究", "怎么样", "如何", "走势", "股票", "A股",
     "最近", "近期", "当前", "现在", "今天", "行情", "趋势", "价格", "股价", "基本面", "财报", "估值",
@@ -936,6 +937,54 @@ class MarketService:
                 if warning
             ),
             "warnings": [warning for warning in (snapshot_warning, bars_warning) if warning],
+        }
+
+    async def trading_calendar(self, days_ahead: int = 10) -> Dict[str, Any]:
+        tz = ZoneInfo("Asia/Shanghai")
+        today = datetime.now(tz).date()
+
+        def describe(day, trading: set) -> Dict[str, Any]:
+            iso = day.isoformat()
+            return {
+                "date": iso,
+                "weekday": WEEKDAY_NAMES[day.weekday()],
+                "isTradingDay": iso in trading,
+            }
+
+        try:
+            dates, source, _ = await self._cached_fetch(
+                "market:v2:trade-calendar",
+                6 * 60 * 60,
+                lambda: self._fetch("trade_calendar"),
+            )
+        except Exception as error:
+            return {
+                "status": "unavailable",
+                "asOf": today.isoformat(),
+                "error": str(error)[:200],
+            }
+        trading = set(dates)
+        next_trading = None
+        for offset in range(1, days_ahead + 1):
+            candidate = today + timedelta(days=offset)
+            if candidate.isoformat() in trading:
+                next_trading = candidate
+                break
+        return {
+            "status": "ok",
+            "asOf": today.isoformat(),
+            "timezone": "Asia/Shanghai",
+            "source": source,
+            "today": describe(today, trading),
+            "tomorrow": describe(today + timedelta(days=1), trading),
+            "nextTradingDay": (
+                {
+                    "date": next_trading.isoformat(),
+                    "weekday": WEEKDAY_NAMES[next_trading.weekday()],
+                }
+                if next_trading
+                else None
+            ),
         }
 
     async def market_overview(self) -> Dict[str, Any]:

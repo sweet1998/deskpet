@@ -293,7 +293,10 @@ async def test_out_of_scope_and_education_skip_research_data():
 @pytest.mark.parametrize("query", [
     "你对什么领域很了解",
     "你擅长什么",
+    "你擅长干什么",
     "你能帮我做什么",
+    "你可以干什么",
+    "你能干什么",
     "你是谁",
 ])
 async def test_role_capability_questions_skip_market_data(query):
@@ -302,6 +305,53 @@ async def test_role_capability_questions_skip_market_data(query):
     assert result.scope == "in_scope"
     assert result.intent == "role_capability"
     assert result.requiresResearch is False
+    assert result.reply is None
+    assert market.calls == []
+
+
+@pytest.mark.asyncio
+async def test_model_role_capability_route_covers_phrasing_regex_misses():
+    result, market = await prepare("你平时都能陪我聊些啥呀", route=StockRouteHint(
+        scope="in_scope",
+        intent="role_capability",
+        relation="standalone",
+        targetKind="knowledge",
+        confidence=0.95,
+    ))
+
+    assert result.scope == "in_scope"
+    assert result.intent == "role_capability"
+    assert result.requiresResearch is False
+    assert result.reply is None
+    assert market.calls == []
+
+
+@pytest.mark.asyncio
+async def test_high_confidence_semantic_route_is_not_vetoed_by_keyword_blacklist():
+    result, market = await prepare("解释量化编程在 A 股研究中的作用", route=StockRouteHint(
+        scope="in_scope",
+        intent="education",
+        relation="standalone",
+        targetKind="knowledge",
+        confidence=0.96,
+    ))
+
+    assert result.scope == "in_scope"
+    assert result.intent == "education"
+    assert market.calls == []
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_preparation_does_not_hard_code_the_reply():
+    result, market = await prepare("你能告诉我怎么去北京吗", route=StockRouteHint(
+        scope="out_of_scope",
+        intent="out_of_scope",
+        relation="new_topic",
+        targetKind="none",
+        confidence=0.98,
+    ))
+
+    assert result.scope == "out_of_scope"
     assert result.reply is None
     assert market.calls == []
 

@@ -3,6 +3,7 @@ import {
   type DoubaoCapabilityReport,
   type DoubaoMessage,
   type DoubaoResult,
+  type DoubaoThinkingMode,
 } from '../shared/doubao'
 import type {
   StockIntent,
@@ -10,6 +11,13 @@ import type {
   StockRouteRequest,
   StockRouteResult,
 } from '../shared/research'
+import {
+  COMPLETION_INSTRUCTION,
+  COMPLETION_MARKER,
+  COMPLETION_VERIFIER_PROMPT,
+  CONTINUATION_PROMPT,
+  STOCK_ROUTE_SYSTEM_PROMPT,
+} from '../shared/prompts'
 
 export interface StoredDoubaoConfig {
   apiKey: string
@@ -33,25 +41,13 @@ interface DoubaoRequestOptions {
   onDelta?: (delta: string) => void
   temperature?: number
   jsonMode?: boolean
+  thinking?: DoubaoThinkingMode
 }
 
 const DEFAULT_MAX_TOKENS = 4096
 const MAX_CONVERSATION_MESSAGES = 24
-const MAX_AUTO_CONTINUATIONS = 1
-const CONTINUATION_PROMPT = '刚才的回答因长度限制中断。请从中断处直接续写，不要重复已经回答的内容，直到完整结束。'
-const STOCK_ROUTE_SYSTEM_PROMPT = `你是 A 股桌面助手的请求路由器，只输出一个 JSON 对象，不回答用户问题。
-字段固定为 scope、intent、relation、targetKind、targetTerms、requiresResearch、confidence。
-scope 只能是 in_scope、needs_clarification、out_of_scope。
-intent 只能是 security_quote、security_trend、fundamental、valuation、comparison、sector_snapshot、sector、sector_scan、index、market_snapshot、market、education、role_capability、answer_followup、clarification、out_of_scope。
-relation 只能是 standalone、followup、answer_explanation、new_topic。
-targetKind 只能是 security、sector、index、market、knowledge、none。
-targetTerms 最多 3 个，只能逐字复制用户当前问题或历史消息中真实出现的股票、板块或指数名称，不得生成代码或改写名称。
-只有需要组合行情、历史、财务等数据形成判断时 requiresResearch 才为 true；简单报价、知识解释、澄清、越界和解释上一条回答均为 false。
-个股、A 股板块、指数、大盘和股票知识属于 in_scope；天气、编程、生活、基金、债券、期货、外汇、加密货币和海外股票属于 out_of_scope。
-询问当前角色是谁、会什么、擅长什么或能提供哪些帮助时，返回 role_capability，属于 in_scope，不需要研究。
-“为什么这么说”“依据是什么”“为什么没有覆盖消息面”等针对上一条回答的问题属于 answer_followup；结合最近历史识别“它”“那今天呢”等追问。明确表示换话题时 relation 为 new_topic。
-“上涨的是哪几家”“领跌的是谁”“还有哪些”等省略标的的问题，如果历史正在讨论股票或板块，属于 in_scope 的 followup，必须继承历史目标，不能判为 out_of_scope。
-confidence 是 0 到 1 的数字。信息不足且无法从历史继承时返回 needs_clarification。`
+const MAX_AUTO_CONTINUATIONS = 2
+export const DESKPET_COMPLETION_MARKER = COMPLETION_MARKER
 
 const STOCK_INTENTS = new Set<StockIntent>([
   'security_quote', 'security_trend', 'fundamental', 'valuation', 'comparison',
@@ -68,6 +64,62 @@ function limitedMessages(messages: DoubaoMessage[]): DoubaoMessage[] {
     return [messages[0], ...messages.slice(-(MAX_CONVERSATION_MESSAGES - 1))]
   }
   return messages.slice(-MAX_CONVERSATION_MESSAGES)
+}
+
+function withCompletionContract(messages: DoubaoMessage[]): DoubaoMessage[] {
+  const conversation = messages.map((message) => ({ ...message }))
+  const system = conversation.find((message) => message.role === 'system' && typeof message.content === 'string')
+  if (system && typeof system.content === 'string') {
+    system.content = `${system.content}\n${COMPLETION_INSTRUCTION}`
+  } else {
+    conversation.unshift({ role: 'system', content: COMPLETION_INSTRUCTION })
+  }
+  return conversation
+}
+
+function withoutCompletionMarker(text: string): { text: string; complete: boolean } {
+  const markerIndex = text.indexOf(COMPLETION_MARKER)
+  return markerIndex >= 0
+    ? { text: text.slice(0, markerIndex), complete: true }
+    : { text, complete: false }
+}
+
+function latestUserText(messages: DoubaoMessage[]): string {
+  const message = [...messages].reverse().find((item) => item.role === 'user')
+  if (!message) return ''
+  if (typeof message.content === 'string') return message.content
+  return message.content
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n')
+}
+
+export async function verifyResponseCompleteness(
+  config: StoredDoubaoConfig,
+  question: string,
+  answer: string,
+  options: Pick<DoubaoRequestOptions, 'signal' | 'fetchImpl' | 'baseUrl'> = {},
+): Promise<boolean> {
+  if (!answer.trim()) return false
+  const result = await requestDoubao(config, [
+    { role: 'system', content: COMPLETION_VERIFIER_PROMPT },
+    { role: 'user', content: JSON.stringify({ question: question.slice(0, 4000), answer: answer.slice(-8000) }) },
+  ], {
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    maxTokens: 80,
+    temperature: 0,
+    jsonMode: true,
+    thinking: 'disabled',
+  })
+  if (!result.ok || !result.text) return false
+  try {
+    const source = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+    return (JSON.parse(source) as { complete?: unknown }).complete === true
+  } catch {
+    return false
+  }
 }
 
 function compactRouteHistory(input: StockRouteRequest) {
@@ -201,6 +253,7 @@ export async function requestDoubao(
     return { ok: false, error: '对话内容不能为空' }
   }
 
+  let streamedAnswer = ''
   try {
     const streaming = typeof options.onDelta === 'function'
     const baseUrl = (options.baseUrl || DOUBAO_BASE_URL).replace(/\/+$/, '')
@@ -217,12 +270,17 @@ export async function requestDoubao(
         max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
         stream: streaming,
         ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        ...(options.thinking ? { thinking: { type: options.thinking } } : {}),
       }),
       signal: options.signal,
     })
     if (!response.ok) {
       let body: DoubaoApiResponse = {}
       try { body = await response.json() as DoubaoApiResponse } catch { /* provider may return HTML */ }
+      // Some models don't accept the thinking directive; retry once without it before failing.
+      if (options.thinking && response.status === 400) {
+        return requestDoubao(config, messages, { ...options, thinking: undefined })
+      }
       return { ok: false, error: doubaoHttpError(response.status, body.error?.message) }
     }
     if (!streaming) {
@@ -245,12 +303,17 @@ export async function requestDoubao(
     let buffer = ''
     let answer = ''
     let finishReason = ''
+    let sawDone = false
 
     const consume = (block: string) => {
       for (const line of block.split(/\r?\n/)) {
         if (!line.startsWith('data:')) continue
         const payload = line.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
+        if (!payload) continue
+        if (payload === '[DONE]') {
+          sawDone = true
+          continue
+        }
         try {
           const chunk = JSON.parse(payload) as DoubaoStreamChunk
           const choice = chunk.choices?.[0]
@@ -258,6 +321,7 @@ export async function requestDoubao(
           const delta = choice?.delta?.content
           if (!delta) continue
           answer += delta
+          streamedAnswer = answer
           options.onDelta?.(delta)
         } catch { /* ignore malformed SSE chunks */ }
       }
@@ -273,17 +337,26 @@ export async function requestDoubao(
     }
     if (buffer.trim()) consume(buffer)
     const text = answer.trim()
+    const streamInterrupted = !sawDone
     return text
       ? {
           ok: true,
           text,
-          ...(finishReason ? { finishReason } : {}),
-          ...(finishReason === 'length' ? { truncated: true } : {}),
+          ...(finishReason ? { finishReason } : streamInterrupted ? { finishReason: 'connection_closed' } : {}),
+          ...(finishReason === 'length' || streamInterrupted ? { truncated: true } : {}),
         }
       : { ok: false, error: '豆包没有返回文字内容' }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       return { ok: false, error: '请求已取消' }
+    }
+    if (streamedAnswer.trim()) {
+      return {
+        ok: true,
+        text: streamedAnswer.trim(),
+        truncated: true,
+        finishReason: 'connection_error',
+      }
     }
     if (error instanceof TypeError) return { ok: false, error: '无法连接豆包服务，请检查网络后重试' }
     return { ok: false, error: error instanceof Error ? error.message : '无法连接豆包服务' }
@@ -295,20 +368,59 @@ export async function requestDoubaoConversation(
   messages: DoubaoMessage[],
   options: DoubaoRequestOptions = {},
 ): Promise<DoubaoResult> {
-  let conversation = [...messages]
+  let conversation = withCompletionContract(messages)
   let answer = ''
+  const question = latestUserText(messages)
 
   for (let continuation = 0; continuation <= MAX_AUTO_CONTINUATIONS; continuation += 1) {
-    const result = await requestDoubao(config, conversation, options)
+    let pendingDelta = ''
+    let markerSeenInStream = false
+    const flushPendingDelta = () => {
+      if (!pendingDelta) return
+      options.onDelta?.(pendingDelta)
+      pendingDelta = ''
+    }
+    const result = await requestDoubao(config, conversation, {
+      ...options,
+      ...(options.onDelta ? {
+        onDelta: (delta: string) => {
+          if (markerSeenInStream) return
+          pendingDelta += delta
+          const markerIndex = pendingDelta.indexOf(DESKPET_COMPLETION_MARKER)
+          if (markerIndex >= 0) {
+            options.onDelta?.(pendingDelta.slice(0, markerIndex))
+            pendingDelta = ''
+            markerSeenInStream = true
+            return
+          }
+          const safeLength = pendingDelta.length - (DESKPET_COMPLETION_MARKER.length - 1)
+          if (safeLength > 0) {
+            options.onDelta?.(pendingDelta.slice(0, safeLength))
+            pendingDelta = pendingDelta.slice(safeLength)
+          }
+        },
+      } : {}),
+    })
     if (!result.ok || !result.text) return result
-    answer += result.text
-    if (!result.truncated) return { ...result, text: answer }
+    const part = withoutCompletionMarker(result.text)
+    const markerReceived = markerSeenInStream || part.complete
+    answer += part.text
+    const complete = markerReceived && await verifyResponseCompleteness(config, question, answer, options)
+    if (!complete) flushPendingDelta()
+    if (complete) {
+      return { ...result, text: answer.trim(), truncated: undefined }
+    }
     if (continuation === MAX_AUTO_CONTINUATIONS) {
-      return { ...result, text: answer, truncated: true }
+      return {
+        ...result,
+        text: answer.trim(),
+        truncated: true,
+        finishReason: result.finishReason || 'incomplete_response',
+      }
     }
     conversation = [
       ...conversation,
-      { role: 'assistant', content: result.text },
+      { role: 'assistant', content: part.text },
       { role: 'user', content: CONTINUATION_PROMPT },
     ]
   }

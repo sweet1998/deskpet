@@ -136,6 +136,9 @@ class AkshareProvider(MarketProvider):
         self._name_rows: List[Dict[str, Any]] = []
         self._name_expires_at = 0.0
         self._name_lock = asyncio.Lock()
+        self._calendar_dates: List[str] = []
+        self._calendar_expires_at = 0.0
+        self._calendar_lock = asyncio.Lock()
 
     async def _call(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         loop = asyncio.get_running_loop()
@@ -177,6 +180,29 @@ class AkshareProvider(MarketProvider):
             self._name_rows = rows
             self._name_expires_at = time.monotonic() + 86400
             return rows
+
+    async def trade_calendar(self) -> List[str]:
+        now = time.monotonic()
+        if self._calendar_dates and now < self._calendar_expires_at:
+            return self._calendar_dates
+        async with self._calendar_lock:
+            now = time.monotonic()
+            if self._calendar_dates and now < self._calendar_expires_at:
+                return self._calendar_dates
+            function = getattr(self.ak, "tool_trade_date_hist_sina", None)
+            if function is None:
+                raise RuntimeError("当前 AKShare 版本没有交易日历接口")
+            rows = _records(await self._call(function))
+            dates = sorted({
+                iso
+                for iso in (_date_text(row.get("trade_date")) for row in rows)
+                if iso
+            })
+            if not dates:
+                raise RuntimeError("AKShare 没有返回交易日历")
+            self._calendar_dates = dates
+            self._calendar_expires_at = time.monotonic() + 6 * 60 * 60
+            return dates
 
     async def search(self, query: str) -> List[Dict[str, str]]:
         normalized = query.strip().lower()

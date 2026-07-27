@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 import pytest
 
@@ -90,6 +91,16 @@ class SlowSectorProvider(FakeProvider):
 class FailingSectorCatalogProvider(FakeProvider):
     async def sector_catalog(self, category):
         raise RuntimeError("sector catalog failed")
+
+
+class CalendarProvider(FakeProvider):
+    async def trade_calendar(self):
+        return ["2026-07-24", "2026-07-27", "2026-07-28"]
+
+
+class FailingCalendarProvider(FakeProvider):
+    async def trade_calendar(self):
+        raise RuntimeError("calendar failed")
 
 
 class FailingSectorDataProvider(FakeProvider):
@@ -308,3 +319,36 @@ async def test_sector_scan_broadcasts_inflight_background_progress_to_waiting_re
     assert foreground["status"] == "ok"
     assert any("已完成" in item for item in progress)
     assert any("趋势排名已生成" in item for item in progress)
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 7, 24, 10, 0, tzinfo=tz)
+
+
+@pytest.mark.asyncio
+async def test_trading_calendar_reports_today_tomorrow_and_next_trading_day(monkeypatch):
+    monkeypatch.setattr("app.market.service.datetime", _FrozenDatetime)
+    service = MarketService(CalendarProvider(), TTLCache())
+
+    result = await service.trading_calendar()
+
+    assert result["status"] == "ok"
+    assert result["asOf"] == "2026-07-24"
+    assert result["today"] == {"date": "2026-07-24", "weekday": "星期五", "isTradingDay": True}
+    assert result["tomorrow"] == {"date": "2026-07-25", "weekday": "星期六", "isTradingDay": False}
+    assert result["nextTradingDay"] == {"date": "2026-07-27", "weekday": "星期一"}
+    assert result["source"] == "fake-market"
+
+
+@pytest.mark.asyncio
+async def test_trading_calendar_returns_unavailable_when_provider_fails(monkeypatch):
+    monkeypatch.setattr("app.market.service.datetime", _FrozenDatetime)
+    service = MarketService(FailingCalendarProvider(), TTLCache())
+
+    result = await service.trading_calendar()
+
+    assert result["status"] == "unavailable"
+    assert result["asOf"] == "2026-07-24"
+    assert "calendar failed" in result["error"]

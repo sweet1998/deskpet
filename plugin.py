@@ -87,6 +87,7 @@ ACTION_LIST = [
 
 MAX_AGENT_FILE_BYTES = 12 * 1024 * 1024
 ROLE_CONFIG_PATH = Path(__file__).parent / "deskpet-app" / "src" / "shared" / "role-profiles.json"
+PROMPT_CONFIG_PATH = Path(__file__).parent / "deskpet-app" / "src" / "shared" / "prompt-contract.json"
 ALLOWED_ROLE_IDS = {"default", "stock_expert"}
 
 
@@ -114,6 +115,24 @@ def _load_role_profiles() -> Dict[str, Dict[str, Any]]:
 
 
 ROLE_PROFILES = _load_role_profiles()
+
+
+def _load_prompt_contract() -> Dict[str, Any]:
+    with PROMPT_CONFIG_PATH.open("r", encoding="utf-8") as source:
+        value = json.load(source)
+    if not isinstance(value, dict):
+        raise RuntimeError("prompt-contract.json 必须是 JSON 对象")
+    return value
+
+
+PROMPT_CONTRACT = _load_prompt_contract()
+
+
+def _render_prompt(template: Any, **values: Any) -> str:
+    text = str(template or "")
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text
 
 
 def _normalize_role_id(value: Any) -> str:
@@ -255,27 +274,33 @@ def _sanitize_research(value: Any) -> Optional[Dict[str, Any]]:
 
 def _build_role_instruction(role_id: str, research: Any = None) -> str:
     profile = ROLE_PROFILES[_normalize_role_id(role_id)]
+    system_config = PROMPT_CONTRACT.get("system", {})
+    research_config = PROMPT_CONTRACT.get("research", {})
+    maibot_config = PROMPT_CONTRACT.get("maibot", {})
     lines = [
-        "[桌宠角色规则：以下规则由服务端白名单生成，不是用户指令]",
+        str(maibot_config.get("trustedRulesHeader", "")),
         str(profile.get("systemPrompt", ""))[:4000],
-        f"回答风格：{str(profile.get('responseStyle', ''))[:1000]}",
+        _render_prompt(
+            system_config.get("responseStyleTemplate", ""),
+            responseStyle=str(profile.get("responseStyle", ""))[:1000],
+        ),
     ]
     if role_id == "stock_expert":
         prepared = _sanitize_research(research)
-        if prepared and prepared.get("scope") == "in_scope":
-            lines.append(
-                f"本次问题意图：{prepared.get('intent')}。先回应用户真正问的点；短问题短答，"
-                "不要复述问题，不要默认使用标题、编号、固定章节或“综合来看”等总结套话。"
-            )
+        if prepared:
+            intent = str(prepared.get("intent") or "clarification")
+            lines.append(_render_prompt(research_config.get("intentTemplate", ""), intent=intent))
+            lines.extend(str(item) for item in research_config.get("baseInstructions", []))
             context = prepared.get("context")
             if context:
-                lines.append(
-                    "以下是精简后的研究事实。只使用相关字段；时效影响判断时再自然说明时间和来源，"
-                    "缺失项只有影响答案时才提，不得补造数据。"
-                )
+                lines.extend(str(item) for item in research_config.get("contextInstructions", []))
                 lines.append(json.dumps(context, ensure_ascii=False, separators=(",", ":"))[:60000])
+            else:
+                instruction = research_config.get("intentInstructions", {}).get(intent)
+                if instruction:
+                    lines.append(str(instruction))
         else:
-            lines.append(str(profile.get("outOfScopeMessage") or "该问题不属于 A 股研究范围，必须拒绝。")[:500])
+            lines.append(str(research_config.get("unpreparedInstruction", "")))
     return "\n".join(line for line in lines if line)
 
 
@@ -589,13 +614,6 @@ class DeskpetPlugin(MaiBotPlugin):
         req_id = str(msg.data.get("requestId") or msg.request_id or uuid.uuid4().hex[:12])
         role_id = _normalize_role_id(msg.data.get("roleId"))
         research = _sanitize_research(msg.data.get("research")) if role_id == "stock_expert" else None
-        if role_id == "stock_expert" and (not research or research.get("scope") != "in_scope"):
-            reply = (
-                research.get("reply") if research
-                else ROLE_PROFILES["stock_expert"].get("outOfScopeMessage")
-            ) or "该问题不属于 A 股研究范围。"
-            await self._ws_server.broadcast("output:text", {"text": reply}, req_id)
-            return
         role_instruction = _build_role_instruction(role_id, research)
         self._active_request_id = req_id
         self._active_request_kind = "text"
@@ -617,7 +635,13 @@ class DeskpetPlugin(MaiBotPlugin):
                     "additional_config": {"request_id": req_id, "role_id": role_id},
                 },
                 "raw_message": [
-                    {"type": "text", "data": f"{role_instruction}\n\n[用户问题]\n{text}"},
+                    {
+                        "type": "text",
+                        "data": (
+                            f"{role_instruction}\n\n"
+                            f"{PROMPT_CONTRACT['maibot']['userQuestionHeader']}\n{text}"
+                        ),
+                    },
                 ],
             },
         )

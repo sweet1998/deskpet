@@ -4,21 +4,27 @@ import { useChatStore } from '@/stores/chat'
 import { getAiProvider } from '@/services/ai-provider'
 import type { DeskpetTransport } from './types'
 import type { DoubaoMessage } from '../../../shared/doubao'
-import { getRoleProfile, type RoleId } from '../../../shared/roles'
-import type { MarketContextResult } from '../../../shared/market'
+import type { RoleId } from '../../../shared/roles'
+import type { MarketContextResult, TradingCalendar } from '../../../shared/market'
+import {
+  currentDatePrompt,
+  roleSystemPrompt,
+  tradingCalendarPrompt,
+} from '../../../shared/prompts'
 import {
   compactResearchContext,
   type ResearchPrepareResult,
 } from '../../../shared/research'
 import {
   getMarketSource,
+  getTradingCalendar,
   streamResearchPreparation,
   streamBackendChat,
   type BackendEvent,
 } from '@/services/backend-client'
 import { isAgentState } from '@/services/agent-protocol'
 import { marketCardFromResearch } from '@/services/market-card'
-import { localStockPreparation, researchContextUnavailable } from '@/services/stock-local-router'
+import { researchContextUnavailable } from '@/services/stock-local-router'
 import { hasLegalConsent } from '../../../shared/legal'
 import { createNativeToolTransport } from '@/services/native-tool-transport'
 import { selectConversationContext } from '@/services/conversation-context'
@@ -138,25 +144,25 @@ export function useChimeraTransport(): DeskpetTransport {
     }
   }
 
-  function researchInstruction(prepared: ResearchPrepareResult | undefined): string {
-    if (!prepared) return ''
-    const lines = [
-      `本次问题意图：${prepared.intent}。`,
-      '像熟悉市场的同事一样先直接回应用户最关心的点。短问题短答，不要复述问题，不要默认使用标题、编号或固定章节。',
-      '不要用“综合来看”“基于以上分析”开场，也不要为了显得全面而补充用户没问的内容。',
-    ]
-    if (prepared.context) {
-      lines.push('以下是精简后的研究事实。只使用与当前问题相关的数据；时效影响判断时再自然说明时间和来源，缺失项只有影响答案时才提，不得补造数据。')
-      lines.push('严格按数据自身日期描述：没有当日快照时，只能说“最近一个数据日”或给出具体日期；不得写“今天”“当前”“盘中”“实时”。历史区间的结束日期不是实时行情时间。')
-      lines.push(JSON.stringify(compactResearchContext(prepared.context)))
-    } else if (prepared.intent === 'education') {
-      lines.push('这是股票知识问题，直接解释概念和必要边界，不要虚构实时行情。')
-    } else if (prepared.intent === 'role_capability') {
-      lines.push('这是角色身份或能力问题。根据用户的具体问法自然回答：问“你是谁”时先介绍当前角色身份，问“会什么”时说明能提供的帮助；结合最近对话，但不要逐字复用上一条能力介绍。不要查询或编造行情。')
-    } else if (prepared.intent === 'answer_followup') {
-      lines.push('这是用户针对上一条回答提出的解释性追问。结合最近对话直接解释上一条说法、依据和数据边界；不要重新要求股票代码。若上一条说法不准确或依据不足，应明确纠正。')
-    }
-    return lines.join('\n')
+  function currentDateContext(): string {
+    const label = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      weekday: 'long',
+    }).format(new Date())
+    return currentDatePrompt(label)
+  }
+
+  function calendarDateContext(calendar: TradingCalendar | null): string | null {
+    if (!calendar || calendar.status !== 'ok' || !calendar.today || !calendar.tomorrow) return null
+    return tradingCalendarPrompt({
+      source: calendar.source,
+      today: calendar.today,
+      tomorrow: calendar.tomorrow,
+      nextTradingDay: calendar.nextTradingDay,
+    })
   }
 
   function buildDoubaoMessages(
@@ -164,15 +170,21 @@ export function useChimeraTransport(): DeskpetTransport {
     requestId: string,
     userContent: DoubaoMessage['content'],
     prepared?: ResearchPrepareResult,
+    dateContext?: string,
   ): DoubaoMessage[] {
-    const profile = getRoleProfile(roleId)
-    const identity = [
-      profile.systemPrompt,
-      `回答风格：${profile.responseStyle}`,
-      agent.userName ? `用户希望被称为：${agent.userName}。` : '',
-      agent.memories.length ? `你需要记住这些信息：${agent.memories.join('；')}` : '',
-      roleId === 'stock_expert' ? researchInstruction(prepared) : '',
-    ].filter(Boolean).join('\n')
+    const research = roleId === 'stock_expert' && prepared
+      ? {
+          intent: prepared.intent,
+          ...(prepared.context ? { context: compactResearchContext(prepared.context) } : {}),
+        }
+      : undefined
+    const identity = roleSystemPrompt({
+      roleId,
+      dateContext: dateContext || currentDateContext(),
+      userName: agent.userName,
+      memories: agent.memories,
+      ...(research ? { research } : {}),
+    })
     const history = roleHistory(
       requestId,
       typeof userContent === 'string' ? userContent : '',
@@ -207,10 +219,16 @@ export function useChimeraTransport(): DeskpetTransport {
           interruptible: true,
         })
       }
+      const dateContext = roleId === 'stock_expert'
+        ? calendarDateContext(await getTradingCalendar()) ?? undefined
+        : undefined
       const result = await window.electronAPI?.doubaoChat({
         requestId,
-        messages: buildDoubaoMessages(roleId, requestId, userContent, prepared),
-        maxTokens: prepared?.requiresResearch ? 4096 : Array.isArray(userContent) ? 2048 : 1400,
+        messages: buildDoubaoMessages(roleId, requestId, userContent, prepared, dateContext),
+        maxTokens: prepared?.requiresResearch ? 4096 : 2048,
+        // Simple/knowledge answers don't need chain-of-thought; disabling it stops a
+        // reasoning model from spending the output budget on hidden thinking and truncating.
+        ...(prepared?.requiresResearch ? {} : { thinking: 'disabled' as const }),
       })
       if (!result?.ok || !result.text) {
         finishReasoning(requestId)
@@ -299,36 +317,33 @@ export function useChimeraTransport(): DeskpetTransport {
     }
     let prepared: ResearchPrepareResult | undefined
     if (roleId === 'stock_expert') {
-      prepared = localStockPreparation(text)
-      if (!prepared) {
-        try {
-          prepared = await streamResearchPreparation({
-            text,
-            roleId,
-            history: roleHistory(requestId, text),
-          }, async (thought) => {
-            if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
-            await presentReasoning(requestId, roleId, thought)
-            agent.touchRequest(requestId)
-            agent.applyState({
-              requestId,
-              state: 'executing',
-              progress: 45,
-              step: '正在获取并计算研究数据',
-              interruptible: true,
-            })
-          })
-        } catch (error) {
-          showRequestError(
+      try {
+        prepared = await streamResearchPreparation({
+          text,
+          roleId,
+          history: roleHistory(requestId, text),
+        }, async (thought) => {
+          if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
+          await presentReasoning(requestId, roleId, thought)
+          agent.touchRequest(requestId)
+          agent.applyState({
             requestId,
-            roleId,
-            error instanceof Error ? error.message : '无法连接研究准备服务',
-            'network',
-          )
-          return
-        }
+            state: 'executing',
+            progress: 45,
+            step: '正在获取并计算研究数据',
+            interruptible: true,
+          })
+        })
+      } catch (error) {
+        showRequestError(
+          requestId,
+          roleId,
+          error instanceof Error ? error.message : '无法连接研究准备服务',
+          'network',
+        )
+        return
       }
-      if (prepared.scope !== 'in_scope') {
+      if (prepared.scope === 'needs_clarification') {
         completeLocalReply(requestId, roleId, prepared.reply || '请补充更明确的 A 股研究问题。')
         return
       }

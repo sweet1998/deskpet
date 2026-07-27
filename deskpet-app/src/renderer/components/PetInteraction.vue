@@ -230,7 +230,7 @@ const pendingAttachments = ref<File[]>([])
 const attachmentError = ref('')
 const inputRef = ref<HTMLTextAreaElement>()
 const fileInputRef = ref<HTMLInputElement>()
-const composerHeight = ref(34)
+const composerHeight = ref(CHAT_COMPOSER_MIN_HEIGHT)
 const controlsRef = ref<HTMLDivElement>()
 const messageListRef = ref<{
   isNearBottom: () => boolean
@@ -372,13 +372,16 @@ const messageActivity = computed(() => chat.messages.map((message) => (
 function resizeComposer() {
   const input = inputRef.value
   if (!input) return
-  if (!input.value) {
-    composerHeight.value = chatComposerHeight('', input.scrollHeight)
-    input.style.height = `${CHAT_COMPOSER_MIN_HEIGHT}px`
-    return
-  }
-  input.style.height = `${CHAT_COMPOSER_MIN_HEIGHT}px`
-  composerHeight.value = chatComposerHeight(input.value, input.scrollHeight)
+
+  const previousWrap = input.getAttribute('wrap')
+  input.setAttribute('wrap', 'off')
+  input.style.height = '0px'
+  const fitsSingleLine = !input.value.includes('\n') && input.scrollWidth <= input.clientWidth
+  if (previousWrap === null) input.removeAttribute('wrap')
+  else input.setAttribute('wrap', previousWrap)
+
+  input.style.height = '0px'
+  composerHeight.value = chatComposerHeight(input.value, input.scrollHeight, fitsSingleLine)
   input.style.height = `${composerHeight.value}px`
 }
 
@@ -437,7 +440,7 @@ const bubbleText = computed(() => {
 const anchorStyle = computed(() => {
   const defaultControlsWidth = Math.max(260, Math.min(320, viewportWidth.value - 24))
   const composerExtras = (currentProfile.value.riskNotice ? 30 : 0)
-    + (composerHeight.value - 34)
+    + (composerHeight.value - CHAT_COMPOSER_MIN_HEIGHT)
     + (followUpTarget.value ? 50 : 0)
     + (pendingAttachments.value.length ? 48 : 0)
     + (props.screenshotPreview ? 58 : 0)
@@ -735,8 +738,8 @@ function formatFileSize(size: number): string {
 .panel-resize-edge.top { top: 0; left: 10px; right: 10px; height: 4px; cursor: ns-resize; }
 .panel-resize-edge.right { top: 12px; right: 0; bottom: 12px; width: 5px; cursor: ew-resize; }
 .panel-resize-corner { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
-.input-row { height: calc(var(--composer-height) + 6px); min-height: 40px; max-height: 94px; flex: none; box-sizing: border-box; padding: 6px 2px 0; display: flex; align-items: flex-end; gap: 4px; border-top: 1px solid #e2e6ec; }
-.input-row textarea { min-width: 0; height: var(--composer-height); min-height: 34px; max-height: 88px; flex: 1 1 auto; box-sizing: border-box; resize: none; border: 0; border-radius: 6px; padding: 8px 10px; color: #293548; background: #f1f4f8; outline: none; font-family: inherit; font-size: 13px; line-height: 19px; overflow-y: auto; }
+.input-row { height: calc(var(--composer-height) + 6px); min-height: 40px; max-height: 78px; flex: none; box-sizing: border-box; padding: 6px 2px 0; display: flex; align-items: flex-end; gap: 4px; border-top: 1px solid #e2e6ec; }
+.input-row textarea { min-width: 0; height: var(--composer-height); min-height: 34px; max-height: 72px; flex: 1 1 auto; box-sizing: border-box; resize: none; border: 0; border-radius: 6px; padding: 8px 10px; color: #293548; background: #f1f4f8; outline: none; font-family: inherit; font-size: 13px; line-height: 19px; overflow-y: auto; }
 .input-row textarea:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px #7b96bb; }
 .file-input { display: none; }
 .role-menu { position: absolute; z-index: 4; top: 45px; left: 10px; right: 10px; padding: 5px; display: grid; gap: 3px; border: 1px solid #dce1e9; border-radius: 6px; background: rgba(246,247,249,.98); box-shadow: 0 8px 20px rgba(25,34,48,.12); }

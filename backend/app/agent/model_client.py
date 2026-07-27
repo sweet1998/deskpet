@@ -5,24 +5,18 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 from ..models import ChatMessage, StockRouteHint
+from ..prompts import (
+    COMPLETION_INSTRUCTION,
+    COMPLETION_MARKER,
+    COMPLETION_VERIFIER_PROMPT,
+    CONTINUATION_PROMPT,
+    STOCK_ROUTE_SYSTEM_PROMPT,
+)
 
 
 DEFAULT_MAX_TOKENS = 4096
-MAX_AUTO_CONTINUATIONS = 1
+MAX_AUTO_CONTINUATIONS = 2
 MAX_MESSAGES = 24
-CONTINUATION_PROMPT = "刚才的回答因长度限制中断。请从中断处直接续写，不要重复已经回答的内容，直到完整结束。"
-STOCK_ROUTE_SYSTEM_PROMPT = """你是 A 股桌面助手的请求路由器，只输出一个 JSON 对象，不回答用户问题。
-字段固定为 scope、intent、relation、targetKind、targetTerms、requiresResearch、confidence。
-scope 只能是 in_scope、needs_clarification、out_of_scope。
-intent 只能是 security_quote、security_trend、fundamental、valuation、comparison、sector_snapshot、sector、sector_scan、index、market_snapshot、market、education、role_capability、answer_followup、clarification、out_of_scope。
-relation 只能是 standalone、followup、answer_explanation、new_topic。
-targetKind 只能是 security、sector、index、market、knowledge、none。
-targetTerms 最多 3 个，只能逐字复制当前问题或历史中出现的股票、板块或指数名称，不得生成代码或改写名称。
-简单报价、知识解释、澄清、越界和解释上一条回答不需要研究；趋势、基本面、估值、对比、板块筛选和原因分析需要研究。
-个股、A 股板块、指数、大盘和股票知识属于范围内；天气、编程、生活、基金、债券、期货、外汇、加密货币和海外股票属于范围外。
-询问当前角色是谁、会什么、擅长什么或能提供哪些帮助时，返回 role_capability，属于范围内且不需要研究。
-针对上一条回答的质疑或解释请求属于 answer_followup；结合历史识别指代和新话题。
-“上涨的是哪几家”“领跌的是谁”“还有哪些”等省略标的的问题，如果历史正在讨论股票或板块，属于范围内的 followup，必须继承历史目标，不能判为 out_of_scope。confidence 是 0 到 1 的数字。"""
 
 
 class ModelConfigurationError(RuntimeError):
@@ -95,7 +89,26 @@ class OpenAICompatibleModel:
             content = response.json()["choices"][0]["message"]["content"]
             content = re.sub(r"<think>[\s\S]*?</think>", "", str(content), flags=re.IGNORECASE)
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
-            return StockRouteHint.model_validate_json(content)
+            route = StockRouteHint.model_validate_json(content)
+            if route.scope == "out_of_scope":
+                return route.model_copy(update={
+                    "intent": "out_of_scope",
+                    "targetKind": "none",
+                    "requiresResearch": False,
+                })
+            if route.scope == "needs_clarification":
+                return route.model_copy(update={
+                    "intent": "clarification",
+                    "targetKind": "none",
+                    "requiresResearch": False,
+                })
+            if route.relation == "answer_explanation" or route.intent == "answer_followup":
+                return route.model_copy(update={
+                    "intent": "answer_followup",
+                    "targetKind": "knowledge",
+                    "requiresResearch": False,
+                })
+            return route
         except (KeyError, IndexError, TypeError, ValueError):
             return None
 
@@ -106,14 +119,83 @@ class OpenAICompatibleModel:
     ) -> AsyncIterator[str]:
         if not self.api_key or not self.model:
             raise ModelConfigurationError("后端尚未配置 MODEL_API_KEY 和 MODEL_NAME")
-        conversation = list(messages)
+        conversation = self._with_completion_contract(messages)
+        question = self._latest_user_text(messages)
+        answer = ""
 
         for continuation in range(MAX_AUTO_CONTINUATIONS + 1):
-            finish_reason = ""
             part = ""
+            pending = ""
+            marker_seen = False
             limited = self._limited_messages(conversation)
-            async with self.client.stream(
-                "POST",
+            try:
+                async with self.client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": limited,
+                        "temperature": 0.55,
+                        "max_tokens": max(512, min(DEFAULT_MAX_TOKENS, max_tokens)),
+                        "stream": True,
+                    },
+                ) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode("utf-8", errors="replace")
+                        raise RuntimeError(f"模型请求失败（HTTP {response.status_code}）：{body[:300]}")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        try:
+                            body = json.loads(payload)
+                            delta = body.get("choices", [{}])[0].get("delta", {}).get("content")
+                            if not delta or marker_seen:
+                                continue
+                            text = str(delta)
+                            part += text
+                            pending += text
+                            marker_index = pending.find(COMPLETION_MARKER)
+                            if marker_index >= 0:
+                                if marker_index:
+                                    yield pending[:marker_index]
+                                part = part[:part.find(COMPLETION_MARKER)]
+                                pending = ""
+                                marker_seen = True
+                                continue
+                            safe_length = len(pending) - (len(COMPLETION_MARKER) - 1)
+                            if safe_length > 0:
+                                yield pending[:safe_length]
+                                pending = pending[safe_length:]
+                        except (ValueError, IndexError, AttributeError):
+                            continue
+            except httpx.HTTPError:
+                if not part:
+                    raise
+
+            answer += part
+            if marker_seen and await self._verify_completion(question, answer):
+                return
+            if pending:
+                yield pending
+            if continuation == MAX_AUTO_CONTINUATIONS:
+                raise ModelOutputTruncatedError("回答未完整结束，自动续写后仍未收到完成标记")
+            conversation.extend([
+                {"role": "assistant", "content": part},
+                {"role": "user", "content": CONTINUATION_PROMPT},
+            ])
+
+    async def _verify_completion(self, question: str, answer: str) -> bool:
+        if not answer.strip():
+            return False
+        try:
+            response = await self.client.post(
                 f"{self.base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
@@ -121,42 +203,53 @@ class OpenAICompatibleModel:
                 },
                 json={
                     "model": self.model,
-                    "messages": limited,
-                    "temperature": 0.55,
-                    "max_tokens": max(512, min(DEFAULT_MAX_TOKENS, max_tokens)),
-                    "stream": True,
+                    "messages": [
+                        {"role": "system", "content": COMPLETION_VERIFIER_PROMPT},
+                        {"role": "user", "content": json.dumps({
+                            "question": question[:4000],
+                            "answer": answer[-8000:],
+                        }, ensure_ascii=False)},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 80,
+                    "stream": False,
+                    "response_format": {"type": "json_object"},
                 },
-            ) as response:
-                if response.status_code >= 400:
-                    body = (await response.aread()).decode("utf-8", errors="replace")
-                    raise RuntimeError(f"模型请求失败（HTTP {response.status_code}）：{body[:300]}")
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if not payload or payload == "[DONE]":
-                        continue
-                    try:
-                        body = json.loads(payload)
-                        choice = body.get("choices", [{}])[0]
-                        if choice.get("finish_reason"):
-                            finish_reason = str(choice["finish_reason"])
-                        delta = choice.get("delta", {}).get("content")
-                        if delta:
-                            text = str(delta)
-                            part += text
-                            yield text
-                    except (ValueError, IndexError, AttributeError):
-                        continue
+            )
+            if response.status_code >= 400:
+                return False
+            content = response.json()["choices"][0]["message"]["content"]
+            source = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.IGNORECASE)
+            return json.loads(source).get("complete") is True
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+            return False
 
-            if finish_reason != "length":
-                return
-            if continuation == MAX_AUTO_CONTINUATIONS:
-                raise ModelOutputTruncatedError("回答内容过长，自动续写后仍达到模型输出上限")
-            conversation.extend([
-                {"role": "assistant", "content": part},
-                {"role": "user", "content": CONTINUATION_PROMPT},
-            ])
+    @staticmethod
+    def _latest_user_text(messages: List[Dict[str, Any]]) -> str:
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return "\n".join(
+                    str(part.get("text"))
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+                )
+        return ""
+
+    @staticmethod
+    def _with_completion_contract(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        conversation = [dict(message) for message in messages]
+        for message in conversation:
+            if message.get("role") == "system" and isinstance(message.get("content"), str):
+                message["content"] = f"{message['content']}\n{COMPLETION_INSTRUCTION}"
+                break
+        else:
+            conversation.insert(0, {"role": "system", "content": COMPLETION_INSTRUCTION})
+        return conversation
 
     @staticmethod
     def _limited_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

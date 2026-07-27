@@ -33,6 +33,18 @@ class FakeMarket:
         )
 
 
+class CalendarMarket(FakeMarket):
+    async def trading_calendar(self):
+        return {
+            "status": "ok",
+            "asOf": "2026-07-24",
+            "source": "akshare",
+            "today": {"date": "2026-07-24", "weekday": "星期五", "isTradingDay": True},
+            "tomorrow": {"date": "2026-07-25", "weekday": "星期六", "isTradingDay": False},
+            "nextTradingDay": {"date": "2026-07-27", "weekday": "星期一"},
+        }
+
+
 class FakeModel:
     def __init__(self):
         self.messages = []
@@ -61,6 +73,19 @@ class RoutingFakeModel(FakeModel):
             intent="answer_followup",
             relation="answer_explanation",
             targetKind="knowledge",
+            confidence=0.98,
+        )
+
+
+class OutOfScopeRoutingModel(FakeModel):
+    configured = True
+
+    async def classify_stock_intent(self, text, history):
+        return StockRouteHint(
+            scope="out_of_scope",
+            intent="out_of_scope",
+            relation="new_topic",
+            targetKind="none",
             confidence=0.98,
         )
 
@@ -109,7 +134,7 @@ async def test_simple_stock_quote_uses_compact_output_budget():
     ))]
 
     assert any("event: done" in event for event in events)
-    assert model.max_tokens == 1400
+    assert model.max_tokens == 2048
 
 
 @pytest.mark.asyncio
@@ -134,7 +159,7 @@ async def test_answer_followup_reaches_model_with_previous_assistant_message():
         {"role": "assistant", "content": previous_answer},
     ]
     assert "针对你上一条回答提出的解释性追问" in model.messages[0]["content"]
-    assert model.max_tokens == 1400
+    assert model.max_tokens == 2048
 
 
 @pytest.mark.asyncio
@@ -174,7 +199,7 @@ async def test_dedicated_intent_model_does_not_generate_the_answer():
 
 
 @pytest.mark.asyncio
-async def test_backend_mode_skips_model_route_for_explicit_market_scope():
+async def test_backend_mode_uses_semantic_route_for_natural_market_question():
     model = RoutingFakeModel()
     service = AgentService(FakeMarket(), model)
     request = ResearchPrepareRequest(
@@ -184,8 +209,8 @@ async def test_backend_mode_skips_model_route_for_explicit_market_scope():
 
     routed = await service._with_model_route(request)
 
-    assert routed.routeHint is None
-    assert model.route_inputs == []
+    assert routed.routeHint is not None
+    assert model.route_inputs[0][0] == "最近创新药行情怎么样 为什么"
 
 
 @pytest.mark.asyncio
@@ -205,7 +230,7 @@ async def test_backend_mode_skips_model_route_for_constituent_followup():
 
 
 @pytest.mark.asyncio
-async def test_backend_mode_skips_model_route_for_role_capability():
+async def test_backend_mode_routes_role_capability_through_model():
     model = RoutingFakeModel()
     service = AgentService(FakeMarket(), model)
     request = ResearchPrepareRequest(
@@ -215,8 +240,8 @@ async def test_backend_mode_skips_model_route_for_role_capability():
 
     routed = await service._with_model_route(request)
 
-    assert routed.routeHint is None
-    assert model.route_inputs == []
+    assert routed.routeHint is not None
+    assert model.route_inputs and model.route_inputs[0][0] == "你对什么领域很了解"
 
 
 @pytest.mark.asyncio
@@ -314,9 +339,9 @@ async def test_agent_marks_answer_truncated_after_auto_continuation_limit():
 
 
 @pytest.mark.asyncio
-async def test_stock_agent_rejects_out_of_scope_without_model_call():
-    model = NoCallModel()
-    service = AgentService(FakeMarket(), model)
+async def test_stock_agent_generates_contextual_out_of_scope_reply():
+    model = FakeModel()
+    service = AgentService(FakeMarket(), model, OutOfScopeRoutingModel())
     events = [event async for event in service.stream(AgentChatRequest(
         requestId="req-weather",
         roleId="stock_expert",
@@ -324,7 +349,9 @@ async def test_stock_agent_rejects_out_of_scope_without_model_call():
     ))]
 
     assert not any("event: reasoning" in event for event in events)
-    assert any("event: result" in event and "请切换到麦麦" in event for event in events)
+    assert any("event: delta" in event for event in events)
+    assert "不重复固定模板" in model.messages[0]["content"]
+    assert not any("只能回答个股、板块、指数" in event for event in events)
 
 
 class UnavailableMarket(FakeMarket):
@@ -348,6 +375,41 @@ async def test_stock_agent_does_not_call_model_without_reliable_market_context()
 
     assert any("event: result" in event and "行情数据源暂时不可用" in event for event in events)
     assert any("event: done" in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stock_agent_injects_trading_calendar_context():
+    model = FakeModel()
+    service = AgentService(CalendarMarket(), model)
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-calendar",
+        roleId="stock_expert",
+        text="分析 600519",
+    ))]
+
+    assert any("event: delta" in event for event in events)
+    system = model.messages[0]["content"]
+    assert "A股交易日历" in system
+    assert "明天（2026-07-25 星期六）不是A股交易日" in system
+    assert "下一个交易日是 2026-07-27 星期一" in system
+
+
+@pytest.mark.asyncio
+async def test_default_agent_uses_local_date_context_without_calendar():
+    model = FakeModel()
+    service = AgentService(CalendarMarket(), model)
+
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-default-date",
+        roleId="default",
+        text="今天几号",
+    ))]
+
+    assert any("event: delta" in event for event in events)
+    system = model.messages[0]["content"]
+    assert "当前北京时间日期：" in system
+    assert "A股交易日历" not in system
 
 
 @pytest.mark.asyncio

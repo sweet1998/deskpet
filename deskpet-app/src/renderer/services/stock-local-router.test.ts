@@ -1,27 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { localStockPreparation, researchContextUnavailable } from './stock-local-router'
+import { researchContextUnavailable } from './stock-local-router'
 
-describe('stock local fallback router', () => {
-  it.each(['什么是市盈率', 'MACD 怎么理解', '解释一下集合竞价', 'PE 和 PB 有什么区别'])(
-    'recognizes education without depending on the research backend: %s',
-    (query) => expect(localStockPreparation(query)?.intent).toBe('education'),
-  )
-
-  it('rejects clear out-of-scope queries but leaves mixed stock queries to the backend', () => {
-    expect(localStockPreparation('今天天气怎么样')?.scope).toBe('out_of_scope')
-    expect(localStockPreparation('天气变化会影响哪些股票')).toBeUndefined()
-  })
-
-  it.each(['你对什么领域很了解', '你擅长什么', '你能帮我做什么', '你是谁'])(
-    'routes role capability questions without hard-coding the answer: %s',
-    (query) => {
-      const result = localStockPreparation(query)
-      expect(result?.intent).toBe('role_capability')
-      expect(result?.requiresResearch).toBe(false)
-      expect(result?.reply).toBeUndefined()
-    },
-  )
-
+describe('stock research context guard', () => {
   it('detects unavailable market contexts without treating education as unavailable', () => {
     expect(researchContextUnavailable({
       scope: 'in_scope', intent: 'market_snapshot', requiresResearch: false,

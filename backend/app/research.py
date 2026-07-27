@@ -11,11 +11,20 @@ from .models import (
 )
 
 
-OUT_OF_SCOPE_MESSAGE = "我是 A 股研究助手，只能回答个股、板块、指数和股票知识问题。其他问题请切换到麦麦。"
 CLARIFY_MESSAGE = "请补充具体的六位股票代码、股票名称、板块或指数名称。"
 ProgressCallback = Callable[[str], Awaitable[None]]
 ROUTE_HINT_CONFIDENCE = 0.72
 
+# 路由信号分三层，权威顺序：Tier A 高精度确定信号 > 高置信 routeHint（Qwen3 模型）> Tier C 兜底关键词。
+#   Tier A —— 高精度确定信号（权威，始终可信）：CODE_PATTERN（来自 market）、INDEXES、SECTOR_THEMES、
+#             以及显式的“板块/行业/概念/指数”标记。命中即可确定路由，无需模型。
+#   Tier B —— 域内深度提示（启发式，低风险）：仅在“已确定在范围内”后区分快照 vs 深度研究、
+#             基本面 vs 估值等，判错代价小。
+#   Tier C —— 范围闸门兜底（仅在没有高置信 routeHint 时才作准）：判定是否越界/知识/身份/追问。
+#             中文表达变体无穷，这些列表必然有缺口，因此当模型给出高置信 routeHint 时以模型为准，
+#             这些关键词只作为模型缺席或低置信时的 fallback。
+
+# --- Tier C：范围闸门兜底 ---
 OUT_OF_SCOPE_KEYWORDS = (
     "天气", "气温", "下雨", "空气质量", "菜谱", "做饭", "翻译", "写诗", "小说", "电影", "音乐",
     "旅游", "酒店", "机票", "星座", "编程", "程序", "vue", "react", "javascript", "python", "数据库",
@@ -33,6 +42,7 @@ EDUCATION_QUESTION_WORDS = (
     "怎么算", "怎么计算", "计算方法", "有什么用", "高好还是低好", "越高越好吗", "为什么会",
     "代表什么", "怎么看", "怎么选", "怎么做",
 )
+# --- Tier B：域内深度提示（区分快照/研究/基本面/估值等，已在范围内才使用）---
 MARKET_KEYWORDS = (
     "大盘", "a股市场", "全市场", "涨跌家数", "市场情绪", "市场宽度", "两市成交", "赚钱效应",
     "市场风格", "成交额", "北向资金",
@@ -68,6 +78,8 @@ ROUTING_NOISE_TERMS = (
     + ("走弱", "走低", "下行", "震荡", "情况", "怎样", "好吗", "好不好", "还好吗", "咋回事", "怎么了")
 )
 QUOTE_KEYWORDS = ("多少钱", "当前价格", "现在价格", "股价", "涨跌幅", "现价", "当前点位", "现在点位")
+
+# --- Tier C：指代/新话题/上下文追问识别（范围闸门兜底，模型高置信时以模型为准）---
 REFERENCE_WORDS = (
     "它", "那", "那么", "那只", "这只", "该股", "这个板块", "该板块", "这个指数", "其", "今天呢", "现在呢",
 )
@@ -99,12 +111,13 @@ CONSTITUENT_FOLLOWUP_PATTERN = re.compile(
     r"(?:上涨|下跌|领涨|领跌|涨停|跌停).{0,10}(?:哪些|哪几|都有谁|是谁|几家|几只)"
 )
 ROLE_CAPABILITY_PATTERN = re.compile(
-    r"你是谁|你叫什么|你(?:会|能|可以)(?:做|回答|分析)(?:什么|哪些)|"
-    r"你(?:能|可以)帮我(?:做|分析)?(?:什么|哪些)|你能干什么|"
-    r"你擅长(?:什么|哪些|哪方面)|你对(?:什么|哪些)领域(?:很)?了解|"
+    r"你是谁|你叫什么|你(?:会|能|可以)(?:做|干|回答|分析)(?:什么|啥|哪些)|"
+    r"你(?:能|可以)帮我(?:做|干|分析)?(?:什么|啥|哪些)|"
+    r"你擅长(?:做|干)?(?:什么|啥|哪些|哪方面)|你对(?:什么|哪些)领域(?:很)?了解|"
     r"你了解(?:什么|哪些)领域|你的(?:能力|功能|服务范围)(?:是什么|有哪些)?"
 )
 
+# --- Tier A：高精度确定信号（权威，始终可信，命中即可确定路由）---
 SECTOR_THEMES: Dict[str, Tuple[str, ...]] = {
     "科技": ("半导体", "软件开发", "IT服务Ⅱ", "通信设备", "消费电子"),
     "人工智能": ("软件开发", "计算机设备", "通信设备", "半导体", "消费电子"),
@@ -372,7 +385,6 @@ class ResearchService:
             intent="out_of_scope",
             requiresResearch=False,
             targetKind="none",
-            reply=OUT_OF_SCOPE_MESSAGE,
         )
 
     @staticmethod
@@ -630,7 +642,8 @@ class ResearchService:
             )
 
         text = request.text.strip()
-        if ROLE_CAPABILITY_PATTERN.search(text):
+        route = request.routeHint if request.routeHint and request.routeHint.confidence >= ROUTE_HINT_CONFIDENCE else None
+        if route is None and ROLE_CAPABILITY_PATTERN.search(text):
             return ResearchPrepareResponse(
                 scope="in_scope",
                 intent="role_capability",
@@ -643,7 +656,6 @@ class ResearchService:
             CONSTITUENT_FOLLOWUP_PATTERN.search(text)
             and reference_query != text
         )
-        route = request.routeHint if request.routeHint and request.routeHint.confidence >= ROUTE_HINT_CONFIDENCE else None
         if contextual_constituent_followup:
             route = None
         strong_target = (
@@ -665,7 +677,6 @@ class ResearchService:
             if (
                 route.scope == "in_scope"
                 and (route.intent == "answer_followup" or route.relation == "answer_explanation")
-                and not _contains(text, OUT_OF_SCOPE_KEYWORDS)
             ):
                 return ResearchPrepareResponse(
                     scope="in_scope",
@@ -674,6 +685,17 @@ class ResearchService:
                     targetKind="knowledge",
                     targets=[ResearchTarget(kind="knowledge", name="上一条回答")],
                 )
+            if (
+                route.scope == "in_scope"
+                and route.intent == "role_capability"
+            ):
+                return ResearchPrepareResponse(
+                    scope="in_scope",
+                    intent="role_capability",
+                    requiresResearch=False,
+                    targetKind="knowledge",
+                    targets=[ResearchTarget(kind="knowledge", name="角色能力")],
+                )
             if not strong_target and route.scope == "out_of_scope":
                 return self._out_of_scope(text)
             if not strong_target and route.scope == "needs_clarification":
@@ -681,7 +703,6 @@ class ResearchService:
             if (
                 route.scope == "in_scope"
                 and route.intent == "education"
-                and not _contains(text, OUT_OF_SCOPE_KEYWORDS)
             ):
                 return ResearchPrepareResponse(
                     scope="in_scope",
@@ -704,7 +725,7 @@ class ResearchService:
             + TREND_KEYWORDS + QUOTE_KEYWORDS
             + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
         ) or _index_target(reference_query) is not None
-        if _contains(text, OUT_OF_SCOPE_KEYWORDS) and not has_explicit_stock_signal:
+        if route is None and _contains(text, OUT_OF_SCOPE_KEYWORDS) and not has_explicit_stock_signal:
             return self._out_of_scope(text)
 
         if _is_answer_followup(request):

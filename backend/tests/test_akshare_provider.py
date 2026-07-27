@@ -177,6 +177,14 @@ class FakeAkshare:
             for index in range(70)
         ])
 
+    def tool_trade_date_hist_sina(self):
+        self.calendar_calls = getattr(self, "calendar_calls", 0) + 1
+        return FakeFrame([
+            {"trade_date": "2026-07-24"},
+            {"trade_date": date(2026, 7, 27)},
+            {"trade_date": "2026-07-24"},
+        ])
+
 
 class FakeAkshareWithThsFallback(FakeAkshare):
     def stock_board_industry_name_em(self):
@@ -314,6 +322,21 @@ async def test_akshare_maps_ths_concept_snapshot_and_constituents():
     assert constituents[0]["changePercent"] == 6.95
     assert constituents[0]["amount"] == 98_000_000
     assert constituents[1]["code"] == "SZ.300639"
+
+
+@pytest.mark.asyncio
+async def test_akshare_trade_calendar_dedupes_normalizes_and_caches():
+    fake = FakeAkshare()
+    provider = AkshareProvider(timeout=1, ak_module=fake)
+    try:
+        first = await provider.trade_calendar()
+        second = await provider.trade_calendar()
+    finally:
+        await provider.close()
+
+    assert first == ["2026-07-24", "2026-07-27"]
+    assert second == first
+    assert fake.calendar_calls == 1
 
 
 def test_ths_constituent_parser_uses_structured_table(monkeypatch):

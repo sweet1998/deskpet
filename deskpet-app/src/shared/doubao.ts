@@ -32,10 +32,13 @@ export interface DoubaoMessage {
   content: string | DoubaoContentPart[]
 }
 
+export type DoubaoThinkingMode = 'enabled' | 'disabled' | 'auto'
+
 export interface DoubaoChatRequest {
   requestId: string
   messages: DoubaoMessage[]
   maxTokens?: number
+  thinking?: DoubaoThinkingMode
 }
 
 export interface DoubaoStreamDelta {

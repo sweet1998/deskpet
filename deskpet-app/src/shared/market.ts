@@ -86,6 +86,23 @@ export interface MarketContextResult {
   error?: string
 }
 
+export interface TradingCalendarDay {
+  date: string
+  weekday: string
+  isTradingDay: boolean
+}
+
+export interface TradingCalendar {
+  status: 'ok' | 'unavailable'
+  asOf: string
+  timezone?: string
+  source?: string
+  today?: TradingCalendarDay
+  tomorrow?: TradingCalendarDay
+  nextTradingDay?: { date: string; weekday: string } | null
+  error?: string
+}
+
 export const DEFAULT_MARKET_CONFIG: MarketBridgeConfig = {
   openDHost: '127.0.0.1',
   openDPort: 11111,

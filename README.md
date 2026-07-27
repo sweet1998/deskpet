@@ -227,7 +227,7 @@ deskpet/
 │       ├── main/                  # Electron 主进程与后端生命周期
 │       ├── preload/               # 安全 IPC
 │       ├── renderer/              # Live2D、对话、设置和状态
-│       └── shared/                # 角色、行情和研究协议
+│       └── shared/                # 角色、统一 Prompt、行情和研究协议
 ├── plugin.py                      # 上游 MaiBot 兼容入口
 ├── futu-market-bridge.py          # 保留的 OpenD 高级兼容桥
 ├── stt-bridge.py                  # 可选本地语音识别桥

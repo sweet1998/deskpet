@@ -8,6 +8,7 @@ repository_root = backend_root.parent
 
 akshare_datas, akshare_binaries, akshare_hiddenimports = collect_all("akshare")
 role_file = repository_root / "deskpet-app" / "src" / "shared" / "role-profiles.json"
+prompt_contract_file = repository_root / "deskpet-app" / "src" / "shared" / "prompt-contract.json"
 
 analysis = Analysis(
     [str(backend_root / "desktop_entry.py")],
@@ -16,6 +17,10 @@ analysis = Analysis(
     datas=akshare_datas + [
         (
             str(role_file),
+            "deskpet-app/src/shared",
+        ),
+        (
+            str(prompt_contract_file),
             "deskpet-app/src/shared",
         ),
     ],

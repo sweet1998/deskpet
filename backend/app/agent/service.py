@@ -1,12 +1,18 @@
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
 from ..market.service import CODE_PATTERN, MarketService
 from ..models import AgentChatRequest, ResearchPrepareRequest, ResearchPrepareResponse
+from ..prompts import (
+    build_current_date_prompt,
+    build_research_prompt,
+    build_role_system_prompt,
+    build_trading_calendar_prompt,
+)
 from ..research import (
     CONSTITUENT_FOLLOWUP_PATTERN,
-    ROLE_CAPABILITY_PATTERN,
     ResearchService,
     compact_research_context,
     research_context_unavailable,
@@ -20,31 +26,18 @@ def sse(event: str, data: Dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
+_WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+
+def _current_date_context() -> str:
+    now = datetime.now(timezone(timedelta(hours=8)))
+    label = f"{now.year}年{now.month}月{now.day}日 {_WEEKDAYS[now.weekday()]}"
+    return build_current_date_prompt(label)
+
+
 def research_prompt(prepared: ResearchPrepareResponse) -> str:
-    lines = [
-        f"本次问题意图：{prepared.intent}。",
-        "像熟悉市场的同事一样直接回应用户最关心的点。短问题就短答，不要默认使用标题、编号、固定段落或总结套话。",
-        "不要复述问题，不要用“综合来看”“基于以上分析”开场，也不要为了显得全面而补充用户没问的内容。",
-    ]
-    if prepared.context:
-        lines.extend([
-            "以下 JSON 是精简后的研究事实。只引用与问题直接相关的数据；时效会影响判断时再自然说明时间和来源，缺失项只有影响答案时才提，不得补造数据。",
-            "严格按数据自身日期描述：没有当日快照时，只能说“最近一个数据日”或给出具体日期；不得写“今天”“当前”“盘中”“实时”。历史区间的结束日期不是实时行情时间。",
-            json.dumps(compact_research_context(prepared.context), ensure_ascii=False, separators=(",", ":")),
-        ])
-    elif prepared.intent == "education":
-        lines.append("这是股票知识问题，直接解释核心概念和必要边界，不要虚构实时行情。")
-    elif prepared.intent == "role_capability":
-        lines.append(
-            "这是角色身份或能力问题。根据用户的具体问法自然回答：问“你是谁”时先介绍当前角色身份，"
-            "问“会什么”时说明能提供的帮助；结合最近对话，但不要逐字复用上一条能力介绍。不要查询或编造行情。"
-        )
-    elif prepared.intent == "answer_followup":
-        lines.append(
-            "这是用户针对你上一条回答提出的解释性追问。结合最近对话直接解释上一条说法、依据和数据边界；"
-            "不要重新要求股票代码。若上一条说法不准确或依据不足，应明确纠正。"
-        )
-    return "\n".join(lines)
+    context = compact_research_context(prepared.context) if prepared.context else None
+    return build_research_prompt(prepared.intent, context)
 
 
 class AgentService:
@@ -63,16 +56,17 @@ class AgentService:
         self,
         request: AgentChatRequest,
         prepared: ResearchPrepareResponse,
+        date_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         profile = get_role(request.roleId)
-        identity = [
-            profile.systemPrompt,
-            f"回答风格：{profile.responseStyle}",
-            request.userName and f"用户希望被称为：{request.userName}。",
-            request.memories and f"用户明确要求记住：{'；'.join(request.memories)}",
-            request.roleId == "stock_expert" and research_prompt(prepared),
-        ]
-        messages = [{"role": "system", "content": "\n".join(str(item) for item in identity if item)}]
+        system_prompt = build_role_system_prompt(
+            profile,
+            date_context or _current_date_context(),
+            request.userName,
+            request.memories,
+            research_prompt(prepared) if request.roleId == "stock_expert" else None,
+        )
+        messages = [{"role": "system", "content": system_prompt}]
         history = [] if starts_new_topic(request.text) else request.history[-20:]
         for index in range(len(history) - 1, -1, -1):
             if history[index].role == "user" and starts_new_topic(history[index].content):
@@ -93,6 +87,18 @@ class AgentService:
             ]
         messages.append({"role": "user", "content": user_content})
         return messages
+
+    async def _date_context(self, role_id: str) -> str:
+        if role_id != "stock_expert":
+            return _current_date_context()
+        calendar_fn = getattr(self.market, "trading_calendar", None)
+        if calendar_fn is None:
+            return _current_date_context()
+        try:
+            calendar = await calendar_fn()
+        except Exception:
+            return _current_date_context()
+        return build_trading_calendar_prompt(calendar) or _current_date_context()
 
     async def _prepare_events(
         self,
@@ -121,18 +127,11 @@ class AgentService:
         contextual_constituent_followup = bool(
             request.history and CONSTITUENT_FOLLOWUP_PATTERN.search(request.text)
         )
-        explicit_market_scope = any(word.lower() in request.text.lower() for word in (
-            "股票", "个股", "板块", "行业", "概念", "指数", "大盘", "A股", "股市", "行情",
-        ))
-        context_dependent = any(word in request.text for word in (
-            "你说", "刚才", "上面", "前面", "上一条", "这个结论", "这个判断", "为什么这么说", "依据是什么",
-        ))
         if (
             request.roleId != "stock_expert"
             or request.routeHint is not None
-            or ROLE_CAPABILITY_PATTERN.search(request.text)
             or contextual_constituent_followup
-            or ((explicit_code or explicit_market_scope) and not context_dependent)
+            or explicit_code
             or not getattr(self.intent_model, "configured", False)
         ):
             return request
@@ -202,7 +201,7 @@ class AgentService:
             **prepared.model_dump(exclude_none=True),
         })
 
-        if prepared.scope != "in_scope":
+        if prepared.scope == "needs_clarification":
             yield sse("result", {
                 "requestId": request.requestId,
                 "text": prepared.reply or "请补充更明确的 A 股研究问题。",
@@ -242,8 +241,12 @@ class AgentService:
             "interruptible": True,
         })
         try:
-            max_tokens = 4096 if prepared.requiresResearch else 2048 if request.image else 1400
-            async for delta in self.model.stream(self.messages(request, prepared), max_tokens=max_tokens):
+            max_tokens = 4096 if prepared.requiresResearch else 2048
+            date_context = await self._date_context(request.roleId)
+            async for delta in self.model.stream(
+                self.messages(request, prepared, date_context),
+                max_tokens=max_tokens,
+            ):
                 yield sse("delta", {"requestId": request.requestId, "text": delta})
             yield sse("done", {"requestId": request.requestId})
         except ModelOutputTruncatedError:
