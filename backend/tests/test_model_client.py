@@ -63,17 +63,13 @@ async def test_stream_automatically_continues_after_length_finish_reason():
 async def test_stream_continues_when_marker_follows_an_unfinished_sentence():
     requests = []
     stream_count = 0
-    verification_count = 0
 
     def handler(request):
-        nonlocal stream_count, verification_count
+        nonlocal stream_count
         requests.append(json.loads(request.content))
         if not requests[-1].get("stream"):
-            verification_count += 1
             return httpx.Response(200, json={
-                "choices": [{"message": {"content": json.dumps({
-                    "complete": verification_count > 1,
-                })}}],
+                "choices": [{"message": {"content": '{"complete":true}'}}],
             })
         stream_count += 1
         if stream_count == 1:
@@ -96,7 +92,7 @@ async def test_stream_continues_when_marker_follows_an_unfinished_sentence():
         await client.aclose()
 
     assert output == "市场风格偏成长。"
-    assert len(requests) == 4
+    assert len(requests) == 3
 
 
 @pytest.mark.asyncio

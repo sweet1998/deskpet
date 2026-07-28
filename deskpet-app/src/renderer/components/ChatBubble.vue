@@ -4,7 +4,7 @@
     <TransitionGroup name="comic-pop">
       <div v-for="b in floatingBubbles" :key="b.id" class="comic-bubble" :class="b.role">
         <img v-if="b.type === 'emoji'" :src="'data:image/png;base64,' + b.base64" class="emoji-img" />
-        <template v-else>{{ b.text }}<span v-if="b.streaming" class="msg-cursor">|</span></template>
+        <template v-else>{{ b.streaming ? streamingDisplayText(b.text) : b.text }}<span v-if="b.streaming" class="msg-cursor">|</span></template>
       </div>
     </TransitionGroup>
   </div>
@@ -17,7 +17,7 @@
           <div class="msg-label">{{ msg.role === 'user' ? '你' : '麦麦' }}</div>
           <div class="msg-bubble" :class="{ streaming: 'streaming' in msg && msg.streaming }">
             <img v-if="msg.type === 'emoji'" :src="'data:image/png;base64,' + msg.base64" class="emoji-img" />
-            <template v-else-if="msg.type === 'text'">{{ msg.text }}<span v-if="msg.streaming" class="msg-cursor">|</span></template>
+            <template v-else-if="msg.type === 'text'">{{ msg.streaming ? streamingDisplayText(msg.text) : msg.text }}<span v-if="msg.streaming" class="msg-cursor">|</span></template>
             <template v-else-if="msg.type === 'status'">{{ msg.text }}</template>
             <template v-else-if="msg.type === 'thought'">{{ msg.complete ? '分析记录' : '正在分析' }}</template>
             <template v-else-if="msg.type === 'market'">{{ msg.card.title }}</template>
@@ -33,6 +33,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
+import { streamingDisplayText } from '@/services/markdown'
 
 const BUBBLE_TTL = 5000
 

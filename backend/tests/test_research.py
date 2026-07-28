@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import ChatMessage, MarketContextResponse, ResearchPrepareRequest, SecurityContext, StockRouteHint
+from app.models import ChatMessage, MarketContextResponse, ResearchPrepareRequest, SecurityContext, SecurityEvent, StockRouteHint
 from app.research import ResearchService
 
 
@@ -41,11 +41,25 @@ class FakeResearchMarket:
     def __init__(self):
         self.calls = []
 
-    async def context(self, query, count):
+    async def context(self, query, count, include_events=False):
         self.calls.append(("security", query))
         securities = []
+        if "300750" in query or "宁德时代" in query:
+            securities.append(security("SZ.300750", "宁德时代"))
         if "600519" in query or "茅台" in query:
-            securities.append(security("SH.600519", "贵州茅台"))
+            item = security("SH.600519", "贵州茅台")
+            if include_events:
+                item.news = [SecurityEvent(**{
+                    "sourceId": "news:test-600519",
+                    "kind": "news",
+                    "title": "贵州茅台发布经营动态",
+                    "source": "测试媒体",
+                    "publishedAt": "2026-07-28T10:00:00+08:00",
+                    "receivedAt": "2026-07-28T10:01:00+08:00",
+                    "symbols": ["SH.600519"],
+                    "verificationStatus": "reported",
+                })]
+            securities.append(item)
         if "000858" in query or "五粮液" in query:
             securities.append(security("SZ.000858", "五粮液"))
         return MarketContextResponse(
@@ -57,6 +71,8 @@ class FakeResearchMarket:
     async def resolve_securities(self, query):
         self.calls.append(("security-resolve", query))
         matches = []
+        if "300750" in query or "宁德时代" in query:
+            matches.append({"code": "SZ.300750", "name": "宁德时代", "market": "深市"})
         if "600519" in query or "茅台" in query:
             matches.append({"code": "SH.600519", "name": "贵州茅台", "market": "沪市"})
         if "000858" in query or "五粮液" in query:
@@ -119,6 +135,27 @@ class FakeResearchMarket:
             "warnings": [],
         }
 
+    async def screen_stocks(self, style, limit, progress=None):
+        self.calls.append(("stock-screen", style))
+        if progress:
+            await progress("已从 akshare-sina 获取 5000 只股票，开始流动性预筛")
+        return {
+            "kind": "stock_screen",
+            "status": "ok",
+            "style": style,
+            "criteria": {"universeCount": 5000, "eligibleCount": 100, "enrichedCount": 20},
+            "stocks": [{
+                "rank": 1,
+                "code": "SH.600519",
+                "name": "贵州茅台",
+                "price": 1500,
+                "changePercent": 1.2,
+                "score": 82.5,
+                "scoreBreakdown": {"quality": 90, "growth": 75, "value": 60, "momentum": 80},
+            }],
+            "warnings": [],
+        }
+
     async def index_context(self, code, name, category):
         self.calls.append(("index", name))
         return {
@@ -175,6 +212,31 @@ async def test_high_confidence_model_route_resolves_only_terms_present_in_histor
     assert result.targets[0].name == "白酒"
     assert ("sector", "白酒") in market.calls
     assert all("新能源" not in query for _, query in market.calls)
+
+
+@pytest.mark.asyncio
+async def test_comparison_route_uses_only_structured_security_targets():
+    result, market = await prepare(
+        "详细对比宁德时代和贵州茅台，分别分析财务、估值、趋势、风险、观察区间，并给出完整结论",
+        route=StockRouteHint(
+            scope="in_scope",
+            intent="comparison",
+            relation="standalone",
+            targetKind="security",
+            targetTerms=["宁德时代", "贵州茅台"],
+            requiresResearch=True,
+            confidence=0.98,
+        ),
+    )
+
+    assert result.intent == "comparison"
+    assert [(item.code, item.name) for item in result.targets] == [
+        ("SZ.300750", "宁德时代"),
+        ("SH.600519", "贵州茅台"),
+    ]
+    assert ("security-resolve", "宁德时代 贵州茅台") in market.calls
+    assert ("security", "300750 600519") in market.calls
+    assert all("财务" not in query for kind, query in market.calls if kind.startswith("security"))
 
 
 @pytest.mark.asyncio
@@ -598,6 +660,8 @@ async def test_sector_scan_reports_progress_before_returning_result():
         "已获取 90 个行业板块的行情快照",
         "已完成 15/15 个候选板块的历史趋势计算",
         "趋势排名已生成，当前前列候选为：白酒",
+        "问题理解：最近什么行情有上涨趋势",
+        "研究计划：扫描行业广度和趋势，区分严格命中、接近条件与仅供观察的板块",
         "#1 白酒（符合严格条件）：近20日 8.70%，近60日 12.40%，最大回撤 -6.10%，当日 18 家上涨/2 家下跌",
     ]
 
@@ -759,3 +823,78 @@ async def test_more_stock_education_phrasings_skip_market(query):
     assert result.intent == "education"
     assert result.requiresResearch is False
     assert market.calls == []
+
+
+@pytest.mark.asyncio
+async def test_news_decision_and_stock_screen_use_runtime_skills():
+    news, _ = await prepare("600519 最新新闻")
+    decision, _ = await prepare("600519 现在能买吗")
+    screened, market = await prepare("筛选优质股票")
+
+    assert news.intent == "security_news"
+    assert "news-event-research" in news.skills
+    assert any("news:test-600519" in thought for thought in news.thoughts)
+    assert decision.intent == "decision"
+    assert "decision-framework" in decision.skills
+    assert "fact-verifier" in decision.skills
+    assert screened.intent == "stock_screen"
+    assert screened.targetKind == "market"
+    assert "stock-screener" in screened.skills
+    assert ("stock-screen", "balanced") in market.calls
+    assert screened.thoughts[0] == "问题理解：筛选优质股票"
+    assert screened.thoughts[1].startswith("研究计划：先建立合格候选池")
+    assert any(thought.startswith("本次采用综合均衡策略") for thought in screened.thoughts)
+
+
+@pytest.mark.asyncio
+async def test_market_driven_stock_screen_uses_momentum_strategy():
+    route = StockRouteHint(
+        scope="in_scope",
+        intent="stock_screen",
+        relation="standalone",
+        targetKind="market",
+        targetTerms=[],
+        requiresResearch=True,
+        confidence=0.98,
+    )
+
+    result, market = await prepare("基于今天行情推荐几只股票", route=route)
+
+    assert result.intent == "stock_screen"
+    assert ("stock-screen", "momentum") in market.calls
+    assert result.context["style"] == "momentum"
+    assert result.thoughts[0] == "问题理解：基于今天行情推荐几只股票"
+    assert result.thoughts[1].startswith("研究计划：先确认最近可用数据时点")
+    assert any(thought.startswith("本次采用趋势动量策略") for thought in result.thoughts)
+
+
+@pytest.mark.asyncio
+async def test_same_stock_screen_route_has_question_specific_research_plan():
+    route = StockRouteHint(
+        scope="in_scope",
+        intent="stock_screen",
+        relation="standalone",
+        targetKind="market",
+        targetTerms=[],
+        requiresResearch=True,
+        confidence=0.98,
+    )
+
+    decision, _ = await prepare("那什么值得买", route=route)
+    shortlist, _ = await prepare("推荐几只股票", route=route)
+
+    assert decision.context["style"] == shortlist.context["style"] == "balanced"
+    assert decision.thoughts[0] != shortlist.thoughts[0]
+    assert "区分候选排序与买入决策" in decision.thoughts[1]
+    assert "建立合格候选池" in shortlist.thoughts[1]
+
+
+@pytest.mark.asyncio
+async def test_news_coverage_followup_researches_inherited_security():
+    result, _ = await prepare("为什么没有新闻", [
+        ChatMessage(role="user", content="分析 600519 近期趋势"),
+        ChatMessage(role="assistant", content="近期趋势偏强。"),
+    ])
+
+    assert result.intent == "security_news"
+    assert result.targets[0].code == "SH.600519"

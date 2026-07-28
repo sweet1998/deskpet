@@ -23,6 +23,15 @@ class MarketProvider(ABC):
     async def financial_snapshot(self, code: str) -> Dict[str, Any]:
         return {}
 
+    async def security_news(self, code: str, limit: int) -> List[Dict[str, Any]]:
+        return []
+
+    async def company_announcements(self, code: str, days: int, limit: int) -> List[Dict[str, Any]]:
+        return []
+
+    async def stock_universe_snapshot(self) -> List[Dict[str, Any]]:
+        return []
+
     async def sector_catalog(self, category: str) -> List[Dict[str, Any]]:
         return []
 

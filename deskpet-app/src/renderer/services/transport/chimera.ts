@@ -175,6 +175,7 @@ export function useChimeraTransport(): DeskpetTransport {
     const research = roleId === 'stock_expert' && prepared
       ? {
           intent: prepared.intent,
+          ...(prepared.skills?.length ? { skills: prepared.skills } : {}),
           ...(prepared.context ? { context: compactResearchContext(prepared.context) } : {}),
         }
       : undefined
@@ -226,9 +227,9 @@ export function useChimeraTransport(): DeskpetTransport {
         requestId,
         messages: buildDoubaoMessages(roleId, requestId, userContent, prepared, dateContext),
         maxTokens: prepared?.requiresResearch ? 4096 : 2048,
-        // Simple/knowledge answers don't need chain-of-thought; disabling it stops a
-        // reasoning model from spending the output budget on hidden thinking and truncating.
-        ...(prepared?.requiresResearch ? {} : { thinking: 'disabled' as const }),
+        // Research reasoning is already prepared and displayed separately. Keep the answer
+        // budget for visible text instead of letting hidden thinking consume it.
+        thinking: 'disabled' as const,
       })
       if (!result?.ok || !result.text) {
         finishReasoning(requestId)
@@ -260,11 +261,19 @@ export function useChimeraTransport(): DeskpetTransport {
         agent.applyState({ requestId, state: 'speaking', progress: 90, step: '正在回答', interruptible: true })
       }
       finishReasoning(requestId)
-      if (!receivedDelta) chat.appendChatText(result.text, requestId)
+      // IPC invoke can resolve before the renderer processes the final queued delta events.
+      // The invoke result is canonical, so reconcile the streamed draft before unsubscribing.
+      chat.showChatMessage(result.text, requestId)
       chat.finishChatStream(requestId)
       if (result.truncated) chat.markChatTruncated(requestId)
       if (agent.currentRole === roleId) {
-        agent.applyState({ requestId, state: 'success', progress: 100, step: '回答完成' })
+        agent.applyState({
+          requestId,
+          state: 'success',
+          progress: 100,
+          step: result.truncated ? '回答已停止，可继续追问' : '回答完成',
+          interruptible: false,
+        })
       }
       setTimeout(() => {
         chat.hideChatBubble()

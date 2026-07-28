@@ -53,3 +53,7 @@ export interface DoubaoResult {
   truncated?: boolean
   finishReason?: string
 }
+
+export function hasNaturalResponseEnding(value: string): boolean {
+  return /[。！？.!?][”’"')）】\]]?$/.test(value.trim())
+}

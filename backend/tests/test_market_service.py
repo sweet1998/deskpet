@@ -17,6 +17,12 @@ class FakeProvider(MarketProvider):
         self.sector_bars_calls = 0
 
     async def search(self, query):
+        if query == "宁德时代":
+            return [{"code": "SZ.300750", "name": "宁德时代", "market": "深市"}]
+        if query == "贵州茅台":
+            return [{"code": "SH.600519", "name": "贵州茅台", "market": "沪市"}]
+        if query == "财务":
+            return [{"code": "BJ.872090", "name": "皇嘉财务", "market": "北交所"}]
         if query == "平安":
             return [
                 {"code": "SZ.000001", "name": "平安银行", "market": "深市"},
@@ -130,6 +136,89 @@ class PartialSectorProvider(FakeProvider):
         ]
 
 
+class EventScreenProvider(FakeProvider):
+    async def security_news(self, code, limit):
+        return [{
+            "sourceId": "news:test",
+            "kind": "news",
+            "title": "测试新闻",
+            "source": "测试媒体",
+            "publishedAt": "2026-07-28T10:00:00+08:00",
+            "receivedAt": "2026-07-28T10:01:00+08:00",
+            "symbols": [code],
+            "verificationStatus": "reported",
+        }]
+
+    async def company_announcements(self, code, days, limit):
+        return [{
+            "sourceId": "announcement:test",
+            "kind": "announcement",
+            "title": "测试公告",
+            "source": "上市公司公告",
+            "publishedAt": "2026-07-28T09:00:00+08:00",
+            "receivedAt": "2026-07-28T09:01:00+08:00",
+            "symbols": [code],
+            "verificationStatus": "official",
+        }]
+
+    async def stock_universe_snapshot(self):
+        return [
+            {
+                "code": f"SH.6005{index:02d}", "name": f"候选{index}", "market": "沪市",
+                "price": 20 + index, "changePercent": index / 10, "peRatio": 15 + index,
+                "pbRatio": 2 + index / 10, "marketCap": 100_000_000_000 + index,
+                "amount": 1_000_000_000 + index,
+            }
+            for index in range(6)
+        ]
+
+    async def financial_snapshot(self, code):
+        index = int(code[-2:])
+        return {"roe": 10 + index, "revenueYoY": 8 + index, "netProfitYoY": 7 + index}
+
+    async def daily_bars(self, code, count):
+        index = int(code[-2:])
+        return [{"time": f"day-{day:03d}", "close": 100 + day * (1 + index / 10)} for day in range(count)]
+
+
+class FailingUniverseProvider(EventScreenProvider):
+    name = "primary-eastmoney"
+
+    async def stock_universe_snapshot(self):
+        raise RuntimeError("eastmoney unavailable")
+
+
+class SinaUniverseProvider(EventScreenProvider):
+    name = "akshare-sina"
+
+    async def stock_universe_snapshot(self):
+        return [
+            {
+                "code": f"SH.6005{index:02d}", "name": f"候选{index}", "market": "沪市",
+                "price": 20 + index, "changePercent": index / 10,
+                "amount": 1_000_000_000 + index,
+            }
+            for index in range(6)
+        ]
+
+
+class TencentValuationProvider(EventScreenProvider):
+    name = "tencent-public"
+
+    def __init__(self):
+        super().__init__()
+        self.valuation_calls = 0
+
+    async def snapshot(self, code):
+        self.valuation_calls += 1
+        index = int(code[-2:])
+        return {
+            "code": code, "name": f"候选{index}", "market": "沪市",
+            "price": 20 + index, "changePercent": index / 10,
+            "marketCap": 100_000_000_000, "peRatio": 15 + index, "pbRatio": 2 + index / 10,
+        }
+
+
 def test_a_share_code_mapping():
     assert map_symbol("600519") == "SH.600519"
     assert map_symbol("000001") == "SZ.000001"
@@ -157,11 +246,73 @@ async def test_market_context_and_cache():
 
 
 @pytest.mark.asyncio
+async def test_market_context_can_include_news_and_announcements():
+    service = MarketService(EventScreenProvider(), TTLCache())
+
+    result = await service.context("600519", 120, include_events=True)
+
+    assert result.status == "ok"
+    assert result.securities[0].news[0].sourceId == "news:test"
+    assert result.securities[0].announcements[0].verificationStatus == "official"
+
+
+@pytest.mark.asyncio
+async def test_stock_screen_returns_deterministic_score_and_lineage():
+    service = MarketService(EventScreenProvider(), TTLCache())
+
+    result = await service.screen_stocks("quality", 3)
+
+    assert result["status"] == "ok"
+    assert len(result["stocks"]) == 3
+    assert result["stocks"][0]["score"] >= result["stocks"][1]["score"]
+    assert "quality" in result["stocks"][0]["scoreBreakdown"]
+    assert result["stocks"][0]["dataSources"]["snapshot"] == "fake-market"
+    assert result["criteria"]["scorePolicy"].startswith("缺失维度")
+
+
+@pytest.mark.asyncio
+async def test_stock_screen_falls_back_to_sina_and_hydrates_valuation_with_tencent():
+    valuation = TencentValuationProvider()
+    service = MarketService(
+        FailingUniverseProvider(),
+        TTLCache(),
+        valuation,
+        SinaUniverseProvider(),
+    )
+
+    result = await service.screen_stocks("balanced", 3)
+
+    assert result["status"] == "ok"
+    assert len(result["stocks"]) == 3
+    assert result["dataSources"]["universe"] == "akshare-sina"
+    assert result["stocks"][0]["dataSources"]["snapshot"] == "tencent-public"
+    assert valuation.valuation_calls == 6
+    assert any(
+        "已自动切换至 akshare-sina，本次筛选继续完成" in warning
+        for warning in result["warnings"]
+    )
+    assert all(stock["marketCap"] == 100_000_000_000 for stock in result["stocks"])
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_name_requires_confirmation():
     service = MarketService(FakeProvider(), TTLCache())
     result = await service.context("平安", 120)
     assert result.status == "ambiguous"
     assert len(result.candidates) == 2
+
+
+@pytest.mark.asyncio
+async def test_multiple_exact_security_names_resolve_without_fuzzy_noise():
+    service = MarketService(FakeProvider(), TTLCache())
+
+    securities, candidates, _ = await service.resolve_securities("宁德时代 贵州茅台 财务")
+
+    assert [(item["code"], item["name"]) for item in securities] == [
+        ("SZ.300750", "宁德时代"),
+        ("SH.600519", "贵州茅台"),
+    ]
+    assert candidates == []
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,11 @@ export function marketCardFromResearch(prepared: ResearchPrepareResult): ChatMar
     }), context)
   }
 
+  if (context.kind === 'stock_screen') {
+    const stocks = Array.isArray(context.stocks) ? context.stocks : []
+    return card('个股筛选结果', stocks.map((stock) => marketItem(stock, '候选股票')), context)
+  }
+
   if (context.kind === 'sector') {
     return card(`${context.name || '板块'}行情`, [marketItem({
       name: context.name,

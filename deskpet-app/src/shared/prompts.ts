@@ -5,6 +5,7 @@ type TemplateValues = Record<string, string | number>
 
 export interface PromptResearchInput {
   intent: string
+  skills?: string[]
   context?: unknown
 }
 
@@ -71,6 +72,9 @@ export function tradingCalendarPrompt(calendar: PromptTradingCalendar): string {
 export function researchPrompt(input: PromptResearchInput): string {
   const lines = [
     render(contract.research.intentTemplate, { intent: input.intent }),
+    ...(input.skills?.length
+      ? [render(contract.research.skillsTemplate, { skills: input.skills.join(', ') })]
+      : []),
     ...contract.research.baseInstructions,
   ]
   if (input.context !== undefined && input.context !== null) {

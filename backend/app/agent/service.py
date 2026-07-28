@@ -37,7 +37,7 @@ def _current_date_context() -> str:
 
 def research_prompt(prepared: ResearchPrepareResponse) -> str:
     context = compact_research_context(prepared.context) if prepared.context else None
-    return build_research_prompt(prepared.intent, context)
+    return build_research_prompt(prepared.intent, context, prepared.skills)
 
 
 class AgentService:

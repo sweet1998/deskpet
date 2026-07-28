@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,8 +10,9 @@ from .agent.model_client import OpenAICompatibleModel
 from .agent.service import AgentService
 from .cache import TTLCache
 from .config import settings
-from .market.providers import AkshareProvider, EastmoneyProvider, TencentProvider
+from .market.providers import AkshareProvider, EastmoneyProvider, SinaProvider, TencentProvider
 from .market.service import MarketService
+from .mcp import handle_mcp_request
 from .memory import MemoryRepository
 from .models import (
     AgentChatRequest,
@@ -22,6 +23,7 @@ from .models import (
     ResearchPrepareRequest,
     ResearchPrepareResponse,
     SectorScanRequest,
+    StockScreenRequest,
 )
 from .rate_limit import SlidingWindowRateLimiter
 
@@ -45,10 +47,12 @@ def create_services():
         if fallback_type and fallback_type is not provider_type
         else None
     )
+    universe_fallback = SinaProvider(timeout=max(30, settings.market_request_timeout))
     market = MarketService(
         provider,
         cache,
         fallback,
+        universe_fallback,
     )
     model = OpenAICompatibleModel(
         base_url=settings.model_base_url,
@@ -131,6 +135,7 @@ async def health() -> dict:
         "environment": settings.environment,
         "marketProvider": settings.market_provider,
         "marketFallbackProvider": settings.market_fallback_provider,
+        "stockUniverseFallbackProvider": "akshare-sina",
         "modelConfigured": bool(settings.model_api_key and settings.model_name),
         "routerModel": settings.router_model_name,
         "routerModelConfigured": bool(settings.router_model_api_key and settings.router_model_name),
@@ -145,7 +150,8 @@ async def market_context(
     request: Request,
     _identity: str = Depends(authorize),
 ) -> MarketContextResponse:
-    return await request.app.state.market.context(body.query, body.dailyCount)
+    include_events = "news" in body.fields or "announcements" in body.fields
+    return await request.app.state.market.context(body.query, body.dailyCount, include_events)
 
 
 @app.post("/v1/market/sector-scan")
@@ -155,6 +161,35 @@ async def sector_scan(
     _identity: str = Depends(authorize),
 ) -> dict:
     return await request.app.state.market.scan_sectors(body.limit, body.windowDays)
+
+
+@app.post("/v1/market/stock-screen")
+async def stock_screen(
+    body: StockScreenRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await request.app.state.market.screen_stocks(body.style, body.limit)
+
+
+@app.get("/v1/market/security-events")
+async def security_events(
+    query: str,
+    request: Request,
+    days: int = 7,
+    limit: int = 10,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await request.app.state.market.security_events(query, days, limit)
+
+
+@app.post("/mcp")
+async def mcp_endpoint(
+    body: Dict[str, Any],
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await handle_mcp_request(request.app.state.market, body)
 
 
 @app.get("/v1/market/calendar")

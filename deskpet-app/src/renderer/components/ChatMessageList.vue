@@ -68,7 +68,11 @@
           @click="handleMarkdownClick"
           v-html="renderSafeMarkdown(message.text)"
         ></div>
-        <span v-else class="message-text">{{ message.text }}</span>
+        <span v-else class="message-text">{{
+          message.role === 'assistant' && message.streaming
+            ? streamingDisplayText(message.text)
+            : message.text
+        }}</span>
         <div v-if="message.attachments?.length" class="sent-attachments">
           <span v-for="attachment in message.attachments" :key="attachment.id">
             <FileText :size="12" /> {{ attachment.name }}
@@ -140,7 +144,7 @@ import {
 } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore, type ChatReplyReference } from '@/stores/chat'
-import { renderSafeMarkdown } from '@/services/markdown'
+import { renderSafeMarkdown, streamingDisplayText } from '@/services/markdown'
 
 defineProps<{
   followUpTarget?: ChatReplyReference
@@ -157,16 +161,16 @@ const agent = useAgentStore()
 const chat = useChatStore()
 const listRef = ref<HTMLElement>()
 const copiedMessageId = ref('')
-const responseStarted = computed(() => chat.messages.some((message) => (
-  (message.type === 'text' && message.role === 'assistant' && message.id === agent.activeRequestId)
-  || (message.type === 'thought' && message.requestId === agent.activeRequestId)
-  || (message.type === 'market' && message.requestId === agent.activeRequestId)
-  || (message.type === 'status' && message.requestId === agent.activeRequestId)
+const answerTextStarted = computed(() => chat.messages.some((message) => (
+  message.type === 'text'
+  && message.role === 'assistant'
+  && message.id === agent.activeRequestId
+  && Boolean(message.text)
 )))
 const waitingForFirstToken = computed(() => (
   ['thinking', 'planning', 'executing', 'speaking'].includes(agent.state)
   && agent.interruptible
-  && !responseStarted.value
+  && !answerTextStarted.value
 ))
 const waitingLabel = computed(() => agent.state === 'speaking' ? '正在组织回答' : '正在理解问题')
 let copiedTimer: ReturnType<typeof setTimeout> | null = null

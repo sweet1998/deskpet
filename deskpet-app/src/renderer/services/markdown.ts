@@ -29,6 +29,55 @@ const ALLOWED_TAGS = [
   'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'hr',
 ]
 
+function isEscaped(source: string, index: number): boolean {
+  let slashes = 0
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) slashes += 1
+  return slashes % 2 === 1
+}
+
+function isAsciiOperand(value: string): boolean {
+  return /[A-Za-z0-9_]/.test(value)
+}
+
+export function streamingDisplayText(value: string): string {
+  const source = typeof value === 'string' ? value.slice(0, 200_000) : ''
+  let output = ''
+  let fenced = false
+  let inlineTicks = 0
+
+  for (let index = 0; index < source.length;) {
+    if (source[index] === '`') {
+      let end = index + 1
+      while (source[end] === '`') end += 1
+      const ticks = end - index
+      output += source.slice(index, end)
+      if (ticks >= 3 && inlineTicks === 0) fenced = !fenced
+      else if (!fenced) {
+        if (inlineTicks === ticks) inlineTicks = 0
+        else if (inlineTicks === 0) inlineTicks = ticks
+      }
+      index = end
+      continue
+    }
+
+    if (source[index] === '*' && !fenced && inlineTicks === 0 && !isEscaped(source, index)) {
+      let end = index + 1
+      while (source[end] === '*') end += 1
+      const runLength = end - index
+      const previous = source[index - 1] || ''
+      const next = source[end] || ''
+      if (runLength >= 2 || !isAsciiOperand(previous) || !isAsciiOperand(next)) {
+        index = end
+        continue
+      }
+    }
+
+    output += source[index]
+    index += 1
+  }
+  return output
+}
+
 export function renderSafeMarkdown(value: string): string {
   const source = typeof value === 'string' ? value.slice(0, 200_000) : ''
   const rendered = String(marked.parse(source, { async: false, gfm: true, breaks: true }))

@@ -2,6 +2,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from functools import partial
+import hashlib
 import math
 import time
 from typing import Any, Dict, List, Optional
@@ -88,6 +89,52 @@ def _records(frame: Any) -> List[Dict[str, Any]]:
     if getattr(frame, "empty", False):
         return []
     return [dict(item) for item in frame.to_dict(orient="records")]
+
+
+def _first_text(row: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _text(row.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _published_text(value: Any) -> str:
+    cleaned = _clean(value)
+    if isinstance(cleaned, datetime):
+        return cleaned.isoformat()
+    if isinstance(cleaned, date):
+        return cleaned.isoformat()
+    raw = str(cleaned or "").strip()
+    if not raw:
+        return ""
+    try:
+        return datetime.fromisoformat(raw.replace("/", "-")).isoformat()
+    except ValueError:
+        return _date_text(raw) or raw[:40]
+
+
+EVENT_KEYWORDS = {
+    "earnings": ("业绩", "财报", "营收", "利润", "预增", "预减", "快报"),
+    "buyback": ("回购",),
+    "shareholding": ("增持", "减持", "持股变动", "质押", "解禁"),
+    "regulatory": ("问询", "监管", "处罚", "立案", "警示函"),
+    "restructuring": ("并购", "重组", "收购", "重大资产"),
+    "contract": ("中标", "合同", "订单", "签约"),
+    "risk": ("风险提示", "诉讼", "仲裁", "退市", "停牌"),
+    "policy": ("政策", "规划", "指导意见"),
+}
+
+
+def _event_types(title: str, summary: str = "") -> List[str]:
+    material = f"{title} {summary}"
+    values = [name for name, keywords in EVENT_KEYWORDS.items() if any(word in material for word in keywords)]
+    return values or ["other"]
+
+
+def _source_id(kind: str, title: str, published_at: str, url: str) -> str:
+    digest = hashlib.sha1(f"{kind}|{title}|{published_at}|{url}".encode("utf-8")).hexdigest()[:16]
+    return f"{kind}:{digest}"
 
 
 def _ths_sector_constituent_rows(category: str, code: str, timeout: float) -> List[Dict[str, Any]]:
@@ -314,6 +361,109 @@ class AkshareProvider(MarketProvider):
             "debtRatio": _number(row.get("ZCFZL")),
             "operatingCashFlowPerShare": _number(row.get("MGJYXJJE")),
         }
+
+    async def security_news(self, code: str, limit: int) -> List[Dict[str, Any]]:
+        function = getattr(self.ak, "stock_news_em", None)
+        if function is None:
+            raise RuntimeError("当前 AKShare 版本没有个股新闻接口")
+        symbol = code.split(".", 1)[1]
+        rows = _records(await self._call(function, symbol=symbol))
+        received_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+        output = []
+        for row in rows:
+            title = _first_text(row, "新闻标题", "标题", "title")
+            if not title:
+                continue
+            summary = _first_text(row, "新闻内容", "内容", "摘要", "content")[:600]
+            published_at = _published_text(
+                row.get("发布时间") or row.get("时间") or row.get("日期") or row.get("publish_time")
+            )
+            url = _first_text(row, "新闻链接", "链接", "网址", "url")
+            source = _first_text(row, "文章来源", "来源", "媒体名称", "source") or "东方财富"
+            unverified = any(word in f"{title}{summary}" for word in ("传闻", "网传", "消息称", "据悉"))
+            output.append({
+                "sourceId": _source_id("news", title, published_at, url),
+                "kind": "news",
+                "title": title[:240],
+                "summary": summary,
+                "source": source[:80],
+                "url": url[:1000],
+                "publishedAt": published_at,
+                "receivedAt": received_at,
+                "symbols": [code],
+                "eventTypes": _event_types(title, summary),
+                "verificationStatus": "unverified" if unverified else "reported",
+            })
+        output.sort(key=lambda item: item["publishedAt"], reverse=True)
+        return output[:max(1, min(20, limit))]
+
+    async def company_announcements(self, code: str, days: int, limit: int) -> List[Dict[str, Any]]:
+        function = getattr(self.ak, "stock_notice_report", None)
+        if function is None:
+            raise RuntimeError("当前 AKShare 版本没有公司公告接口")
+        symbol = code.split(".", 1)[1]
+        end = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        dates = [(end - timedelta(days=index)).strftime("%Y%m%d") for index in range(max(1, min(30, days)))]
+        frames = await asyncio.gather(
+            *(self._call(function, symbol="全部", date=value) for value in dates),
+            return_exceptions=True,
+        )
+        received_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+        output = []
+        for frame in frames:
+            if isinstance(frame, Exception):
+                continue
+            for row in _records(frame):
+                row_code = _first_text(row, "代码", "股票代码", "SECURITY_CODE")
+                if row_code and row_code.zfill(6) != symbol:
+                    continue
+                title = _first_text(row, "公告标题", "标题", "NOTICE_TITLE")
+                if not title:
+                    continue
+                published_at = _published_text(
+                    row.get("公告日期") or row.get("公告时间") or row.get("NOTICE_DATE")
+                )
+                url = _first_text(row, "网址", "公告链接", "链接", "url")
+                summary = _first_text(row, "公告类型", "类型", "COLUMN_NAME")
+                output.append({
+                    "sourceId": _source_id("announcement", title, published_at, url),
+                    "kind": "announcement",
+                    "title": title[:240],
+                    "summary": summary[:600],
+                    "source": "上市公司公告",
+                    "url": url[:1000],
+                    "publishedAt": published_at,
+                    "receivedAt": received_at,
+                    "symbols": [code],
+                    "eventTypes": _event_types(title, summary),
+                    "verificationStatus": "official",
+                })
+        deduped = {item["sourceId"]: item for item in output}
+        ranked = sorted(deduped.values(), key=lambda item: item["publishedAt"], reverse=True)
+        return ranked[:max(1, min(20, limit))]
+
+    async def stock_universe_snapshot(self) -> List[Dict[str, Any]]:
+        output = []
+        for row in await self._spot_table():
+            symbol = str(row.get("代码") or "").strip()
+            code = map_symbol(symbol)
+            name = _text(row.get("名称"))
+            if not code or not name:
+                continue
+            output.append({
+                "code": code,
+                "name": name,
+                "market": _market_name(code),
+                "price": _number(row.get("最新价")),
+                "changePercent": _number(row.get("涨跌幅")),
+                "peRatio": _number(row.get("市盈率-动态")),
+                "pbRatio": _number(row.get("市净率")),
+                "marketCap": _number(row.get("总市值")),
+                "amount": _number(row.get("成交额")),
+                "turnoverRate": _number(row.get("换手率")),
+                "dataTime": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            })
+        return output
 
     async def sector_catalog(self, category: str) -> List[Dict[str, Any]]:
         eastmoney_function = (

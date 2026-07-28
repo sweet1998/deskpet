@@ -83,10 +83,13 @@ def build_trading_calendar_prompt(calendar: Dict[str, Any]) -> Optional[str]:
     return "".join(parts)
 
 
-def build_research_prompt(intent: str, context: Any = None) -> str:
+def build_research_prompt(intent: str, context: Any = None, skills: Optional[Iterable[str]] = None) -> str:
     config = PROMPT_CONTRACT["research"]
     lines = [
         _render(config["intentTemplate"], intent=intent),
+        *([
+            _render(config["skillsTemplate"], skills=", ".join(item for item in skills if item))
+        ] if skills else []),
         *[str(item) for item in config["baseInstructions"]],
     ]
     if context is not None:

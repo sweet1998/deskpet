@@ -8,7 +8,7 @@ from app.models import AgentChatRequest, ChatMessage, MarketContextResponse, Res
 
 
 class FakeMarket:
-    async def context(self, query, count):
+    async def context(self, query, count, include_events=False):
         return MarketContextResponse(
             status="ok",
             source="test-provider",
@@ -355,7 +355,7 @@ async def test_stock_agent_generates_contextual_out_of_scope_reply():
 
 
 class UnavailableMarket(FakeMarket):
-    async def context(self, query, count):
+    async def context(self, query, count, include_events=False):
         return MarketContextResponse(
             status="unavailable",
             source="test-provider",

@@ -180,7 +180,7 @@ class OpenAICompatibleModel:
                     raise
 
             answer += part
-            if marker_seen and await self._verify_completion(question, answer):
+            if marker_seen and self._has_natural_ending(answer) and await self._verify_completion(question, answer):
                 return
             if pending:
                 yield pending
@@ -190,6 +190,10 @@ class OpenAICompatibleModel:
                 {"role": "assistant", "content": part},
                 {"role": "user", "content": CONTINUATION_PROMPT},
             ])
+
+    @staticmethod
+    def _has_natural_ending(answer: str) -> bool:
+        return bool(re.search(r"[。！？.!?][”’\"')）】\]]?$", answer.strip()))
 
     async def _verify_completion(self, question: str, answer: str) -> bool:
         if not answer.strip():

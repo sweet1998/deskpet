@@ -144,6 +144,21 @@ describe('chat store roles', () => {
     expect(oldConversation.messages.at(-1)).toMatchObject({ role: 'assistant', text: '旧会话回答' })
   })
 
+  it('reconciles a partial streamed answer with the canonical final response', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('详细分析', 'req-reconcile', 'stock_expert')
+    chat.appendChatText('但这只是研究框架，告', 'req-reconcile')
+
+    chat.showChatMessage('但这只是研究框架，告诉我具体方向我再跑。', 'req-reconcile')
+
+    expect(chat.messagesByRole.stock_expert.find((message) => message.id === 'req-reconcile')).toMatchObject({
+      type: 'text',
+      role: 'assistant',
+      text: '但这只是研究框架，告诉我具体方向我再跑。',
+      streaming: false,
+    })
+  })
+
   it('persists attachment metadata and structured market cards', () => {
     const chat = useChatStore()
     chat.addUserMessage('分析附件', 'req-card', 'stock_expert', [{

@@ -21,6 +21,8 @@ STOP_WORDS = (
     "风险", "原因", "为什么", "对比", "比较", "多少钱", "表现", "营收", "利润", "现金流", "负债",
     "成长性", "市盈率", "市净率", "贵不贵", "便宜", "支撑", "压力", "展望", "的", "好吗", "好不好",
     "还好吗", "咋回事", "怎么了", "整体如何", "热不热", "弱不弱", "有啥变化", "什么情况",
+    "最新", "新闻", "消息面", "公告", "舆情", "事件", "利好", "利空", "能买吗", "要不要买", "该不该买",
+    "值得买吗", "买入", "卖出", "要不要卖", "该不该卖", "继续持有", "加仓", "减仓", "止盈", "止损",
 )
 KNOWN_SECTORS: Dict[str, List[Dict[str, str]]] = {
     "industry": [
@@ -106,9 +108,11 @@ class MarketService:
         provider: MarketProvider,
         cache: TTLCache,
         fallback_provider: Optional[MarketProvider] = None,
+        universe_fallback_provider: Optional[MarketProvider] = None,
     ):
         self.provider = provider
         self.fallback_provider = fallback_provider
+        self.universe_fallback_provider = universe_fallback_provider
         self.cache = cache
         self._sector_scan_lock = asyncio.Lock()
         self._sector_scan_progress_listeners: List[ProgressCallback] = []
@@ -176,6 +180,28 @@ class MarketService:
         }, ttl)
         return value, source, warning
 
+    async def _fetch_stock_universe(self) -> Tuple[Any, str, Optional[str]]:
+        providers = [self.provider]
+        for provider in (self.universe_fallback_provider, self.fallback_provider):
+            if provider and all(item.name != provider.name for item in providers):
+                providers.append(provider)
+        errors = []
+        for index, provider in enumerate(providers):
+            try:
+                value = await provider.stock_universe_snapshot()
+                if not self._has_data(value):
+                    raise RuntimeError("没有返回全市场股票池")
+                warning = None
+                if index:
+                    warning = (
+                        f"全市场股票池主源暂不可用，已自动切换至 {provider.name}，"
+                        "本次筛选继续完成"
+                    )
+                return value, provider.name, warning
+            except Exception as error:
+                errors.append(f"{provider.name}: {error}")
+        raise RuntimeError("；".join(errors))
+
     async def _optional_fetch(
         self,
         key: str,
@@ -191,7 +217,9 @@ class MarketService:
                 lambda: self._fetch(method, *args),
             )
         except Exception as error:
-            empty_value: Any = [] if method == "daily_bars" else {}
+            empty_value: Any = [] if method in {
+                "daily_bars", "security_news", "company_announcements",
+            } else {}
             return empty_value, None, f"{label}获取失败：{str(error)[:240]}"
 
     async def _search(self, term: str) -> Tuple[List[Dict[str, str]], str, Optional[str]]:
@@ -230,7 +258,8 @@ class MarketService:
                 for code in codes[:3]
             ], [], []
 
-        matches: Dict[str, Dict[str, str]] = {}
+        exact_matches: Dict[str, Dict[str, str]] = {}
+        fuzzy_matches: Dict[str, Dict[str, str]] = {}
         warnings: List[str] = []
         for term in search_terms(query):
             cache_key = f"market:v2:resolve:{term}"
@@ -242,12 +271,15 @@ class MarketService:
             if warning and warning not in warnings:
                 warnings.append(warning)
             exact = [row for row in rows if row["name"] == term]
-            selected = exact or rows[:5]
-            for row in selected:
-                matches[row["code"]] = row
             if exact:
-                break
-        values = list(matches.values())
+                for row in exact:
+                    exact_matches[row["code"]] = row
+                continue
+            for row in rows[:5]:
+                fuzzy_matches[row["code"]] = row
+        if exact_matches:
+            return list(exact_matches.values())[:3], [], warnings
+        values = list(fuzzy_matches.values())
         if len(values) == 1:
             return values, [], warnings
         if len(values) > 1:
@@ -261,6 +293,7 @@ class MarketService:
         now: datetime,
         state: str,
         inherited_warnings: List[str],
+        include_events: bool = False,
     ) -> SecurityContext:
         code = item["code"]
         snapshot_task = self._cached_fetch(
@@ -290,16 +323,43 @@ class MarketService:
             "财务指标",
             code,
         )
-        snapshot_result, bars_result, profile_result, financial_result = await asyncio.gather(
+        event_tasks = []
+        if include_events:
+            event_tasks = [
+                self._optional_fetch(
+                    f"market:v1:news:{code}:10",
+                    300,
+                    "security_news",
+                    "个股新闻",
+                    code,
+                    10,
+                ),
+                self._optional_fetch(
+                    f"market:v1:announcements:{code}:7:10",
+                    900,
+                    "company_announcements",
+                    "公司公告",
+                    code,
+                    7,
+                    10,
+                ),
+            ]
+        results = await asyncio.gather(
             snapshot_task,
             bars_task,
             profile_task,
             financial_task,
+            *event_tasks,
         )
+        snapshot_result, bars_result, profile_result, financial_result = results[:4]
         snapshot, snapshot_source, snapshot_warning = snapshot_result
         bars, bars_source, bars_warning = bars_result
         profile, profile_source, profile_warning = profile_result
         financial, financial_source, financial_warning = financial_result
+        news, news_source, news_warning = results[4] if include_events else ([], None, None)
+        announcements, announcements_source, announcements_warning = (
+            results[5] if include_events else ([], None, None)
+        )
         snapshot = dict(snapshot)
         profile = dict(profile)
         if not profile.get("floatMarketCap") and snapshot.get("floatMarketCap"):
@@ -312,6 +372,8 @@ class MarketService:
                     bars_warning,
                     profile_warning,
                     financial_warning,
+                    news_warning,
+                    announcements_warning,
                 ) if warning
             ),
         ]))
@@ -323,6 +385,8 @@ class MarketService:
                 "profile": profile_source,
                 "financial": financial_source,
                 "technical": bars_source,
+                "news": news_source,
+                "announcements": announcements_source,
             }.items()
             if source
         }
@@ -331,6 +395,8 @@ class MarketService:
             "profile": profile,
             "financial": financial,
             "technical": technical_summary(bars),
+            "news": news,
+            "announcements": announcements,
             "dataSources": data_sources,
             "warnings": warnings,
             "marketStatus": state,
@@ -345,7 +411,12 @@ class MarketService:
     ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[str]]:
         return await self._resolve(query)
 
-    async def context(self, query: str, daily_count: int = 120) -> MarketContextResponse:
+    async def context(
+        self,
+        query: str,
+        daily_count: int = 120,
+        include_events: bool = False,
+    ) -> MarketContextResponse:
         try:
             securities, candidates, resolve_warnings = await self._resolve(query)
             if candidates:
@@ -360,7 +431,7 @@ class MarketService:
             now = datetime.now(ZoneInfo("Asia/Shanghai"))
             state = market_state(now)
             output = await asyncio.gather(*(
-                self._security_context(item, daily_count, now, state, resolve_warnings)
+                self._security_context(item, daily_count, now, state, resolve_warnings, include_events)
                 for item in securities[:3]
             ))
             sources = list(dict.fromkeys(
@@ -381,6 +452,270 @@ class MarketService:
                 source=self.provider.name,
                 error=str(error)[:500],
             )
+
+    async def security_events(self, query: str, days: int = 7, limit: int = 10) -> Dict[str, Any]:
+        safe_days = max(1, min(30, days))
+        safe_limit = max(1, min(20, limit))
+        securities, candidates, resolve_warnings = await self._resolve(query)
+        if candidates:
+            return {
+                "kind": "security_events",
+                "status": "ambiguous",
+                "candidates": candidates,
+                "events": [],
+                "warnings": resolve_warnings,
+            }
+        if not securities:
+            return {
+                "kind": "security_events",
+                "status": "no-symbol",
+                "events": [],
+                "warnings": resolve_warnings,
+            }
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        output = []
+        warnings = list(resolve_warnings)
+        sources: Dict[str, str] = {}
+        for item in securities[:3]:
+            code = item["code"]
+            news_result, announcements_result = await asyncio.gather(
+                self._optional_fetch(
+                    f"market:v1:news:{code}:{safe_limit}", 300, "security_news", "个股新闻", code, safe_limit,
+                ),
+                self._optional_fetch(
+                    f"market:v1:announcements:{code}:{safe_days}:{safe_limit}",
+                    900, "company_announcements", "公司公告", code, safe_days, safe_limit,
+                ),
+            )
+            news, news_source, news_warning = news_result
+            announcements, announcement_source, announcement_warning = announcements_result
+            output.extend(news)
+            output.extend(announcements)
+            if news_source:
+                sources["news"] = news_source
+            if announcement_source:
+                sources["announcements"] = announcement_source
+            warnings.extend(item for item in (news_warning, announcement_warning) if item)
+        deduped = {item["sourceId"]: item for item in output if item.get("sourceId")}
+        events = sorted(deduped.values(), key=lambda item: item.get("publishedAt") or "", reverse=True)
+        return {
+            "kind": "security_events",
+            "status": "ok",
+            "asOf": now.isoformat(),
+            "securities": securities[:3],
+            "events": events[:safe_limit],
+            "dataSources": sources,
+            "warnings": list(dict.fromkeys(warnings)),
+            "dataGaps": ["没有取得可用的新闻或公告"] if not events else [],
+        }
+
+    @staticmethod
+    def _screen_metric(value: Any, low: float, high: float, inverse: bool = False) -> Optional[float]:
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return None
+        score = max(0.0, min(100.0, (float(value) - low) / (high - low) * 100))
+        return 100 - score if inverse else score
+
+    async def _fetch_screen_snapshot(self, code: str) -> Tuple[Any, str, Optional[str]]:
+        providers = []
+        for provider in (self.fallback_provider, self.provider):
+            if provider and all(item.name != provider.name for item in providers):
+                providers.append(provider)
+        errors = []
+        for index, provider in enumerate(providers):
+            try:
+                value = await provider.snapshot(code)
+                if not self._has_data(value):
+                    raise RuntimeError("没有返回估值快照")
+                warning = f"{code} 估值补齐已使用 {provider.name}" if index else None
+                return value, provider.name, warning
+            except Exception as error:
+                errors.append(f"{provider.name}: {error}")
+        raise RuntimeError("；".join(errors))
+
+    async def screen_stocks(
+        self,
+        style: str = "balanced",
+        limit: int = 5,
+        progress: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
+        safe_style = style if style in {"balanced", "quality", "growth", "value", "momentum"} else "balanced"
+        safe_limit = max(1, min(10, limit))
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        try:
+            universe, source, source_warning = await self._cached_fetch(
+                "market:v3:stock-universe-snapshot",
+                300,
+                self._fetch_stock_universe,
+            )
+        except Exception as error:
+            return {
+                "kind": "stock_screen", "status": "unavailable", "style": safe_style,
+                "asOf": now.isoformat(), "stocks": [],
+                "warnings": [f"全市场个股快照获取失败：{str(error)[:240]}"],
+                "dataGaps": ["无法取得筛选股票池"],
+            }
+        await self._report(progress, f"已从 {source} 获取 {len(universe)} 只股票，开始流动性预筛")
+
+        prefiltered = [row for row in universe if (
+            row.get("code") and row.get("name")
+            and "ST" not in str(row.get("name") or "").upper()
+            and isinstance(row.get("price"), (int, float)) and row["price"] > 0
+            and isinstance(row.get("amount"), (int, float)) and row["amount"] >= 50_000_000
+            and (not isinstance(row.get("marketCap"), (int, float)) or row["marketCap"] >= 5_000_000_000)
+            and (not isinstance(row.get("peRatio"), (int, float)) or 0 < row["peRatio"] <= 100)
+            and (not isinstance(row.get("pbRatio"), (int, float)) or 0 < row["pbRatio"] <= 15)
+        )]
+        prefiltered.sort(
+            key=lambda row: (
+                math.log10(max(float(row.get("amount") or 1), 1))
+                + math.log10(max(float(row.get("marketCap") or 1), 1)) * .25
+                - float(row.get("peRatio") or 100) / 50
+            ),
+            reverse=True,
+        )
+        valuation_pool = prefiltered[:max(40, safe_limit * 8)]
+        valuation_semaphore = asyncio.Semaphore(8)
+
+        async def hydrate_valuation(row: Dict[str, Any]) -> Dict[str, Any]:
+            required = ("marketCap", "peRatio", "pbRatio")
+            if all(isinstance(row.get(key), (int, float)) for key in required):
+                return {**row, "_valuationSource": source, "_valuationWarning": None}
+            code = str(row["code"])
+            async with valuation_semaphore:
+                try:
+                    snapshot, snapshot_source, snapshot_warning = await self._cached_fetch(
+                        f"market:v1:screen-snapshot:{code}",
+                        60,
+                        lambda: self._fetch_screen_snapshot(code),
+                    )
+                except Exception as error:
+                    return {
+                        **row,
+                        "_valuationSource": None,
+                        "_valuationWarning": f"{code} 估值快照获取失败：{str(error)[:160]}",
+                    }
+            merged = dict(row)
+            for key in ("price", "changePercent", "marketCap", "peRatio", "pbRatio", "dataTime"):
+                if snapshot.get(key) is not None:
+                    merged[key] = snapshot[key]
+            merged["_valuationSource"] = snapshot_source
+            merged["_valuationWarning"] = snapshot_warning
+            return merged
+
+        hydrated = await asyncio.gather(*(hydrate_valuation(row) for row in valuation_pool))
+        await self._report(
+            progress,
+            f"已为 {len(valuation_pool)} 个预选候选补齐市值和估值，开始执行严格条件过滤",
+        )
+        eligible = [row for row in hydrated if (
+            isinstance(row.get("marketCap"), (int, float)) and row["marketCap"] >= 5_000_000_000
+            and isinstance(row.get("peRatio"), (int, float)) and 0 < row["peRatio"] <= 100
+            and isinstance(row.get("pbRatio"), (int, float)) and 0 < row["pbRatio"] <= 15
+        )]
+        candidates = eligible[:max(20, safe_limit * 4)]
+        semaphore = asyncio.Semaphore(6)
+
+        async def enrich(row: Dict[str, Any]) -> Dict[str, Any]:
+            code = str(row["code"])
+            async with semaphore:
+                financial_result, bars_result = await asyncio.gather(
+                    self._optional_fetch(
+                        f"market:v2:financial:{code}", 21600, "financial_snapshot", "财务指标", code,
+                    ),
+                    self._optional_fetch(
+                        f"market:v2:kline:{code}:120", 900, "daily_bars", "日 K", code, 120,
+                    ),
+                )
+            financial, financial_source, financial_warning = financial_result
+            bars, bars_source, bars_warning = bars_result
+            technical = technical_summary(bars)
+            components = {
+                "quality": self._screen_metric(financial.get("roe"), 5, 25),
+                "growth": self._screen_metric(
+                    (float(financial.get("revenueYoY")) + float(financial.get("netProfitYoY"))) / 2,
+                    -10,
+                    40,
+                ) if isinstance(financial.get("revenueYoY"), (int, float)) and isinstance(financial.get("netProfitYoY"), (int, float)) else None,
+                "value": (
+                    (self._screen_metric(row.get("peRatio"), 8, 60, True) or 0)
+                    + (self._screen_metric(row.get("pbRatio"), 1, 10, True) or 0)
+                ) / 2,
+                "momentum": self._screen_metric(technical.get("return20d"), -15, 25),
+                "risk": self._screen_metric(technical.get("maxDrawdown60d"), -30, -3),
+            }
+            weights = {
+                "balanced": {"quality": .25, "growth": .2, "value": .2, "momentum": .2, "risk": .15},
+                "quality": {"quality": .5, "growth": .15, "value": .15, "momentum": .05, "risk": .15},
+                "growth": {"quality": .15, "growth": .5, "value": .1, "momentum": .15, "risk": .1},
+                "value": {"quality": .2, "growth": .1, "value": .5, "momentum": .05, "risk": .15},
+                "momentum": {"quality": .1, "growth": .1, "value": .05, "momentum": .55, "risk": .2},
+            }[safe_style]
+            score = sum((components[key] if components[key] is not None else 50) * weight for key, weight in weights.items())
+            gaps = [key for key, value in components.items() if value is None]
+            valuation_source = row.get("_valuationSource") or source
+            return {
+                **{key: value for key, value in row.items() if not key.startswith("_")},
+                "score": round(score, 2),
+                "scoreBreakdown": {key: round(value, 2) if value is not None else None for key, value in components.items()},
+                "financial": financial,
+                "technical": technical,
+                "dataSources": {
+                    "universe": source,
+                    "snapshot": valuation_source,
+                    **({"financial": financial_source} if financial_source else {}),
+                    **({"dailyKline": bars_source, "technical": bars_source} if bars_source else {}),
+                },
+                "dataGaps": gaps,
+                "warnings": [
+                    item for item in (
+                        row.get("_valuationWarning"), financial_warning, bars_warning,
+                    ) if item
+                ],
+            }
+
+        ranked = sorted(await asyncio.gather(*(enrich(row) for row in candidates)), key=lambda row: row["score"], reverse=True)
+        await self._report(progress, f"已完成 {len(ranked)} 个候选的财务与趋势评分")
+        stocks = ranked[:safe_limit]
+        for rank, row in enumerate(stocks, start=1):
+            row["rank"] = rank
+        warnings = [source_warning] if source_warning else []
+        valuation_failure_count = sum(1 for row in hydrated if row.get("_valuationSource") is None)
+        if valuation_failure_count:
+            warnings.append(f"{valuation_failure_count} 个预选候选未取得完整估值快照，已排除")
+        if len(eligible) < safe_limit:
+            warnings.append("满足基础流动性、规模和估值条件的股票数量不足")
+        if any(row["dataGaps"] for row in stocks):
+            warnings.append("部分候选缺少财务或历史指标，缺失维度按中性分计入")
+        return {
+            "kind": "stock_screen",
+            "status": "ok" if stocks else "unavailable",
+            "style": safe_style,
+            "asOf": now.isoformat(),
+            "marketStatus": market_state(now),
+            "criteria": {
+                "universe": "A股全市场（不含 ST）",
+                "minimumAmount": 50_000_000,
+                "minimumMarketCap": 5_000_000_000,
+                "peRange": [0, 100],
+                "pbRange": [0, 15],
+                "universeCount": len(universe),
+                "prefilteredCount": len(prefiltered),
+                "valuationCandidateCount": len(valuation_pool),
+                "eligibleCount": len(eligible),
+                "enrichedCount": len(ranked),
+                "scorePolicy": "缺失维度按 50 分中性计入；排名是系统计算，不是投资建议",
+            },
+            "stocks": stocks,
+            "dataSources": {
+                "universe": source,
+                "snapshot": (
+                    stocks[0]["dataSources"].get("snapshot") if stocks else None
+                ),
+            },
+            "warnings": list(dict.fromkeys(warnings)),
+            "dataGaps": list(dict.fromkeys(gap for row in stocks for gap in row["dataGaps"])),
+        }
 
     async def _sector_catalog(self, category: str) -> List[Dict[str, str]]:
         async with self._sector_catalog_locks[category]:
@@ -1028,4 +1363,9 @@ class MarketService:
         await self.provider.close()
         if self.fallback_provider and self.fallback_provider is not self.provider:
             await self.fallback_provider.close()
+        if self.universe_fallback_provider and all(
+            self.universe_fallback_provider is not provider
+            for provider in (self.provider, self.fallback_provider)
+        ):
+            await self.universe_fallback_provider.close()
         await self.cache.close()

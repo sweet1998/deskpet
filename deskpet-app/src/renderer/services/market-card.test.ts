@@ -57,6 +57,20 @@ describe('marketCardFromResearch', () => {
     })).toBeNull()
   })
 
+  it('maps deterministic stock-screen candidates', () => {
+    const result = marketCardFromResearch({
+      scope: 'in_scope', intent: 'stock_screen', requiresResearch: true,
+      targetKind: 'market', targets: [], thoughts: [], skills: ['stock-screener'],
+      context: {
+        kind: 'stock_screen', source: 'akshare',
+        stocks: [{ code: 'SH.600519', name: '贵州茅台', price: 1500, changePercent: 1.2, score: 82 }],
+      },
+    })
+
+    expect(result?.title).toBe('个股筛选结果')
+    expect(result?.items[0]).toMatchObject({ code: '600519', name: '贵州茅台', price: 1500 })
+  })
+
   it('surfaces closed-market and stale-data state', () => {
     const closed = marketCardFromResearch({
       scope: 'in_scope', intent: 'index', requiresResearch: false, targetKind: 'index', targets: [], thoughts: [],

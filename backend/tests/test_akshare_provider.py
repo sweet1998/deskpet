@@ -32,6 +32,8 @@ class FakeAkshare:
                 "市净率": 8.2,
                 "总市值": 1_880_000_000_000,
                 "流通市值": 1_870_000_000_000,
+                "成交额": 8_000_000_000,
+                "换手率": 1.2,
             },
             {"代码": "830799", "名称": "艾融软件", "最新价": 25.2},
         ])
@@ -80,6 +82,26 @@ class FakeAkshare:
                 "MGJYXJJE": 16.3,
             },
         ])
+
+    def stock_news_em(self, symbol):
+        assert symbol == "600519"
+        return FakeFrame([{
+            "新闻标题": "贵州茅台发布经营动态",
+            "新闻内容": "公司披露阶段性经营信息。",
+            "发布时间": "2026-07-28 10:00:00",
+            "新闻链接": "https://example.test/news/600519",
+            "文章来源": "测试财经",
+        }])
+
+    def stock_notice_report(self, symbol, date):
+        assert symbol == "全部"
+        return FakeFrame([{
+            "代码": "600519",
+            "公告标题": "贵州茅台关于经营情况的公告",
+            "公告日期": date,
+            "公告类型": "经营公告",
+            "网址": "https://example.test/notice/600519",
+        }])
 
     def stock_board_industry_name_em(self):
         return FakeFrame([{
@@ -248,6 +270,26 @@ async def test_akshare_maps_beijing_exchange_code():
     finally:
         await provider.close()
     assert rows[0]["code"] == "BJ.830799"
+
+
+@pytest.mark.asyncio
+async def test_akshare_maps_news_announcements_and_stock_universe():
+    provider = AkshareProvider(timeout=1, ak_module=FakeAkshare())
+    try:
+        news, announcements, universe = await asyncio.gather(
+            provider.security_news("SH.600519", 5),
+            provider.company_announcements("SH.600519", 2, 5),
+            provider.stock_universe_snapshot(),
+        )
+    finally:
+        await provider.close()
+
+    assert news[0]["sourceId"].startswith("news:")
+    assert news[0]["verificationStatus"] == "reported"
+    assert announcements[0]["sourceId"].startswith("announcement:")
+    assert announcements[0]["verificationStatus"] == "official"
+    assert universe[0]["code"] == "SH.600519"
+    assert universe[0]["amount"] == 8_000_000_000
 
 
 @pytest.mark.asyncio

@@ -9,9 +9,12 @@ RoleId = Literal["default", "stock_expert"]
 StockIntent = Literal[
     "security_quote",
     "security_trend",
+    "security_news",
     "fundamental",
     "valuation",
     "comparison",
+    "stock_screen",
+    "decision",
     "sector_snapshot",
     "sector",
     "sector_scan",
@@ -37,6 +40,8 @@ class MarketContextRequest(BaseModel):
         "company_profile",
         "financial",
         "technical",
+        "news",
+        "announcements",
     ]] = Field(
         default_factory=lambda: [
             "snapshot",
@@ -46,7 +51,7 @@ class MarketContextRequest(BaseModel):
             "financial",
             "technical",
         ],
-        max_length=6,
+        max_length=8,
     )
     dailyCount: int = Field(default=120, ge=1, le=120)
 
@@ -55,6 +60,11 @@ class SectorScanRequest(BaseModel):
     universe: Literal["industry"] = "industry"
     trend: Literal["steady_up"] = "steady_up"
     windowDays: Literal[20, 60] = 60
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class StockScreenRequest(BaseModel):
+    style: Literal["balanced", "quality", "growth", "value", "momentum"] = "balanced"
     limit: int = Field(default=5, ge=1, le=10)
 
 
@@ -106,6 +116,20 @@ class TechnicalSummary(BaseModel):
     maxDrawdown60d: Optional[float] = None
 
 
+class SecurityEvent(BaseModel):
+    sourceId: str
+    kind: Literal["news", "announcement"]
+    title: str
+    summary: str = ""
+    source: str
+    url: str = ""
+    publishedAt: str
+    receivedAt: str
+    symbols: List[str] = Field(default_factory=list)
+    eventTypes: List[str] = Field(default_factory=list)
+    verificationStatus: Literal["official", "reported", "unverified"] = "reported"
+
+
 class SecurityContext(MarketCandidate):
     price: Optional[float] = None
     changePercent: Optional[float] = None
@@ -119,6 +143,8 @@ class SecurityContext(MarketCandidate):
     profile: CompanyProfile = Field(default_factory=CompanyProfile)
     financial: FinancialSnapshot = Field(default_factory=FinancialSnapshot)
     technical: TechnicalSummary = Field(default_factory=TechnicalSummary)
+    news: List[SecurityEvent] = Field(default_factory=list)
+    announcements: List[SecurityEvent] = Field(default_factory=list)
     dataSources: Dict[str, str] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
 
@@ -173,6 +199,7 @@ class ResearchPrepareResponse(BaseModel):
     targetKind: Literal["security", "sector", "index", "market", "knowledge", "none"] = "none"
     targets: List[ResearchTarget] = Field(default_factory=list)
     thoughts: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
     context: Optional[Dict[str, Any]] = None
     reply: Optional[str] = None
 

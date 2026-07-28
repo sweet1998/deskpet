@@ -2,6 +2,7 @@ import asyncio
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from .agent.skills import skills_for_intent
 from .market.service import CODE_PATTERN, MarketService, search_terms
 from .models import (
     ResearchPrepareRequest,
@@ -78,6 +79,15 @@ ROUTING_NOISE_TERMS = (
     + ("走弱", "走低", "下行", "震荡", "情况", "怎样", "好吗", "好不好", "还好吗", "咋回事", "怎么了")
 )
 QUOTE_KEYWORDS = ("多少钱", "当前价格", "现在价格", "股价", "涨跌幅", "现价", "当前点位", "现在点位")
+NEWS_KEYWORDS = ("新闻", "消息面", "公告", "舆情", "事件", "最新消息", "利好", "利空")
+DECISION_KEYWORDS = (
+    "能买吗", "要不要买", "该不该买", "值得买吗", "买入", "卖出", "要不要卖", "该不该卖",
+    "持有还是卖", "继续持有", "加仓", "减仓", "止盈", "止损", "怎么操作",
+)
+SCREEN_KEYWORDS = (
+    "筛选优质股票", "筛选股票", "筛选个股", "选出优质股票", "选出几只", "推荐几只",
+    "哪些股票值得关注", "优质股票", "优质个股",
+)
 
 # --- Tier C：指代/新话题/上下文追问识别（范围闸门兜底，模型高置信时以模型为准）---
 REFERENCE_WORDS = (
@@ -101,6 +111,9 @@ CONTEXT_ONLY_WORDS = (
 )
 DATA_COVERAGE_FOLLOWUP_PATTERN = re.compile(
     r"(?:为什么|为何).*(?:没|没有|不)(?:覆盖|包含|接入|提供|显示).*(?:消息面|新闻|公告|研报|舆情|数据)",
+)
+MISSING_EVENT_FOLLOWUP_PATTERN = re.compile(
+    r"(?:为什么|为何).*(?:没|没有|不).*(?:消息面|新闻|公告|研报|舆情|数据)",
 )
 ANSWER_FOLLOWUP_PATTERNS = (
     re.compile(r"(?:为什么|为何).*(?:没|没有|不)(?:覆盖|包含|考虑|分析|说明|提到|提供|显示)"),
@@ -170,8 +183,12 @@ def _is_answer_followup(request: ResearchPrepareRequest) -> bool:
     text = re.sub(r"[\s，。！？、,.!?：:；;（）()]+", "", request.text).lower()
     if starts_new_topic(text) or _contains(text, OUT_OF_SCOPE_KEYWORDS):
         return False
-    if DATA_COVERAGE_FOLLOWUP_PATTERN.search(text):
-        return True
+    if DATA_COVERAGE_FOLLOWUP_PATTERN.search(text) or MISSING_EVENT_FOLLOWUP_PATTERN.search(text):
+        has_security_history = any(
+            item.role == "user" and CODE_PATTERN.search(item.content)
+            for item in request.history[-20:]
+        )
+        return not has_security_history
     if not any(item.role == "assistant" and item.content.strip() for item in request.history[-20:]):
         return False
     return any(pattern.search(text) for pattern in ANSWER_FOLLOWUP_PATTERNS)
@@ -196,6 +213,10 @@ def _sector_theme(text: str) -> Optional[Tuple[str, Tuple[str, ...]]]:
 def _intent_for_security(text: str, target_count: int) -> StockIntent:
     if target_count > 1 or _contains(text, COMPARISON_WORDS):
         return "comparison"
+    if _contains(text, DECISION_KEYWORDS):
+        return "decision"
+    if _contains(text, NEWS_KEYWORDS):
+        return "security_news"
     if _contains(text, FUNDAMENTAL_KEYWORDS):
         return "fundamental"
     if _contains(text, VALUATION_KEYWORDS):
@@ -249,11 +270,76 @@ def _is_sector_scan_query(text: str) -> bool:
     )
 
 
+def _is_stock_screen_query(text: str) -> bool:
+    return _contains(text, SCREEN_KEYWORDS)
+
+
+def _stock_screen_style(text: str) -> str:
+    if re.search(r"(?:今天|今日|当日|当前|盘中|收盘).*(?:行情|盘面)|(?:行情|盘面).*(?:推荐|筛选|选股)", text):
+        return "momentum"
+    for keyword, style in (
+        ("高质量", "quality"), ("质量", "quality"), ("成长", "growth"),
+        ("低估", "value"), ("价值", "value"), ("动量", "momentum"), ("强势", "momentum"),
+    ):
+        if keyword in text:
+            return style
+    return "balanced"
+
+
+def _research_plan(intent: StockIntent, text: str, context: Dict[str, Any]) -> List[str]:
+    question = " ".join(text.split()).strip()
+    if not question:
+        return []
+    display_question = question if len(question) <= 80 else f"{question[:80]}..."
+
+    if intent == "stock_screen":
+        if re.search(r"(?:今天|今日|当日|当前|盘中|收盘).*(?:行情|盘面)", question):
+            focus = "先确认最近可用数据时点，再侧重比较候选的趋势动量、回撤和流动性"
+        elif _contains(question, ("值得买", "能买吗", "买入", "要不要买")):
+            focus = "先区分候选排序与买入决策，再核对估值、质量、趋势、风险和触发条件"
+        elif _contains(question, ("推荐", "筛选", "选出", "优质")):
+            focus = "先建立合格候选池，再按本次筛选偏好比较质量、成长、估值、动量和风险"
+        else:
+            focus = "先建立全市场候选池，再验证排序依据、数据缺口和主要风险"
+    elif intent == "decision":
+        focus = "围绕是否可操作，核对支持证据、反证、主要风险、触发条件和失效条件"
+    elif intent == "security_news":
+        focus = "核对最新新闻与公告的时间、来源和可信度，再判断事件是否影响原有结论"
+    elif intent == "security_trend":
+        focus = (
+            "重点检查波动、回撤、支撑与失效条件"
+            if _contains(question, ("风险", "回撤", "止损", "支撑", "压力"))
+            else "结合当前快照与历史区间，验证趋势强弱、波动和回撤"
+        )
+    elif intent == "fundamental":
+        focus = "核对最新财报期的收入、利润、现金流、盈利质量和负债变化"
+    elif intent == "valuation":
+        focus = "把 PE、PB 与增长和盈利质量结合，避免只凭单一估值倍数判断"
+    elif intent == "comparison":
+        focus = "使用同一数据口径比较标的的基本面、估值、趋势和风险"
+    elif intent == "sector_scan":
+        focus = "扫描行业广度和趋势，区分严格命中、接近条件与仅供观察的板块"
+    elif intent == "sector":
+        focus = "结合板块涨跌广度、领涨成分和历史趋势判断强弱及持续性"
+    elif intent == "index":
+        focus = "结合指数最新点位、区间趋势、波动和回撤判断市场状态"
+    elif intent == "market":
+        focus = "结合涨跌家数、成交额、市场宽度和领涨方向判断整体环境"
+    else:
+        focus = "按当前问题选择可验证的数据，并明确事实、计算结果与判断的边界"
+
+    return [
+        f"问题理解：{display_question}",
+        f"研究计划：{focus}",
+    ]
+
+
 def _requires_research(intent: StockIntent, text: str) -> bool:
     if intent == "index":
         return _contains(text, RESEARCH_DEPTH_KEYWORDS)
     return intent in {
-        "security_trend", "fundamental", "valuation", "comparison", "sector", "sector_scan", "market",
+        "security_trend", "security_news", "fundamental", "valuation", "comparison", "stock_screen",
+        "decision", "sector", "sector_scan", "market",
     }
 
 
@@ -345,7 +431,11 @@ class ResearchService:
             or _contains(text, OUT_OF_SCOPE_KEYWORDS)
         ):
             return request.text
-        has_explicit_target = (
+        event_coverage_followup = bool(
+            DATA_COVERAGE_FOLLOWUP_PATTERN.search(_normalized_route_text(text))
+            or MISSING_EVENT_FOLLOWUP_PATTERN.search(_normalized_route_text(text))
+        )
+        has_explicit_target = not event_coverage_followup and (
             bool(CODE_PATTERN.search(text))
             or _index_target(text) is not None
             or _sector_theme(text) is not None
@@ -398,19 +488,41 @@ class ResearchService:
         )
 
     @staticmethod
-    def _analysis_records(intent: StockIntent, context: Dict[str, Any]) -> List[str]:
-        records: List[str] = []
+    def _analysis_records(intent: StockIntent, context: Dict[str, Any], question: str = "") -> List[str]:
+        records: List[str] = _research_plan(intent, question, context)
         warnings: List[str] = list(context.get("warnings") or [])
         securities = ((context.get("market") or {}).get("securities") or [])
 
-        if intent in {"security_trend", "fundamental", "valuation", "comparison"}:
+        if intent in {"security_trend", "security_news", "fundamental", "valuation", "comparison", "decision"}:
             for security in securities:
                 name = security.get("name") or security.get("code") or "标的"
                 technical = security.get("technical") or {}
                 financial = security.get("financial") or {}
                 history = security.get("history") or {}
                 warnings.extend(security.get("warnings") or [])
-                if intent == "security_trend":
+                if intent in {"security_news", "decision"}:
+                    events = [
+                        *list(security.get("announcements") or []),
+                        *list(security.get("news") or []),
+                    ]
+                    events.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
+                    records.append(
+                        f"{name}：取得 {len(security.get('news') or [])} 条新闻、"
+                        f"{len(security.get('announcements') or [])} 条公告"
+                    )
+                    for event in events[:5]:
+                        records.append(
+                            f"[{event.get('sourceId')}] {event.get('publishedAt') or '时间未知'} "
+                            f"{event.get('title') or '未命名事件'}（{event.get('verificationStatus') or 'unverified'}）"
+                        )
+                    if intent == "decision":
+                        records.append(
+                            f"{name}决策输入：现价 {_number(security.get('price')) or '缺失'}，"
+                            f"PE {_number(security.get('peRatio')) or '缺失'}，"
+                            f"近20日 {_number(technical.get('return20d'), '%') or '数据不足'}，"
+                            f"60日最大回撤 {_number(technical.get('maxDrawdown60d'), '%') or '数据不足'}"
+                        )
+                elif intent == "security_trend":
                     price = _number(security.get("price"), " 元")
                     change = _number(security.get("changePercent"), "%")
                     snapshot = "，".join([
@@ -466,6 +578,32 @@ class ResearchService:
                         ) if label
                     ]
                     records.append(f"{name}：{'，'.join(metrics)}" if metrics else f"{name}缺少可比较指标")
+        elif intent == "stock_screen":
+            criteria = context.get("criteria") or {}
+            style_note = {
+                "balanced": "本次采用综合均衡策略，综合考虑质量、成长、估值、动量和风险",
+                "quality": "本次采用质量优先策略，重点考虑盈利质量与风险",
+                "growth": "本次采用成长优先策略，重点考虑营收和利润增速",
+                "value": "本次采用估值优先策略，重点考虑 PE、PB 与基本面质量",
+                "momentum": "本次采用趋势动量策略，重点考虑近期走势与回撤风险",
+            }.get(str(context.get("style") or "balanced"))
+            if style_note:
+                records.append(style_note)
+            records.append(
+                f"全市场 {criteria.get('universeCount', 0)} 只股票中，"
+                f"{criteria.get('eligibleCount', 0)} 只通过基础条件，"
+                f"{criteria.get('enrichedCount', 0)} 只完成财务与趋势评分"
+            )
+            for stock in (context.get("stocks") or [])[:5]:
+                breakdown = stock.get("scoreBreakdown") or {}
+                records.append(
+                    f"#{stock.get('rank', '-')} {stock.get('name') or stock.get('code')}："
+                    f"系统评分 {_number(stock.get('score')) or '缺失'}，"
+                    f"质量 {_number(breakdown.get('quality')) or '缺失'}，"
+                    f"成长 {_number(breakdown.get('growth')) or '缺失'}，"
+                    f"估值 {_number(breakdown.get('value')) or '缺失'}，"
+                    f"动量 {_number(breakdown.get('momentum')) or '缺失'}"
+                )
         elif intent == "sector_scan":
             criteria = context.get("criteria") or {}
             sectors = context.get("sectors") or []
@@ -567,7 +705,7 @@ class ResearchService:
         warnings = [warning for item in market_context.securities for warning in item.warnings]
         if warnings:
             context["warnings"] = warnings
-        thoughts = self._analysis_records(intent, context) if requires else []
+        thoughts = self._analysis_records(intent, context, text) if requires else []
         await self._report_records(progress, thoughts)
         return ResearchPrepareResponse(
             scope="in_scope",
@@ -576,6 +714,7 @@ class ResearchService:
             targetKind="security",
             targets=targets,
             thoughts=thoughts,
+            skills=skills_for_intent(intent, requires),
             context=context,
         )
 
@@ -590,7 +729,7 @@ class ResearchService:
         if requires:
             await self._report(progress, "正在获取全市场涨跌、成交额和市场宽度数据")
         context = compact_research_context(await self.market.market_overview())
-        thoughts = self._analysis_records("market", context) if requires else []
+        thoughts = self._analysis_records("market", context, text) if requires else []
         await self._report_records(progress, thoughts)
         return ResearchPrepareResponse(
             scope="in_scope",
@@ -599,6 +738,7 @@ class ResearchService:
             targetKind="market",
             targets=[ResearchTarget(kind="market", name="A 股市场")],
             thoughts=thoughts,
+            skills=skills_for_intent(intent, requires),
             context=context,
         )
 
@@ -616,7 +756,7 @@ class ResearchService:
         context = compact_research_context(
             await self.market.sector_context(sector["kind"], sector["code"], sector["name"]),
         )
-        thoughts = self._analysis_records("sector", context) if requires else []
+        thoughts = self._analysis_records("sector", context, text) if requires else []
         await self._report_records(progress, thoughts)
         return ResearchPrepareResponse(
             scope="in_scope",
@@ -625,6 +765,7 @@ class ResearchService:
             targetKind="sector",
             targets=[ResearchTarget(kind="sector", name=sector["name"], code=sector["code"])],
             thoughts=thoughts,
+            skills=skills_for_intent(intent, requires),
             context=context,
         )
 
@@ -662,6 +803,7 @@ class ResearchService:
             bool(CODE_PATTERN.search(text))
             or _index_target(text) is not None
             or _sector_theme(text) is not None
+            or _is_stock_screen_query(text)
         )
         route_terms: List[str] = []
         if route:
@@ -677,6 +819,10 @@ class ResearchService:
             if (
                 route.scope == "in_scope"
                 and (route.intent == "answer_followup" or route.relation == "answer_explanation")
+                and not (
+                    DATA_COVERAGE_FOLLOWUP_PATTERN.search(_normalized_route_text(text))
+                    or MISSING_EVENT_FOLLOWUP_PATTERN.search(_normalized_route_text(text))
+                )
             ):
                 return ResearchPrepareResponse(
                     scope="in_scope",
@@ -712,17 +858,22 @@ class ResearchService:
                     targets=[ResearchTarget(kind="knowledge", name="股票知识")],
                 )
         if route_terms:
-            reference_query = f"{text} {' '.join(route_terms)}".strip()
+            reference_query = (
+                " ".join(route_terms)
+                if route and route.targetKind == "security"
+                else f"{text} {' '.join(route_terms)}".strip()
+            )
         route_intent = route.intent if route and route.scope == "in_scope" else None
         has_explicit_stock_signal = bool(CODE_PATTERN.search(reference_query)) or _contains(
             reference_query,
             EDUCATION_KEYWORDS + MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS
+            + NEWS_KEYWORDS + DECISION_KEYWORDS + SCREEN_KEYWORDS
             + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
         ) or _index_target(reference_query) is not None
         has_stock_signal = bool(CODE_PATTERN.search(reference_query)) or _contains(
             reference_query,
             EDUCATION_KEYWORDS + MARKET_KEYWORDS + GENERIC_MARKET_KEYWORDS
-            + TREND_KEYWORDS + QUOTE_KEYWORDS
+            + TREND_KEYWORDS + QUOTE_KEYWORDS + NEWS_KEYWORDS + DECISION_KEYWORDS + SCREEN_KEYWORDS
             + ("股票", "个股", "板块", "行业", "概念", "指数", "a股"),
         ) or _index_target(reference_query) is not None
         if route is None and _contains(text, OUT_OF_SCOPE_KEYWORDS) and not has_explicit_stock_signal:
@@ -737,6 +888,33 @@ class ResearchService:
                 targets=[ResearchTarget(kind="knowledge", name="上一条回答")],
             )
 
+        if route_intent == "stock_screen" or _is_stock_screen_query(reference_query):
+            style = _stock_screen_style(text)
+            style_label = {
+                "balanced": "综合均衡", "quality": "质量优先", "growth": "成长优先",
+                "value": "估值优先", "momentum": "趋势动量",
+            }[style]
+            await self._report(progress, f"正在按{style_label}策略读取全市场个股快照并执行基础条件筛选")
+            context = compact_research_context(
+                await self.market.screen_stocks(style=style, limit=5, progress=progress),
+            )
+            targets = [
+                ResearchTarget(kind="security", name=item.get("name") or "候选股票", code=item.get("code"))
+                for item in (context.get("stocks") or [])[:5]
+            ]
+            thoughts = self._analysis_records("stock_screen", context, text)
+            await self._report_records(progress, thoughts)
+            return ResearchPrepareResponse(
+                scope="in_scope",
+                intent="stock_screen",
+                requiresResearch=True,
+                targetKind="market",
+                targets=targets,
+                thoughts=thoughts,
+                skills=skills_for_intent("stock_screen", True),
+                context=context,
+            )
+
         index = _index_target(reference_query)
         if index:
             intent: StockIntent = "index"
@@ -747,7 +925,7 @@ class ResearchService:
                 await self.market.index_context(index["code"], index["name"], index["category"]),
             )
             targets = [ResearchTarget(kind="index", name=index["name"], code=index["code"])]
-            thoughts = self._analysis_records(intent, context) if requires else []
+            thoughts = self._analysis_records(intent, context, text) if requires else []
             await self._report_records(progress, thoughts)
             return ResearchPrepareResponse(
                 scope="in_scope",
@@ -756,6 +934,7 @@ class ResearchService:
                 targetKind="index",
                 targets=targets,
                 thoughts=thoughts,
+                skills=skills_for_intent(intent, requires),
                 context=context,
             )
 
@@ -784,8 +963,8 @@ class ResearchService:
                 ResearchTarget(kind="sector", name=item.get("name") or "行业板块", code=item.get("code"))
                 for item in (context.get("sectors") or [])[:5]
             ]
-            thoughts = self._analysis_records("sector_scan", context)
-            await self._report_records(progress, thoughts[1:])
+            thoughts = self._analysis_records("sector_scan", context, text)
+            await self._report_records(progress, [*thoughts[:2], *thoughts[3:]])
             return ResearchPrepareResponse(
                 scope="in_scope",
                 intent="sector_scan",
@@ -793,6 +972,7 @@ class ResearchService:
                 targetKind="sector",
                 targets=targets,
                 thoughts=thoughts,
+                skills=skills_for_intent("sector_scan", True),
                 context=context,
             )
 
@@ -834,7 +1014,7 @@ class ResearchService:
                 "name": theme_name,
                 "sectors": sector_contexts,
             }
-            thoughts = self._analysis_records("sector", context)
+            thoughts = self._analysis_records("sector", context, text)
             return ResearchPrepareResponse(
                 scope="in_scope",
                 intent="sector",
@@ -845,6 +1025,7 @@ class ResearchService:
                     for item in sectors
                 ],
                 thoughts=thoughts,
+                skills=skills_for_intent("sector", True),
                 context=context,
             )
 
@@ -871,22 +1052,31 @@ class ResearchService:
                 return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
             if securities:
                 intent = route_intent if route_intent in {
-                    "security_quote", "security_trend", "fundamental", "valuation", "comparison",
+                    "security_quote", "security_trend", "security_news", "fundamental", "valuation",
+                    "comparison", "decision",
                 } else _intent_for_security(text, len(securities))
                 if _requires_research(intent, text):
                     names = "、".join(item["name"] for item in securities)
                     await self._report(progress, f"正在获取{names}的行情、财务和历史数据")
-                market_context = await self.market.context(reference_query, 120)
+                include_events = intent in {"security_trend", "security_news", "fundamental", "decision"}
+                resolved_query = " ".join(item["code"].split(".")[-1] for item in securities)
+                market_context = await self.market.context(resolved_query, 120, True) if include_events else (
+                    await self.market.context(resolved_query, 120)
+                )
                 if market_context.status in {"ok", "unavailable"}:
                     return await self._security_response(text, market_context, progress, intent)
 
         target_count = max(1, len(CODE_PATTERN.findall(reference_query)))
         likely_intent = route_intent if route_intent in {
-            "security_quote", "security_trend", "fundamental", "valuation", "comparison",
+            "security_quote", "security_trend", "security_news", "fundamental", "valuation",
+            "comparison", "decision",
         } else _intent_for_security(text, target_count)
         if CODE_PATTERN.search(reference_query) and _requires_research(likely_intent, text):
             await self._report(progress, "正在解析标的并获取行情、财务和历史数据")
-        market_context = await self.market.context(reference_query, 120)
+        include_events = likely_intent in {"security_trend", "security_news", "fundamental", "decision"}
+        market_context = await self.market.context(reference_query, 120, True) if include_events else (
+            await self.market.context(reference_query, 120)
+        )
         if market_context.status == "ambiguous":
             choices = "、".join(f"{item.name}（{item.code}）" for item in market_context.candidates)
             return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")

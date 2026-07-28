@@ -1,5 +1,6 @@
 import {
   DOUBAO_BASE_URL,
+  hasNaturalResponseEnding,
   type DoubaoCapabilityReport,
   type DoubaoMessage,
   type DoubaoResult,
@@ -14,7 +15,6 @@ import type {
 import {
   COMPLETION_INSTRUCTION,
   COMPLETION_MARKER,
-  COMPLETION_VERIFIER_PROMPT,
   CONTINUATION_PROMPT,
   STOCK_ROUTE_SYSTEM_PROMPT,
 } from '../shared/prompts'
@@ -42,15 +42,18 @@ interface DoubaoRequestOptions {
   temperature?: number
   jsonMode?: boolean
   thinking?: DoubaoThinkingMode
+  streamIdleTimeoutMs?: number
 }
 
 const DEFAULT_MAX_TOKENS = 4096
 const MAX_CONVERSATION_MESSAGES = 24
 const MAX_AUTO_CONTINUATIONS = 2
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 12_000
 export const DESKPET_COMPLETION_MARKER = COMPLETION_MARKER
 
 const STOCK_INTENTS = new Set<StockIntent>([
-  'security_quote', 'security_trend', 'fundamental', 'valuation', 'comparison',
+  'security_quote', 'security_trend', 'security_news', 'fundamental', 'valuation', 'comparison',
+  'stock_screen', 'decision',
   'sector_snapshot', 'sector', 'sector_scan', 'index', 'market_snapshot', 'market',
   'education', 'role_capability', 'answer_followup', 'clarification', 'out_of_scope',
 ])
@@ -82,44 +85,6 @@ function withoutCompletionMarker(text: string): { text: string; complete: boolea
   return markerIndex >= 0
     ? { text: text.slice(0, markerIndex), complete: true }
     : { text, complete: false }
-}
-
-function latestUserText(messages: DoubaoMessage[]): string {
-  const message = [...messages].reverse().find((item) => item.role === 'user')
-  if (!message) return ''
-  if (typeof message.content === 'string') return message.content
-  return message.content
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('\n')
-}
-
-export async function verifyResponseCompleteness(
-  config: StoredDoubaoConfig,
-  question: string,
-  answer: string,
-  options: Pick<DoubaoRequestOptions, 'signal' | 'fetchImpl' | 'baseUrl'> = {},
-): Promise<boolean> {
-  if (!answer.trim()) return false
-  const result = await requestDoubao(config, [
-    { role: 'system', content: COMPLETION_VERIFIER_PROMPT },
-    { role: 'user', content: JSON.stringify({ question: question.slice(0, 4000), answer: answer.slice(-8000) }) },
-  ], {
-    ...(options.signal ? { signal: options.signal } : {}),
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
-    maxTokens: 80,
-    temperature: 0,
-    jsonMode: true,
-    thinking: 'disabled',
-  })
-  if (!result.ok || !result.text) return false
-  try {
-    const source = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-    return (JSON.parse(source) as { complete?: unknown }).complete === true
-  } catch {
-    return false
-  }
 }
 
 function compactRouteHistory(input: StockRouteRequest) {
@@ -328,7 +293,31 @@ export async function requestDoubao(
     }
 
     while (true) {
-      const { value, done } = await reader.read()
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error('stream_idle_timeout')),
+              options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+            )
+          }),
+        ])
+      } catch (error) {
+        if (error instanceof Error && error.message === 'stream_idle_timeout') {
+          await reader.cancel().catch(() => undefined)
+          const text = answer.trim()
+          return text
+            ? { ok: true, text, truncated: true, finishReason: 'stream_idle_timeout' }
+            : { ok: false, error: '豆包响应超时，请重试' }
+        }
+        throw error
+      } finally {
+        if (timeout) clearTimeout(timeout)
+      }
+      const { value, done } = chunk
       buffer += decoder.decode(value, { stream: !done })
       const blocks = buffer.split(/\r?\n\r?\n/)
       buffer = blocks.pop() || ''
@@ -370,7 +359,6 @@ export async function requestDoubaoConversation(
 ): Promise<DoubaoResult> {
   let conversation = withCompletionContract(messages)
   let answer = ''
-  const question = latestUserText(messages)
 
   for (let continuation = 0; continuation <= MAX_AUTO_CONTINUATIONS; continuation += 1) {
     let pendingDelta = ''
@@ -405,12 +393,17 @@ export async function requestDoubaoConversation(
     const part = withoutCompletionMarker(result.text)
     const markerReceived = markerSeenInStream || part.complete
     answer += part.text
-    const complete = markerReceived && await verifyResponseCompleteness(config, question, answer, options)
-    if (!complete) flushPendingDelta()
+    const providerCompleted = !result.truncated && result.finishReason !== 'length'
+    const naturalEnding = hasNaturalResponseEnding(answer)
+    const complete = naturalEnding && (markerReceived || providerCompleted)
+    flushPendingDelta()
     if (complete) {
       return { ...result, text: answer.trim(), truncated: undefined }
     }
-    if (continuation === MAX_AUTO_CONTINUATIONS) {
+    const canContinue = result.finishReason === 'length'
+      || markerReceived
+      || (providerCompleted && !naturalEnding)
+    if (!canContinue || continuation === MAX_AUTO_CONTINUATIONS) {
       return {
         ...result,
         text: answer.trim(),

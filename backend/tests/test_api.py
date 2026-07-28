@@ -65,6 +65,27 @@ def test_sector_scan_validation_rejects_large_limit():
     assert response.status_code == 422
 
 
+def test_mcp_lists_read_only_research_tools_and_calls_lineage():
+    with TestClient(app) as client:
+        initialized = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
+        })
+        listed = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+        })
+        called = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "get_data_lineage", "arguments": {}},
+        })
+
+    assert initialized.json()["result"]["serverInfo"]["name"] == "a-share-research"
+    names = {item["name"] for item in listed.json()["result"]["tools"]}
+    assert {"get_company_news", "screen_stocks", "get_data_lineage"} <= names
+    lineage = called.json()["result"]["structuredContent"]
+    assert lineage["policies"]["readOnly"] is True
+    assert lineage["policies"]["newsRequiresSourceId"] is True
+
+
 def test_market_health_reports_degraded_cached_data(monkeypatch):
     monkeypatch.setattr(main_module, "settings", replace(main_module.settings, api_token="desktop-secret"))
     with TestClient(app) as client:

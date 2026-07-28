@@ -3,9 +3,12 @@ import type { RoleId } from './roles'
 export type StockIntent =
   | 'security_quote'
   | 'security_trend'
+  | 'security_news'
   | 'fundamental'
   | 'valuation'
   | 'comparison'
+  | 'stock_screen'
+  | 'decision'
   | 'sector_snapshot'
   | 'sector'
   | 'sector_scan'
@@ -68,6 +71,7 @@ export interface ResearchPrepareResult {
   targetKind: 'security' | 'sector' | 'index' | 'market' | 'knowledge' | 'none'
   targets: ResearchTarget[]
   thoughts: string[]
+  skills?: string[]
   context?: Record<string, any>
   reply?: string
 }

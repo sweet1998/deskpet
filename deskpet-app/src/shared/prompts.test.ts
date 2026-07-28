@@ -16,6 +16,10 @@ describe('shared prompt contract', () => {
     expect(STOCK_ROUTE_SYSTEM_PROMPT).toBe(contract.stockRouter.systemPrompt)
     expect(COMPLETION_MARKER).toBe(contract.completion.marker)
     expect(COMPLETION_INSTRUCTION).toContain(COMPLETION_MARKER)
+    expect(COMPLETION_INSTRUCTION).toContain('回答必须完整表述')
+    expect(COMPLETION_INSTRUCTION).toContain('所有观点说完后再结束输出')
+    expect(COMPLETION_INSTRUCTION).toContain('如果内容较长，请完整分段输出')
+    expect(COMPLETION_INSTRUCTION).toContain('严禁未说完就停止')
   })
 
   it('builds role identity, memory, and research context consistently', () => {
@@ -24,13 +28,14 @@ describe('shared prompt contract', () => {
       dateContext: '当前北京时间日期：2026年7月27日。',
       userName: '小麦',
       memories: ['偏好短回答'],
-      research: { intent: 'sector', context: { sector: '白酒' } },
+      research: { intent: 'sector', skills: ['market-snapshot', 'fact-verifier'], context: { sector: '白酒' } },
     })
 
     expect(prompt).toContain('你是麦麦的 A 股研究助手')
     expect(prompt).toContain('用户希望被称为：小麦。')
     expect(prompt).toContain('用户明确要求记住：偏好短回答')
     expect(prompt).toContain('本次问题意图：sector。')
+    expect(prompt).toContain('market-snapshot, fact-verifier')
     expect(prompt).toContain('{"sector":"白酒"}')
   })
 

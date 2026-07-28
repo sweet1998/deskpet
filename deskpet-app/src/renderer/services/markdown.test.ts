@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
-import { renderSafeMarkdown } from './markdown'
+import { renderSafeMarkdown, streamingDisplayText } from './markdown'
 
 describe('safe markdown rendering', () => {
   it('renders useful answer structure', () => {
@@ -18,5 +18,15 @@ describe('safe markdown rendering', () => {
     expect(html).not.toContain('file:///')
     expect(html).toContain('href="https://example.com/"')
     expect(html).toContain('rel="noreferrer noopener"')
+  })
+
+  it('hides markdown asterisks while preserving code and arithmetic during streaming', () => {
+    expect(streamingDisplayText('**结论：** 当前更关注风险\n* 估值合理')).toBe(
+      '结论： 当前更关注风险\n 估值合理',
+    )
+    expect(streamingDisplayText('尚未闭合的 **重点')).toBe('尚未闭合的 重点')
+    expect(streamingDisplayText('2*3 与 `a*b`\n```js\nconst value = 2 * 3\n```')).toBe(
+      '2*3 与 `a*b`\n```js\nconst value = 2 * 3\n```',
+    )
   })
 })
