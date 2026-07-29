@@ -14,6 +14,7 @@ from .skills import tools_for_intent
 
 _SELF_CONTAINED_INTENTS = {
     "stock_screen",
+    "strategy_backtest",
     "sector_scan",
     "market_snapshot",
     "market",
@@ -30,6 +31,7 @@ _DEFAULT_DATA_BY_INTENT: Dict[str, tuple[StockResearchData, ...]] = {
     "valuation": ("valuation", "financial", "quote"),
     "comparison": ("quote", "history", "financial", "valuation"),
     "stock_screen": ("quote", "financial", "valuation", "history", "data_lineage"),
+    "strategy_backtest": ("history", "factors", "backtest", "data_lineage"),
     "decision": ("quote", "history", "financial", "valuation", "news", "data_lineage"),
     "sector_snapshot": ("quote", "constituents"),
     "sector": ("quote", "history", "constituents"),
@@ -47,7 +49,8 @@ _EXPECTED_CONTEXT_KINDS: Dict[str, set[str]] = {
     "valuation": {"security"},
     "comparison": {"security"},
     "decision": {"security"},
-    "stock_screen": {"stock_screen"},
+    "stock_screen": {"stock_screen", "factor_screen"},
+    "strategy_backtest": {"strategy_backtest"},
     "sector_snapshot": {"sector", "sector_group"},
     "sector": {"sector", "sector_group"},
     "sector_scan": {"sector_scan"},

@@ -701,7 +701,32 @@ async def test_clarification_does_not_emit_research_progress():
     ), progress=report)
 
     assert result.intent == "clarification"
+    assert result.clarification is not None
+    assert result.clarification.allowFreeText is True
     assert progress == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_security_returns_selectable_clarification_options():
+    market = FakeResearchMarket()
+
+    async def ambiguous_securities(query):
+        market.calls.append(("security-resolve", query))
+        return [], [
+            {"code": "SH.600011", "name": "华能国际", "market": "沪市"},
+            {"code": "SH.600025", "name": "华能水电", "market": "沪市"},
+        ], []
+
+    market.resolve_securities = ambiguous_securities
+    result = await ResearchService(market).prepare(ResearchPrepareRequest(
+        text="分析华能这只股票",
+        roleId="stock_expert",
+    ))
+
+    assert result.scope == "needs_clarification"
+    assert result.clarification is not None
+    assert [option.label for option in result.clarification.options] == ["华能国际", "华能水电"]
+    assert [option.value for option in result.clarification.options] == ["600011", "600025"]
 
 
 @pytest.mark.asyncio
@@ -887,6 +912,38 @@ async def test_market_driven_stock_screen_uses_momentum_strategy():
     assert result.thoughts[0] == "问题理解：基于今天行情推荐几只股票"
     assert result.thoughts[1].startswith("研究计划：先确认最近可用数据时点")
     assert any(thought.startswith("本次采用趋势动量策略") for thought in result.thoughts)
+
+
+@pytest.mark.asyncio
+async def test_multi_dimension_screen_is_balanced_and_model_can_choose_style():
+    mixed, mixed_market = await prepare(
+        "全市场筛选质量高、估值合理、近期趋势较强的股票",
+        route=StockRouteHint(
+            scope="in_scope",
+            intent="stock_screen",
+            relation="standalone",
+            targetKind="market",
+            targetTerms=[],
+            factorStyle="balanced",
+            requiresResearch=True,
+            confidence=0.98,
+        ),
+    )
+    routed, routed_market = await prepare("按我的筛选条件找股票", route=StockRouteHint(
+        scope="in_scope",
+        intent="stock_screen",
+        relation="standalone",
+        targetKind="market",
+        targetTerms=[],
+        factorStyle="value",
+        requiresResearch=True,
+        confidence=0.98,
+    ))
+
+    assert mixed.intent == "stock_screen"
+    assert ("stock-screen", "balanced") in mixed_market.calls
+    assert routed.context["style"] == "value"
+    assert ("stock-screen", "value") in routed_market.calls
 
 
 @pytest.mark.asyncio

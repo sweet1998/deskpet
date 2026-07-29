@@ -38,15 +38,21 @@ X-Device-Id: <稳定的匿名设备 ID>
 
 ## 行情数据
 
-默认使用 AKShare 聚合的东方财富公开数据，获取沪深北 A 股实时快照、前复权 120 日日 K、公司资料和最近一期主要财务指标。后端基于日 K 计算阶段收益、均线、20 日年化波动率和 60 日最大回撤。AKShare 的同步调用运行在最多 4 个线程的专用线程池中，不会阻塞 FastAPI 事件循环。
+默认使用 AKShare 聚合的东方财富公开数据获取沪深北 A 股实时快照，并按数据能力选择供应商。配置 Tushare 后，证券主数据、前复权 120 日日 K、每日估值、公司资料、财务历史和交易日历优先使用 Tushare Pro；官方公告优先使用巨潮资讯。新闻、盘中快照和板块数据继续使用现有公开源。后端基于统一日 K 计算阶段收益、均线、20 日年化波动率和 60 日最大回撤。
 
-当 AKShare 的名称解析、快照或日 K 请求失败时，后端按数据分项回退腾讯/东方财富适配器；公司资料或财务指标失败不会阻断基础行情分析，响应中的 `dataSources` 和 `warnings` 会标明实际来源与缺失项。
+Tushare 接口权限取决于个人账号。某项接口无权限或请求失败时，后端按数据分项回退 AKShare、腾讯或东方财富；公司资料或财务指标失败不会阻断基础行情分析。响应中的 `dataSources`、`sourceRecordId` 和 `warnings` 会标明实际来源、财报期、公告时间与缺失项，不会把降级数据标记成 Tushare 数据。
 
 ```env
 MARKET_PROVIDER=akshare
 MARKET_FALLBACK_PROVIDER=tencent
 MARKET_REQUEST_TIMEOUT=8
+PROFESSIONAL_DATA_PROVIDER=tushare
+TUSHARE_TOKEN=
+TUSHARE_FINANCIAL_ENABLED=false
+OFFICIAL_ANNOUNCEMENT_PROVIDER=cninfo
 ```
+
+`TUSHARE_TOKEN` 只能写入本机 `backend/.env` 或服务端环境变量，不能提交到仓库。即使配置了 Tushare，盘中实时快照仍由 AKShare/腾讯链路提供，避免把收盘数据伪装成实时行情。Tushare 日线通过每日 `pre_close` 连续重建前复权价格，避免依赖低额度账号受限的逐证券复权因子接口。只有账号已取得 `fina_indicator` 和 `income` 权限时才能设置 `TUSHARE_FINANCIAL_ENABLED=true`；否则多期财务自动使用 AKShare/东方财富。财务数据保留报告期 `reportDate`、披露日 `announcedAt` 和来源记录 `sourceRecordId`，用于避免历史研究中的未来数据泄漏。
 
 缓存时效：全市场实时快照 15 秒、名称解析 24 小时、公司资料 24 小时、财务指标 6 小时、日 K 15 分钟。交易时段数据超过 60 秒标记为陈旧。
 
@@ -54,9 +60,11 @@ AKShare 和兜底适配器均依赖公开网页接口，适合原型与研究辅
 
 股票专家只处理 A 股个股、行业与概念板块、主要指数、大盘和股票知识。越界请求在模型调用前直接拒绝。只有趋势、基本面、估值、对比、板块和市场等复杂研究任务会返回可折叠的研究摘要；简单报价和知识问答直接回答。
 
-领域路由采用受控 Agent 模式。第一阶段由独立的 `qwen3-8b` 只读取当前问题，输出白名单 JSON 计划，包括 `intent`、`relation`、`targetKind`、`targetSource`、`requestedData` 和 `timeRangeDays`。只有当前问题缺少可执行目标或属于解释性追问时，第二阶段才读取最近历史；历史标的必须逐字存在，并且只有 `followup` 或 `answer_explanation` 可以继承。这样新问题不会被上一轮标的覆盖。
+领域路由采用受控 Agent 模式。第一阶段由独立的 `qwen3.7-max` 只读取当前问题，输出白名单 JSON 计划，包括 `intent`、`relation`、`targetKind`、`targetSource`、`requestedData` 和 `timeRangeDays`。只有当前问题缺少可执行目标或属于解释性追问时，第二阶段才读取最近历史；历史标的必须逐字存在，并且只有 `followup` 或 `answer_explanation` 可以继承。这样新问题不会被上一轮标的覆盖。
 
-规则层只处理证券代码格式、权限、参数范围、目标来源和工具结果类型，不承担自然语言句式枚举。结构化意图映射到白名单 Skill 和只读 MCP 工具，执行后还会校验 context 类型与计划意图是否一致。Qwen 不生成最终回答；回答仍由 `MODEL_NAME` 指定的模型完成。分类不可用时保留受控 fallback，最终证券代码、板块和指数仍由行情服务解析验证。
+问题信息不足或行情解析返回多个有效候选时，研究响应通过 `clarification` 返回结构化卡片，包括问题、最多 6 个真实候选项、自由输入配置以及 `round/maxRounds`。同一澄清链最多两轮；第三次仍不完整时停止研究并要求重新提问。新主题由语义路由重置轮次。行情源故障和路由服务异常不会伪装成澄清卡片。
+
+规则层只处理证券代码格式、权限、参数范围、目标来源和工具结果类型，不承担自然语言句式枚举。结构化意图映射到白名单 Skill 和只读 MCP 工具，执行后还会校验 context 类型与计划意图是否一致。Qwen 不生成最终回答；回答仍由 `MODEL_NAME` 指定的模型完成。分类不可用时明确返回服务错误，最终证券代码、板块和指数仍由行情服务解析验证。
 
 ```env
 # 正式回答模型
@@ -67,7 +75,7 @@ MODEL_NAME=
 # 意图分类模型，ROUTER_MODEL_API_KEY 为空时也会读取 DASHSCOPE_API_KEY
 ROUTER_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ROUTER_MODEL_API_KEY=
-ROUTER_MODEL_NAME=qwen3-8b
+ROUTER_MODEL_NAME=qwen3.7-max
 ROUTER_MODEL_TIMEOUT=5
 ```
 

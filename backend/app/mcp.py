@@ -1,7 +1,10 @@
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from .agent.tools import ResearchTools, TOOL_DEFINITIONS
 from .market.service import MarketService
+
+if TYPE_CHECKING:
+    from .quant.service import QuantService
 
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -11,7 +14,11 @@ def _error(request_id: Any, code: int, message: str) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
-async def handle_mcp_request(market: MarketService, body: Dict[str, Any]) -> Dict[str, Any]:
+async def handle_mcp_request(
+    market: MarketService,
+    body: Dict[str, Any],
+    quant: Optional["QuantService"] = None,
+) -> Dict[str, Any]:
     request_id = body.get("id")
     if body.get("jsonrpc") != "2.0" or not isinstance(body.get("method"), str):
         return _error(request_id, -32600, "Invalid Request")
@@ -37,7 +44,7 @@ async def handle_mcp_request(market: MarketService, body: Dict[str, Any]) -> Dic
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
         if not isinstance(name, str) or not name:
             return _error(request_id, -32602, "tools/call 缺少工具名称")
-        tools = ResearchTools(market)
+        tools = ResearchTools(market, quant)
         try:
             value = await tools.call(name, arguments)
         except KeyError:

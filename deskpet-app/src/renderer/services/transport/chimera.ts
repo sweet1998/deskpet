@@ -99,6 +99,7 @@ export function useChimeraTransport(): DeskpetTransport {
     } else if (event.event === 'research') {
       const prepared = data as unknown as ResearchPrepareResult
       rememberPrepared(requestId, prepared)
+      if (prepared.clarification) chat.showClarificationCard(requestId, prepared.clarification)
       const marketCard = marketCardFromResearch(prepared)
       if (marketCard) chat.showMarketCard(requestId, marketCard)
     } else if (event.event === 'delta' || event.event === 'result') {
@@ -111,7 +112,12 @@ export function useChimeraTransport(): DeskpetTransport {
     } else if (event.event === 'done') {
       finishReasoning(requestId)
       chat.finishChatStream(requestId)
-      agent.applyState({ requestId, state: 'success', progress: 100, step: '回答完成' })
+      agent.applyState({
+        requestId,
+        state: 'success',
+        progress: 100,
+        step: preparedByRequest.get(requestId)?.clarification ? '等待补充信息' : '回答完成',
+      })
     } else if (event.event === 'error') {
       showRequestError(requestId, roleId, String(data.message || '桌宠后端请求失败'))
     }
@@ -124,6 +130,7 @@ export function useChimeraTransport(): DeskpetTransport {
     image?: { mimeType: 'image/png' | 'image/jpeg' | 'image/webp'; base64: string },
     options?: {
       continuation?: boolean
+      clarificationRound?: number
       history?: Array<{ role: 'user' | 'assistant'; content: string }>
       research?: ResearchPrepareResult
     },
@@ -141,6 +148,7 @@ export function useChimeraTransport(): DeskpetTransport {
         userName: agent.userName,
         memories: agent.memories,
         history,
+        ...(options?.clarificationRound ? { clarificationRound: options.clarificationRound } : {}),
         ...(options?.continuation ? { continuation: true } : {}),
         ...(options?.research ? { research: options.research } : {}),
         ...(image ? { image } : {}),
@@ -378,6 +386,26 @@ export function useChimeraTransport(): DeskpetTransport {
     }
   }
 
+  function completeLocalClarification(
+    requestId: string,
+    roleId: RoleId,
+    prepared: ResearchPrepareResult,
+  ): void {
+    if (!prepared.clarification) return
+    finishReasoning(requestId)
+    rememberPrepared(requestId, prepared)
+    chat.showClarificationCard(requestId, prepared.clarification)
+    if (agent.currentRole === roleId) {
+      agent.applyState({
+        requestId,
+        state: 'success',
+        progress: 100,
+        step: '等待补充信息',
+        interruptible: false,
+      })
+    }
+  }
+
   const nativeTools = createNativeToolTransport({
     agent,
     chat,
@@ -386,14 +414,19 @@ export function useChimeraTransport(): DeskpetTransport {
     showRequestError,
   })
 
-  async function sendRoleText(text: string, requestId: string, roleId: RoleId): Promise<void> {
+  async function sendRoleText(
+    text: string,
+    requestId: string,
+    roleId: RoleId,
+    clarificationRound?: number,
+  ): Promise<void> {
     if (!hasLegalConsent()) {
       showRequestError(requestId, roleId, '请先阅读并同意隐私政策与使用条款。', 'service', false)
       return
     }
     if (await nativeTools.handleIntent(text, requestId, roleId)) return
     if (getAiProvider() === 'backend') {
-      await requestBackend(text, requestId, roleId)
+      await requestBackend(text, requestId, roleId, undefined, { clarificationRound })
       return
     }
     let prepared: ResearchPrepareResult | undefined
@@ -403,6 +436,7 @@ export function useChimeraTransport(): DeskpetTransport {
           text,
           roleId,
           history: roleHistory(requestId, text),
+          ...(clarificationRound ? { clarificationRound } : {}),
         }, async (thought) => {
           if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
           await presentReasoning(requestId, roleId, thought)
@@ -425,7 +459,11 @@ export function useChimeraTransport(): DeskpetTransport {
         return
       }
       if (prepared.scope === 'needs_clarification') {
-        completeLocalReply(requestId, roleId, prepared.reply || '请补充更明确的 A 股研究问题。')
+        if (prepared.clarification) {
+          completeLocalClarification(requestId, roleId, prepared)
+        } else {
+          completeLocalReply(requestId, roleId, prepared.reply || '请重新提出一个包含明确对象和分析目标的问题。')
+        }
         return
       }
       if (prepared.reply) {
@@ -504,10 +542,10 @@ export function useChimeraTransport(): DeskpetTransport {
     connect: () => { if (getAiProvider() === 'maibot') connect() },
     disconnect,
     sendHeartbeat: () => getAiProvider() !== 'maibot' || send('heartbeat'),
-    sendUserText: (text: string, requestId: string) => {
+    sendUserText: (text: string, requestId: string, options) => {
       const roleId = agent.currentRole
       chat.bindRequest(requestId, roleId)
-      void sendRoleText(text, requestId, roleId)
+      void sendRoleText(text, requestId, roleId, options?.clarificationRound)
       return true
     },
     sendContinuation: (requestId: string) => {

@@ -4,7 +4,7 @@ import pytest
 
 from app.agent.service import AgentService
 from app.agent.model_client import ModelOutputTruncatedError, RouteClassificationError
-from app.models import AgentChatRequest, ChatMessage, MarketContextResponse, ResearchPrepareRequest, ResearchPrepareResponse, SecurityContext, StockRouteHint
+from app.models import AgentChatRequest, ChatMessage, ClarificationCard, MarketContextResponse, ResearchPrepareRequest, ResearchPrepareResponse, SecurityContext, StockRouteHint
 
 
 class FakeMarket:
@@ -66,7 +66,7 @@ class RoutingFakeModel(FakeModel):
         super().__init__()
         self.route_inputs = []
 
-    async def classify_stock_intent(self, text, history, current_route=None):
+    async def classify_stock_intent(self, text, history, current_route=None, clarification_round=0):
         self.route_inputs.append((text, history))
         return StockRouteHint(
             scope="in_scope",
@@ -80,7 +80,7 @@ class RoutingFakeModel(FakeModel):
 class OutOfScopeRoutingModel(FakeModel):
     configured = True
 
-    async def classify_stock_intent(self, text, history, current_route=None):
+    async def classify_stock_intent(self, text, history, current_route=None, clarification_round=0):
         return StockRouteHint(
             scope="out_of_scope",
             intent="out_of_scope",
@@ -97,7 +97,7 @@ class TwoStageSectorRoutingModel(FakeModel):
         super().__init__()
         self.route_inputs = []
 
-    async def classify_stock_intent(self, text, history, current_route=None):
+    async def classify_stock_intent(self, text, history, current_route=None, clarification_round=0):
         self.route_inputs.append((text, history))
         if not history:
             return StockRouteHint(
@@ -129,7 +129,7 @@ class ContextualSectorRoutingModel(FakeModel):
         super().__init__()
         self.route_inputs = []
 
-    async def classify_stock_intent(self, text, history, current_route=None):
+    async def classify_stock_intent(self, text, history, current_route=None, clarification_round=0):
         self.route_inputs.append((text, history))
         if not history:
             return StockRouteHint(
@@ -157,14 +157,14 @@ class ContextualSectorRoutingModel(FakeModel):
 class FailingRoutingModel(FakeModel):
     configured = True
 
-    async def classify_stock_intent(self, text, history, current_route=None):
+    async def classify_stock_intent(self, text, history, current_route=None, clarification_round=0):
         raise RouteClassificationError("router unavailable")
 
 
 class FailingContextualRoutingModel(FakeModel):
     configured = True
 
-    async def classify_stock_intent(self, text, history, current_route=None):
+    async def classify_stock_intent(self, text, history, current_route=None, clarification_round=0):
         if not history:
             return StockRouteHint(
                 scope="needs_clarification",
@@ -177,6 +177,64 @@ class FailingContextualRoutingModel(FakeModel):
                 confidence=0.91,
             )
         raise RouteClassificationError("context router unavailable")
+
+
+def test_clarification_policy_allows_two_rounds_then_stops():
+    prepared = ResearchPrepareResponse(
+        scope="needs_clarification",
+        intent="clarification",
+        reply="请选择具体股票。",
+        clarification=ClarificationCard(question="请选择具体股票。"),
+    )
+
+    first = AgentService._apply_clarification_policy(prepared, 0)
+    second = AgentService._apply_clarification_policy(prepared, 1)
+    exhausted = AgentService._apply_clarification_policy(prepared, 2)
+
+    assert first.clarification is not None and first.clarification.round == 1
+    assert second.clarification is not None and second.clarification.round == 2
+    assert exhausted.clarification is None
+    assert "两轮澄清上限" in str(exhausted.reply)
+
+
+def test_new_topic_resets_previous_clarification_rounds():
+    request = ResearchPrepareRequest(
+        text="换个问题，分析华能",
+        clarificationRound=2,
+        routeHint=StockRouteHint(
+            scope="needs_clarification",
+            intent="security_trend",
+            relation="new_topic",
+            targetKind="security",
+            confidence=0.9,
+        ),
+    )
+
+    assert AgentService._effective_clarification_round(request) == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_stream_emits_clarification_card_without_duplicate_text_result():
+    service = AgentService(FakeMarket(), FakeModel())
+
+    async def clarification_events(request):
+        yield "result", ResearchPrepareResponse(
+            scope="needs_clarification",
+            intent="clarification",
+            reply="请选择要分析的股票。",
+            clarification=ClarificationCard(question="请选择要分析的股票。"),
+        )
+
+    service._prepare_events = clarification_events
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-clarification-card",
+        roleId="stock_expert",
+        text="分析华能",
+    ))]
+
+    assert any("event: research" in event and '"clarification"' in event for event in events)
+    assert not any("event: result" in event for event in events)
+    assert any("event: done" in event for event in events)
 
 
 @pytest.mark.asyncio

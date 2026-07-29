@@ -37,6 +37,46 @@
         :src="`data:image/png;base64,${message.base64}`"
         alt="AI 表情"
       />
+      <template v-else-if="message.type === 'clarification'">
+        <div class="clarification-header">
+          <span><CircleHelp :size="15" /> 需要补充信息</span>
+          <small>第 {{ message.card.round }}/{{ message.card.maxRounds }} 轮</small>
+        </div>
+        <p class="clarification-question">{{ message.card.question }}</p>
+        <div v-if="message.card.options.length" class="clarification-options">
+          <button
+            v-for="option in message.card.options"
+            :key="option.id"
+            type="button"
+            :class="{ selected: message.selectedValue === option.value }"
+            :disabled="message.answered || workspaceBusy"
+            @click="submitClarification(message.id, option.value)"
+          >
+            <span>{{ option.label }}</span>
+            <small v-if="option.description">{{ option.description }}</small>
+          </button>
+        </div>
+        <div v-if="message.card.allowFreeText && !message.answered" class="clarification-input-row">
+          <input
+            v-model="clarificationInputs[message.id]"
+            :placeholder="message.card.inputPlaceholder"
+            :disabled="workspaceBusy"
+            @keydown.enter.prevent="submitClarification(message.id, clarificationInputs[message.id] || '')"
+          />
+          <button
+            type="button"
+            title="提交补充信息"
+            :disabled="workspaceBusy || !clarificationInputs[message.id]?.trim()"
+            @click="submitClarification(message.id, clarificationInputs[message.id] || '')"
+          >
+            <Send :size="14" />
+          </button>
+        </div>
+        <div v-if="message.answered" class="clarification-answer">
+          <Check :size="13" />
+          <span>{{ message.selectedValue }}</span>
+        </div>
+      </template>
       <template v-else-if="message.type === 'market'">
         <div class="market-card-header">
           <span>{{ message.card.title }}</span>
@@ -45,11 +85,19 @@
         <div class="market-rows">
           <div v-for="item in message.card.items" :key="`${item.code}-${item.name}`" class="market-row">
             <div class="market-name">
-              <strong>{{ item.name }}</strong>
-              <code v-if="item.code">{{ item.code }}</code>
+              <div><strong>{{ item.name }}</strong><code v-if="item.code">{{ item.code }}</code></div>
+              <small v-if="item.score != null" class="factor-summary">
+                #{{ item.rank ?? '-' }} · 综合 {{ item.score.toFixed(2) }} · 覆盖 {{ formatCoverage(item.coverage) }} · {{ confidenceLabel(item.confidence) }}
+              </small>
             </div>
             <span class="market-price">{{ formatPrice(item.price) }}</span>
             <span :class="['market-change', changeClass(item.changePercent)]">{{ formatChange(item.changePercent) }}</span>
+          </div>
+        </div>
+        <div v-if="message.card.metrics?.length" class="quant-metrics">
+          <div v-for="metric in message.card.metrics" :key="metric.label">
+            <small>{{ metric.label }}</small>
+            <strong>{{ metric.value }}</strong>
           </div>
         </div>
         <div v-if="message.card.source || message.card.note" class="market-meta">
@@ -136,11 +184,13 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  CircleHelp,
   Copy,
   FileText,
   MessageCircleMore,
   Reply,
   RotateCcw,
+  Send,
 } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore, type ChatReplyReference } from '@/stores/chat'
@@ -155,12 +205,14 @@ const emit = defineEmits<{
   retry: [requestId: string]
   'continue-generation': [requestId: string]
   'continue-question': [reference: ChatReplyReference]
+  clarify: [payload: { messageId: string; value: string }]
 }>()
 
 const agent = useAgentStore()
 const chat = useChatStore()
 const listRef = ref<HTMLElement>()
 const copiedMessageId = ref('')
+const clarificationInputs = ref<Record<string, string>>({})
 const answerTextStarted = computed(() => chat.messages.some((message) => (
   message.type === 'text'
   && message.role === 'assistant'
@@ -225,6 +277,12 @@ function continueQuestion(messageId: string, text: string): void {
   })
 }
 
+function submitClarification(messageId: string, value: string): void {
+  const normalized = value.trim()
+  if (!normalized) return
+  emit('clarify', { messageId, value: normalized })
+}
+
 function formatPrice(value: number | null): string {
   return value == null ? '--' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value)
 }
@@ -247,6 +305,14 @@ function formatMarketTime(value: string): string {
   })
 }
 
+function formatCoverage(value?: number): string {
+  return value == null ? '--' : `${(value * 100).toFixed(0)}%`
+}
+
+function confidenceLabel(value?: string): string {
+  return ({ high: '高置信', medium: '中置信', low: '低置信' } as Record<string, string>)[value || ''] || '置信度未知'
+}
+
 defineExpose({ isNearBottom, scrollToBottom })
 </script>
 
@@ -264,6 +330,24 @@ defineExpose({ isNearBottom, scrollToBottom })
 .message.assistant.followup-target { box-shadow: 0 0 0 2px rgba(85,119,167,.38); }
 .message.thought { width: 100%; max-width: 100%; box-sizing: border-box; padding: 2px 0 8px; color: #8791a2; background: transparent; border-bottom: 1px solid #e4e7ec; }
 .message.status { width: 100%; max-width: 100%; box-sizing: border-box; color: #7f3f49; background: #fff4f3; border: 1px solid #efcfcc; }
+.message.clarification { width: 100%; max-width: 100%; box-sizing: border-box; padding: 10px; color: #293548; background: #f7f8fa; border: 1px solid #d9dfe7; white-space: normal; }
+.clarification-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.clarification-header > span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; }
+.clarification-header small { color: #7f8998; font-size: 10px; }
+.clarification-question { margin: 8px 0; color: #3d4a5d; font-size: 12px; line-height: 1.55; }
+.clarification-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.clarification-options button { min-width: 0; min-height: 38px; padding: 6px 8px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; border: 1px solid #cfd7e2; border-radius: 5px; color: #34445b; background: #fff; cursor: pointer; text-align: left; }
+.clarification-options button:hover:not(:disabled) { border-color: #6f8fbc; background: #f0f4f9; }
+.clarification-options button.selected { border-color: #5577a7; background: #e8eef6; }
+.clarification-options button:disabled { cursor: default; opacity: .7; }
+.clarification-options span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.clarification-options small { max-width: 100%; overflow: hidden; color: #7d8898; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.clarification-input-row { margin-top: 7px; display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 5px; }
+.clarification-input-row input { min-width: 0; height: 30px; box-sizing: border-box; padding: 0 8px; border: 1px solid #cfd7e2; border-radius: 5px; color: #293548; background: #fff; font-size: 11px; outline: none; }
+.clarification-input-row input:focus { border-color: #6f8fbc; box-shadow: 0 0 0 2px rgba(111,143,188,.16); }
+.clarification-input-row button { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 5px; color: #fff; background: #5577a7; cursor: pointer; }
+.clarification-input-row button:disabled { opacity: .4; cursor: default; }
+.clarification-answer { margin-top: 7px; padding-top: 7px; display: flex; align-items: center; gap: 5px; border-top: 1px solid #e1e5eb; color: #55705f; font-size: 11px; }
 .status-message-copy { display: flex; align-items: flex-start; gap: 7px; }
 .status-message-copy svg { flex: none; margin-top: 1px; }
 .retry-button { margin: 7px 0 0 22px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid #dbaeb0; border-radius: 5px; color: #914550; background: #fffafa; cursor: pointer; }
@@ -313,15 +397,21 @@ defineExpose({ isNearBottom, scrollToBottom })
 .market-rows { margin-top: 7px; display: flex; flex-direction: column; }
 .market-row { min-height: 31px; display: grid; grid-template-columns: minmax(0, 1fr) 66px 58px; align-items: center; gap: 6px; border-top: 1px solid #e4e7ec; }
 .market-row:first-child { border-top: 0; }
-.market-name { min-width: 0; display: flex; align-items: baseline; gap: 5px; overflow: hidden; }
+.market-name { min-width: 0; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.market-name > div { min-width: 0; display: flex; align-items: baseline; gap: 5px; overflow: hidden; }
 .market-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .market-name code { flex: none; color: #7e8999; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.factor-summary { overflow: hidden; color: #6f7e92; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .market-price, .market-change { text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
 .market-price { color: #34445b; font-weight: 650; }
 .market-change.up { color: #c1474e; }
 .market-change.down { color: #278064; }
 .market-change.flat { color: #7c8796; }
 .market-meta { padding-top: 5px; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid #e4e7ec; color: #7f8998; font-size: 11px; line-height: 1.4; }
+.quant-metrics { margin-top: 7px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border: 1px solid #dfe4eb; background: #dfe4eb; }
+.quant-metrics > div { min-width: 0; padding: 7px; display: flex; flex-direction: column; gap: 2px; background: #f8f9fb; }
+.quant-metrics small { color: #7c8797; font-size: 9px; }
+.quant-metrics strong { overflow: hidden; color: #34445b; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .empty { margin: auto; color: #8791a2; font-size: 12px; }
 button:focus-visible { outline: 2px solid #6f8fbc; outline-offset: 2px; }
 </style>

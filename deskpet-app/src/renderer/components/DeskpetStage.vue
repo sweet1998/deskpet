@@ -27,6 +27,7 @@
       @interrupt="interruptAgent"
       @retry="retryRequest"
       @continue-generation="continueGeneration"
+      @clarify="submitClarification"
       @capture-screen="captureCurrentScreen"
       @confirm-screenshot="confirmScreenshot"
       @cancel-screenshot="pendingScreenshot = ''"
@@ -145,6 +146,7 @@ const requestWorkflow = useAgentRequestWorkflow({
 const {
   pendingScreenshot,
   submitUserMessage,
+  submitClarification,
   retryRequest,
   continueGeneration,
   startVoiceInput,

@@ -30,7 +30,12 @@ SKILLS: Dict[str, ResearchSkill] = {
     "stock-screener": ResearchSkill(
         "stock-screener",
         "全市场个股筛选",
-        ("screen_stocks",),
+        ("screen_by_factors", "screen_stocks"),
+    ),
+    "strategy-backtester": ResearchSkill(
+        "strategy-backtester",
+        "多因子策略回测",
+        ("run_strategy_backtest",),
     ),
     "sector-trend-scan": ResearchSkill(
         "sector-trend-scan",
@@ -63,6 +68,7 @@ INTENT_SKILLS: Dict[str, Tuple[str, ...]] = {
     "valuation": ("company-deep-research", "market-snapshot"),
     "comparison": ("stock-comparison", "company-deep-research"),
     "stock_screen": ("stock-screener", "fact-verifier"),
+    "strategy_backtest": ("strategy-backtester", "fact-verifier"),
     "decision": (
         "market-snapshot",
         "company-deep-research",

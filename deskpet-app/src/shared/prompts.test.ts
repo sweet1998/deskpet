@@ -13,7 +13,10 @@ import {
 describe('shared prompt contract', () => {
   it('provides routing and completion instructions from one contract', () => {
     expect(PROMPT_CONTRACT_VERSION).toBe(contract.version)
-    expect(STOCK_ROUTE_SYSTEM_PROMPT).toBe(contract.stockRouter.systemPrompt)
+    expect(STOCK_ROUTE_SYSTEM_PROMPT).toBe([
+      contract.stockRouter.systemPrompt,
+      contract.stockClarificationRouting,
+    ].join('\n'))
     expect(COMPLETION_MARKER).toBe(contract.completion.marker)
     expect(COMPLETION_INSTRUCTION).toContain(COMPLETION_MARKER)
     expect(COMPLETION_INSTRUCTION).toContain('回答必须完整表述')

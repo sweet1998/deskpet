@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
 from ..market.service import MarketService
-from ..models import AgentChatRequest, ResearchPrepareRequest, ResearchPrepareResponse
+from ..models import AgentChatRequest, ClarificationCard, ResearchPrepareRequest, ResearchPrepareResponse
 from ..prompts import (
     build_current_date_prompt,
     build_research_prompt,
@@ -17,6 +17,7 @@ from ..research import (
     research_context_unavailable,
     starts_new_topic,
 )
+from ..quant.service import QuantService
 from ..roles import get_role
 from .model_client import ModelOutputTruncatedError, OpenAICompatibleModel, RouteClassificationError
 from .route_policy import (
@@ -53,9 +54,10 @@ class AgentService:
         market: MarketService,
         model: OpenAICompatibleModel,
         intent_model: Optional[OpenAICompatibleModel] = None,
+        quant: Optional[QuantService] = None,
     ):
         self.market = market
-        self.research = ResearchService(market)
+        self.research = ResearchService(market, quant)
         self.model = model
         self.intent_model = intent_model or model
 
@@ -132,14 +134,20 @@ class AgentService:
             route = request.routeHint
             validation_error = validate_research_result(route, prepared)
             if validation_error:
+                question = f"研究计划与工具结果不一致（{validation_error}），请重新描述当前要分析的对象。"
                 prepared = ResearchPrepareResponse(
                     scope="needs_clarification",
                     intent="clarification",
                     targetKind="none",
-                    reply=f"研究计划与工具结果不一致（{validation_error}），请重新描述当前要分析的对象。",
+                    reply=question,
+                    clarification=ClarificationCard(question=question),
                 )
             else:
                 prepared = prepared.model_copy(update={"plan": build_execution_plan(route)})
+            prepared = self._apply_clarification_policy(
+                prepared,
+                self._effective_clarification_round(request),
+            )
             yield "result", prepared
         finally:
             if not task.done():
@@ -157,7 +165,11 @@ class AgentService:
             })
 
         try:
-            current_route = await self.intent_model.classify_stock_intent(request.text, [])
+            current_route = await self.intent_model.classify_stock_intent(
+                request.text,
+                [],
+                clarification_round=request.clarificationRound,
+            )
         except RouteClassificationError:
             raise
         except Exception as error:
@@ -173,6 +185,7 @@ class AgentService:
                 request.text,
                 request.history[-20:],
                 current_route,
+                clarification_round=request.clarificationRound,
             )
         except Exception as error:
             if route_needs_history(current_route, has_history=True):
@@ -197,6 +210,29 @@ class AgentService:
             reply="语义路由服务当前不可用，无法可靠判断这是新问题还是历史追问。请检查路由模型账户状态后重试。",
         )
 
+    @staticmethod
+    def _apply_clarification_policy(
+        prepared: ResearchPrepareResponse,
+        previous_rounds: int,
+    ) -> ResearchPrepareResponse:
+        if prepared.scope != "needs_clarification" or prepared.clarification is None:
+            return prepared
+        if previous_rounds >= 2:
+            return prepared.model_copy(update={
+                "clarification": None,
+                "reply": "信息仍不足，已达到两轮澄清上限。本次无法可靠执行，请重新提出一个包含明确对象和分析目标的问题。",
+            })
+        return prepared.model_copy(update={
+            "clarification": prepared.clarification.model_copy(update={"round": previous_rounds + 1}),
+        })
+
+    @staticmethod
+    def _effective_clarification_round(request: ResearchPrepareRequest) -> int:
+        route = request.routeHint
+        if route and route.relation in {"standalone", "new_topic"}:
+            return 0
+        return request.clarificationRound
+
     async def prepare_research(self, request: ResearchPrepareRequest) -> ResearchPrepareResponse:
         try:
             routed = await self._with_model_route(request)
@@ -205,13 +241,20 @@ class AgentService:
         prepared = await self.research.prepare(routed)
         validation_error = validate_research_result(routed.routeHint, prepared)
         if validation_error:
-            return ResearchPrepareResponse(
+            question = f"研究计划与工具结果不一致（{validation_error}），请重新描述当前要分析的对象。"
+            prepared = ResearchPrepareResponse(
                 scope="needs_clarification",
                 intent="clarification",
                 targetKind="none",
-                reply=f"研究计划与工具结果不一致（{validation_error}），请重新描述当前要分析的对象。",
+                reply=question,
+                clarification=ClarificationCard(question=question),
             )
-        return prepared.model_copy(update={"plan": build_execution_plan(routed.routeHint)})
+        else:
+            prepared = prepared.model_copy(update={"plan": build_execution_plan(routed.routeHint)})
+        return self._apply_clarification_policy(
+            prepared,
+            self._effective_clarification_round(routed),
+        )
 
     async def stream_prepare(self, request: ResearchPrepareRequest) -> AsyncIterator[str]:
         try:
@@ -266,6 +309,7 @@ class AgentService:
                 text=request.text,
                 roleId=request.roleId,
                 history=request.history[-20:],
+                clarificationRound=request.clarificationRound,
             )):
                 if event == "reasoning":
                     if not executing:
@@ -297,10 +341,11 @@ class AgentService:
         })
 
         if prepared.scope == "needs_clarification":
-            yield sse("result", {
-                "requestId": request.requestId,
-                "text": prepared.reply or "请补充更明确的 A 股研究问题。",
-            })
+            if prepared.clarification is None:
+                yield sse("result", {
+                    "requestId": request.requestId,
+                    "text": prepared.reply or "请重新提出一个包含明确对象和分析目标的问题。",
+                })
             yield sse("done", {"requestId": request.requestId})
             return
 

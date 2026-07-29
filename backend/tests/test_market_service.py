@@ -219,6 +219,40 @@ class TencentValuationProvider(EventScreenProvider):
         }
 
 
+class ProfessionalProvider(FakeProvider):
+    name = "tushare-test"
+    capabilities = (
+        "security_master",
+        "adjusted_daily_kline_from_preclose",
+        "financial_history",
+        "trade_calendar",
+    )
+
+    async def daily_bars(self, code, count):
+        return [{"time": "2026-07-28", "close": 1888}]
+
+    async def company_profile(self, code):
+        return {"industry": "白酒", "listingDate": "2001-08-27"}
+
+    async def financial_snapshot(self, code):
+        return {"reportDate": "2026-03-31", "roe": 30}
+
+    async def financial_history(self, code, limit=12):
+        return [{
+            "reportDate": "2026-03-31",
+            "announcedAt": "2026-04-30",
+            "roe": 30,
+            "sourceRecordId": "tushare:600519.SH:20260331",
+        }]
+
+
+class LowPermissionProfessionalProvider(ProfessionalProvider):
+    capabilities = ("security_master", "adjusted_daily_kline_from_preclose", "trade_calendar")
+
+    async def financial_history(self, code, limit=12):
+        raise AssertionError("无财务权限时不应调用专业财务接口")
+
+
 def test_a_share_code_mapping():
     assert map_symbol("600519") == "SH.600519"
     assert map_symbol("000001") == "SZ.000001"
@@ -243,6 +277,47 @@ async def test_market_context_and_cache():
     assert first.securities[0].dailyBars[0].close == 1480.0
     assert second.status == "ok"
     assert provider.snapshot_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_market_context_routes_history_and_financials_to_professional_provider():
+    service = MarketService(
+        FakeProvider(),
+        TTLCache(),
+        None,
+        None,
+        ProfessionalProvider(),
+    )
+
+    result = await service.context("600519", 120)
+
+    assert result.status == "ok"
+    security = result.securities[0]
+    assert security.price == 1500
+    assert security.dailyBars[0].close == 1888
+    assert security.financial.roe == 30
+    assert security.financialHistory[0].announcedAt == "2026-04-30"
+    assert security.dataSources["snapshot"] == "fake-market"
+    assert security.dataSources["dailyKline"] == "tushare-test"
+    assert security.dataSources["financialHistory"] == "tushare-test"
+
+
+@pytest.mark.asyncio
+async def test_market_context_skips_unavailable_professional_financial_capability():
+    service = MarketService(
+        EventScreenProvider(),
+        TTLCache(),
+        None,
+        None,
+        LowPermissionProfessionalProvider(),
+    )
+
+    result = await service.context("600519", 120)
+
+    assert result.status == "ok"
+    security = result.securities[0]
+    assert security.dataSources["financial"] == "fake-market"
+    assert "financialHistory" not in security.dataSources
 
 
 @pytest.mark.asyncio

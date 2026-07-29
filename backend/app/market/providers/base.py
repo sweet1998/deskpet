@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 class MarketProvider(ABC):
     name = "unknown"
+    capabilities = ()
 
     @abstractmethod
     async def search(self, query: str) -> List[Dict[str, str]]:
@@ -22,6 +23,9 @@ class MarketProvider(ABC):
 
     async def financial_snapshot(self, code: str) -> Dict[str, Any]:
         return {}
+
+    async def financial_history(self, code: str, limit: int = 12) -> List[Dict[str, Any]]:
+        return []
 
     async def security_news(self, code: str, limit: int) -> List[Dict[str, Any]]:
         return []

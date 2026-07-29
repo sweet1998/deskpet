@@ -71,6 +71,30 @@ describe('marketCardFromResearch', () => {
     expect(result?.items[0]).toMatchObject({ code: '600519', name: '贵州茅台', price: 1500 })
   })
 
+  it('shows factor coverage and backtest metrics', () => {
+    const factors = marketCardFromResearch({
+      scope: 'in_scope', intent: 'stock_screen', requiresResearch: true,
+      targetKind: 'market', targets: [], thoughts: [],
+      context: {
+        kind: 'stock_screen', engine: 'multi_factor', asOf: '2026-07-28',
+        stocks: [{ code: 'SH.600519', name: '贵州茅台', price: 1500, score: 82, rank: 1, coverage: 0.8, confidence: 'high' }],
+      },
+    })
+    const backtest = marketCardFromResearch({
+      scope: 'in_scope', intent: 'strategy_backtest', requiresResearch: true,
+      targetKind: 'market', targets: [], thoughts: [],
+      context: {
+        kind: 'strategy_backtest', status: 'ok', startDate: '2025-01-01', endDate: '2026-07-28',
+        result: { totalReturn: 12.5, benchmarkReturn: 8, maxDrawdown: -6, sharpe: 1.2, averageTurnover: 25 },
+        parameters: { signalTiming: '前一交易日收盘生成信号，下一交易日开盘执行' },
+      },
+    })
+
+    expect(factors?.title).toBe('多因子筛选结果')
+    expect(factors?.items[0]).toMatchObject({ score: 82, rank: 1, coverage: 0.8, confidence: 'high' })
+    expect(backtest?.metrics?.map((item) => item.label)).toContain('最大回撤')
+  })
+
   it('surfaces closed-market and stale-data state', () => {
     const closed = marketCardFromResearch({
       scope: 'in_scope', intent: 'index', requiresResearch: false, targetKind: 'index', targets: [], thoughts: [],

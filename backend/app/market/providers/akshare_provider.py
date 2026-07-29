@@ -337,7 +337,7 @@ class AkshareProvider(MarketProvider):
             "floatMarketCap": _number(values.get("流通市值")),
         }
 
-    async def financial_snapshot(self, code: str) -> Dict[str, Any]:
+    async def financial_history(self, code: str, limit: int = 12) -> List[Dict[str, Any]]:
         market, symbol = code.split(".", 1)
         frame = await self._call(
             self.ak.stock_financial_analysis_indicator_em,
@@ -347,20 +347,37 @@ class AkshareProvider(MarketProvider):
         rows = _records(frame)
         if not rows:
             raise RuntimeError(f"AKShare 没有返回 {code} 的财务指标")
-        row = max(rows, key=lambda item: _date_text(item.get("REPORT_DATE")) or "")
-        return {
-            "reportDate": _date_text(row.get("REPORT_DATE")),
-            "eps": _number(row.get("EPSJB")),
-            "revenue": _number(row.get("TOTALOPERATEREVE")),
-            "revenueYoY": _number(row.get("TOTALOPERATEREVETZ")),
-            "netProfit": _number(row.get("PARENTNETPROFIT")),
-            "netProfitYoY": _number(row.get("PARENTNETPROFITTZ")),
-            "roe": _number(row.get("ROEJQ")),
-            "grossMargin": _number(row.get("XSMLL")),
-            "netMargin": _number(row.get("XSJLL")),
-            "debtRatio": _number(row.get("ZCFZL")),
-            "operatingCashFlowPerShare": _number(row.get("MGJYXJJE")),
-        }
+        output_by_period = {}
+        for row in rows:
+            report_date = _date_text(row.get("REPORT_DATE"))
+            if not report_date:
+                continue
+            output_by_period[report_date] = {
+                "reportDate": report_date,
+                "announcedAt": _date_text(row.get("NOTICE_DATE") or row.get("UPDATE_DATE")),
+                "eps": _number(row.get("EPSJB")),
+                "revenue": _number(row.get("TOTALOPERATEREVE")),
+                "revenueYoY": _number(row.get("TOTALOPERATEREVETZ")),
+                "netProfit": _number(row.get("PARENTNETPROFIT")),
+                "netProfitYoY": _number(row.get("PARENTNETPROFITTZ")),
+                "roe": _number(row.get("ROEJQ")),
+                "grossMargin": _number(row.get("XSMLL")),
+                "netMargin": _number(row.get("XSJLL")),
+                "debtRatio": _number(row.get("ZCFZL")),
+                "operatingCashFlowPerShare": _number(row.get("MGJYXJJE")),
+                "sourceRecordId": f"eastmoney:{market}.{symbol}:{report_date}",
+            }
+        return sorted(
+            output_by_period.values(),
+            key=lambda item: item["reportDate"],
+            reverse=True,
+        )[:max(1, min(20, limit))]
+
+    async def financial_snapshot(self, code: str) -> Dict[str, Any]:
+        rows = await self.financial_history(code, 1)
+        if not rows:
+            raise RuntimeError(f"AKShare 没有返回 {code} 的财务指标")
+        return rows[0]
 
     async def security_news(self, code: str, limit: int) -> List[Dict[str, Any]]:
         function = getattr(self.ak, "stock_news_em", None)

@@ -157,7 +157,7 @@ async def test_qwen_router_disables_thinking_and_uses_router_model():
     model = OpenAICompatibleModel(
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "secret",
-        "qwen3-8b",
+        "qwen3.7-max",
         client=client,
         route_extra_body={"enable_thinking": False},
     )
@@ -180,7 +180,7 @@ async def test_qwen_router_disables_thinking_and_uses_router_model():
 
     assert route is not None
     assert route.intent == "sector"
-    assert requests[0]["model"] == "qwen3-8b"
+    assert requests[0]["model"] == "qwen3.7-max"
     assert requests[0]["enable_thinking"] is False
     route_input = json.loads(requests[0]["messages"][1]["content"])
     assert route_input["currentRoute"]["intent"] == "security_trend"
@@ -188,7 +188,10 @@ async def test_qwen_router_disables_thinking_and_uses_router_model():
 
 @pytest.mark.asyncio
 async def test_current_stage_preserves_semantic_intent_when_history_is_required():
+    requests = []
+
     def handler(request):
+        requests.append(json.loads(request.content))
         return httpx.Response(200, json={
             "choices": [{"message": {"content": json.dumps({
                 "scope": "needs_clarification",
@@ -204,9 +207,13 @@ async def test_current_stage_preserves_semantic_intent_when_history_is_required(
         })
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3-8b", client=client)
+    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3.7-max", client=client)
     try:
-        route = await model.classify_stock_intent("它最近的趋势怎么样", [])
+        route = await model.classify_stock_intent(
+            "它最近的趋势怎么样",
+            [],
+            clarification_round=1,
+        )
     finally:
         await client.aclose()
 
@@ -216,6 +223,8 @@ async def test_current_stage_preserves_semantic_intent_when_history_is_required(
     assert route.targetKind == "security"
     assert route.requestedData == ["quote", "history"]
     assert route.requiresResearch is True
+    route_input = json.loads(requests[0]["messages"][1]["content"])
+    assert route_input["clarificationRound"] == 1
 
 
 @pytest.mark.asyncio
@@ -234,7 +243,7 @@ async def test_model_normalizes_inconsistent_out_of_scope_intent():
         })
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3-8b", client=client)
+    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3.7-max", client=client)
     try:
         route = await model.classify_stock_intent("你能告诉我怎么去北京吗", [])
     finally:
@@ -251,7 +260,7 @@ async def test_router_http_failure_is_not_silently_treated_as_no_route():
     client = httpx.AsyncClient(transport=httpx.MockTransport(
         lambda request: httpx.Response(400, json={"error": {"code": "Arrearage"}}),
     ))
-    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3-8b", client=client)
+    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3.7-max", client=client)
     try:
         with pytest.raises(RouteClassificationError, match="HTTP 400"):
             await model.classify_stock_intent("分析板块趋势", [])

@@ -13,6 +13,10 @@ def _csv(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -20,6 +24,11 @@ class Settings:
     cors_origins: List[str]
     market_provider: str
     market_fallback_provider: Optional[str]
+    professional_data_provider: Optional[str]
+    tushare_token: str
+    tushare_financial_enabled: bool
+    official_announcement_provider: Optional[str]
+    quant_db_path: Optional[str]
     market_request_timeout: float
     redis_url: Optional[str]
     market_cache_path: Optional[str]
@@ -45,6 +54,17 @@ class Settings:
             )),
             market_provider=os.getenv("MARKET_PROVIDER", "akshare"),
             market_fallback_provider=os.getenv("MARKET_FALLBACK_PROVIDER", "tencent") or None,
+            professional_data_provider=(
+                os.getenv("PROFESSIONAL_DATA_PROVIDER")
+                or ("tushare" if os.getenv("TUSHARE_TOKEN") else "")
+                or None
+            ),
+            tushare_token=os.getenv("TUSHARE_TOKEN", ""),
+            tushare_financial_enabled=_bool(os.getenv("TUSHARE_FINANCIAL_ENABLED", "false")),
+            official_announcement_provider=(
+                os.getenv("OFFICIAL_ANNOUNCEMENT_PROVIDER", "cninfo") or None
+            ),
+            quant_db_path=os.getenv("QUANT_DB_PATH") or None,
             market_request_timeout=float(os.getenv("MARKET_REQUEST_TIMEOUT", "8")),
             redis_url=os.getenv("REDIS_URL") or None,
             market_cache_path=os.getenv("MARKET_CACHE_PATH") or None,
@@ -64,7 +84,7 @@ class Settings:
                 os.getenv("ROUTER_MODEL_API_KEY")
                 or os.getenv("DASHSCOPE_API_KEY", "")
             ),
-            router_model_name=os.getenv("ROUTER_MODEL_NAME", "qwen3-8b"),
+            router_model_name=os.getenv("ROUTER_MODEL_NAME", "qwen3.7-max"),
             router_model_timeout=float(os.getenv("ROUTER_MODEL_TIMEOUT", "5")),
             rate_limit_per_minute=max(1, int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))),
         )

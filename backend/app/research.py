@@ -1,16 +1,22 @@
 import asyncio
+from datetime import date, timedelta
 import re
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .agent.skills import skills_for_intent
 from .agent.tools import ResearchTools
 from .market.service import CODE_PATTERN, MarketService, search_terms
 from .models import (
+    ClarificationCard,
+    ClarificationOption,
     ResearchPrepareRequest,
     ResearchPrepareResponse,
     ResearchTarget,
     StockIntent,
 )
+
+if TYPE_CHECKING:
+    from .quant.service import QuantService
 
 
 CLARIFY_MESSAGE = "请补充具体的六位股票代码、股票名称、板块或指数名称。"
@@ -278,13 +284,15 @@ def _is_stock_screen_query(text: str) -> bool:
 def _stock_screen_style(text: str) -> str:
     if re.search(r"(?:今天|今日|当日|当前|盘中|收盘).*(?:行情|盘面)|(?:行情|盘面).*(?:推荐|筛选|选股)", text):
         return "momentum"
-    for keyword, style in (
-        ("高质量", "quality"), ("质量", "quality"), ("成长", "growth"),
-        ("低估", "value"), ("价值", "value"), ("动量", "momentum"), ("强势", "momentum"),
-    ):
-        if keyword in text:
-            return style
-    return "balanced"
+    matched = {
+        style for style, pattern in {
+            "quality": r"质量|盈利能力|现金流",
+            "growth": r"成长|增速",
+            "value": r"估值|低估|价值|市盈率|市净率",
+            "momentum": r"动量|趋势|强势",
+        }.items() if re.search(pattern, text)
+    }
+    return next(iter(matched)) if len(matched) == 1 else "balanced"
 
 
 def _research_plan(intent: StockIntent, text: str, context: Dict[str, Any]) -> List[str]:
@@ -302,6 +310,8 @@ def _research_plan(intent: StockIntent, text: str, context: Dict[str, Any]) -> L
             focus = "先建立合格候选池，再按本次筛选偏好比较质量、成长、估值、动量和风险"
         else:
             focus = "先建立全市场候选池，再验证排序依据、数据缺口和主要风险"
+    elif intent == "strategy_backtest":
+        focus = "使用前一交易日信号、下一交易日开盘执行，计入成本并核对收益、回撤、夏普和换手率"
     elif intent == "decision":
         focus = "围绕是否可操作，核对支持证据、反证、主要风险、触发条件和失效条件"
     elif intent == "security_news":
@@ -340,7 +350,7 @@ def _requires_research(intent: StockIntent, text: str) -> bool:
         return _contains(text, RESEARCH_DEPTH_KEYWORDS)
     return intent in {
         "security_trend", "security_news", "fundamental", "valuation", "comparison", "stock_screen",
-        "decision", "sector", "sector_scan", "market",
+        "decision", "sector", "sector_scan", "market", "strategy_backtest",
     }
 
 
@@ -407,9 +417,10 @@ def _warning_note(value: Any) -> str:
 
 
 class ResearchService:
-    def __init__(self, market: MarketService):
+    def __init__(self, market: MarketService, quant: Optional["QuantService"] = None):
         self.market = market
-        self.tools = ResearchTools(market)
+        self.quant = quant
+        self.tools = ResearchTools(market, quant)
 
     @staticmethod
     async def _report(progress: Optional[ProgressCallback], text: str) -> None:
@@ -480,13 +491,23 @@ class ResearchService:
         )
 
     @staticmethod
-    def _clarification(reply: str = CLARIFY_MESSAGE) -> ResearchPrepareResponse:
+    def _clarification(
+        reply: str = CLARIFY_MESSAGE,
+        options: Optional[List[ClarificationOption]] = None,
+        input_placeholder: str = "补充股票、板块、指数或分析条件",
+        interactive: bool = True,
+    ) -> ResearchPrepareResponse:
         return ResearchPrepareResponse(
             scope="needs_clarification",
             intent="clarification",
             requiresResearch=False,
             targetKind="none",
             reply=reply,
+            clarification=(ClarificationCard(
+                question=reply,
+                options=options or [],
+                inputPlaceholder=input_placeholder,
+            ) if interactive else None),
         )
 
     @staticmethod
@@ -591,13 +612,28 @@ class ResearchService:
             }.get(str(context.get("style") or "balanced"))
             if style_note:
                 records.append(style_note)
-            records.append(
-                f"全市场 {criteria.get('universeCount', 0)} 只股票中，"
-                f"{criteria.get('eligibleCount', 0)} 只通过基础条件，"
-                f"{criteria.get('enrichedCount', 0)} 只完成财务与趋势评分"
-            )
+            if context.get("engine") == "multi_factor":
+                records.append(
+                    f"第二阶段多因子引擎已生效：使用本地 DuckDB 的 {context.get('asOf') or '最近'} 数据截面，"
+                    f"因子版本 {context.get('factorVersion') or '未知'}"
+                )
+                records.append(
+                    f"全市场因子计算后共有 {context.get('universeCount', 0)} 只股票达到覆盖率门槛；"
+                    f"Point-in-time={bool(criteria.get('pointInTime'))}，行业中性化={bool(criteria.get('industryNeutralized'))}"
+                )
+            else:
+                records.append(
+                    f"当前使用实时快照降级链路：全市场 {criteria.get('universeCount', 0)} 只股票中，"
+                    f"{criteria.get('eligibleCount', 0)} 只通过基础条件，"
+                    f"{criteria.get('enrichedCount', 0)} 只完成财务与趋势评分"
+                )
             for stock in (context.get("stocks") or [])[:5]:
                 breakdown = stock.get("scoreBreakdown") or {}
+                coverage = _number((stock.get("coverage") or 0) * 100, "%") if stock.get("coverage") is not None else None
+                coverage_note = (
+                    f"，覆盖率 {coverage}，置信度 {stock.get('confidence')}"
+                    if coverage else ""
+                )
                 records.append(
                     f"#{stock.get('rank', '-')} {stock.get('name') or stock.get('code')}："
                     f"系统评分 {_number(stock.get('score')) or '缺失'}，"
@@ -605,7 +641,25 @@ class ResearchService:
                     f"成长 {_number(breakdown.get('growth')) or '缺失'}，"
                     f"估值 {_number(breakdown.get('value')) or '缺失'}，"
                     f"动量 {_number(breakdown.get('momentum')) or '缺失'}"
+                    f"{coverage_note}"
                 )
+        elif intent == "strategy_backtest":
+            result = context.get("result") or {}
+            parameters = context.get("parameters") or {}
+            records.append(
+                f"回测区间 {context.get('startDate') or '未知'} 至 {context.get('endDate') or '未知'}，"
+                f"因子版本 {context.get('factorVersion') or '未知'}"
+            )
+            records.append(
+                f"执行口径：{parameters.get('signalTiming') or '未提供'}；"
+                f"调仓 {result.get('rebalanceCount', 0)} 次，平均换手率 {_number(result.get('averageTurnover'), '%') or '缺失'}"
+            )
+            records.append(
+                f"策略总收益 {_number(result.get('totalReturn'), '%') or '缺失'}，"
+                f"基准收益 {_number(result.get('benchmarkReturn'), '%') or '缺失'}，"
+                f"最大回撤 {_number(result.get('maxDrawdown'), '%') or '缺失'}，"
+                f"夏普比率 {_number(result.get('sharpe')) or '缺失'}"
+            )
         elif intent == "sector_scan":
             criteria = context.get("criteria") or {}
             sectors = context.get("sectors") or []
@@ -890,13 +944,61 @@ class ResearchService:
                 targets=[ResearchTarget(kind="knowledge", name="上一条回答")],
             )
 
+        if route_intent == "strategy_backtest":
+            style = route.factorStyle if route and route.factorStyle else _stock_screen_style(text)
+            if self.quant is None:
+                context = {
+                    "kind": "strategy_backtest",
+                    "status": "unavailable",
+                    "error": "量化服务未配置",
+                }
+            else:
+                status_result = await self.quant.status()
+                end_text = status_result.get("price_to")
+                start_floor = status_result.get("price_from")
+                if not end_text:
+                    context = {
+                        "kind": "strategy_backtest",
+                        "status": "unavailable",
+                        "error": "本地量化仓库还没有历史行情",
+                    }
+                else:
+                    end_date = date.fromisoformat(str(end_text))
+                    requested_days = route.timeRangeDays if route and route.timeRangeDays else 365
+                    start_date = end_date - timedelta(days=requested_days)
+                    if start_floor:
+                        start_date = max(start_date, date.fromisoformat(str(start_floor)))
+                    await self._report(
+                        progress,
+                        f"正在使用本地 DuckDB 回测 {start_date.isoformat()} 至 {end_date.isoformat()} 的多因子策略",
+                    )
+                    context = compact_research_context(await self.tools.call("run_strategy_backtest", {
+                        "style": style,
+                        "startDate": start_date.isoformat(),
+                        "endDate": end_date.isoformat(),
+                        "topN": 20,
+                        "rebalanceDays": 20,
+                    }))
+            thoughts = self._analysis_records("strategy_backtest", context, text)
+            await self._report_records(progress, thoughts)
+            return ResearchPrepareResponse(
+                scope="in_scope",
+                intent="strategy_backtest",
+                requiresResearch=True,
+                targetKind="market",
+                targets=[ResearchTarget(kind="market", name="A 股多因子策略")],
+                thoughts=thoughts,
+                skills=skills_for_intent("strategy_backtest", True),
+                context=context,
+            )
+
         if route_intent == "stock_screen" or _is_stock_screen_query(reference_query):
-            style = _stock_screen_style(text)
+            style = route.factorStyle if route and route.factorStyle else _stock_screen_style(text)
             style_label = {
                 "balanced": "综合均衡", "quality": "质量优先", "growth": "成长优先",
                 "value": "估值优先", "momentum": "趋势动量",
             }[style]
-            await self._report(progress, f"正在按{style_label}策略读取全市场个股快照并执行基础条件筛选")
+            await self._report(progress, f"正在按{style_label}策略优先调用本地多因子引擎进行全市场筛选")
             context = compact_research_context(
                 await self.market.screen_stocks(style=style, limit=5, progress=progress),
             )
@@ -988,7 +1090,10 @@ class ResearchService:
             )
             sectors = await self.market.resolve_sector_names(list(sector_names))
             if not sectors:
-                return self._clarification(f"暂时无法取得{theme_name}主题的行业分类数据，请稍后重试。")
+                return self._clarification(
+                    f"暂时无法取得{theme_name}主题的行业分类数据，请稍后重试。",
+                    interactive=False,
+                )
             await self._report(
                 progress,
                 f"已识别 {'、'.join(item['name'] for item in sectors)}，开始获取行情和历史趋势",
@@ -1042,7 +1147,19 @@ class ResearchService:
             sector, sector_candidates = await self.market.resolve_sector(reference_query)
         if sector_candidates:
             names = "、".join(item["name"] for item in sector_candidates)
-            return self._clarification(f"找到多个可能的板块：{names}。请补充更准确的板块名称。")
+            return self._clarification(
+                f"找到多个可能的板块：{names}。请选择要分析的板块。",
+                [
+                    ClarificationOption(
+                        id=item["code"],
+                        label=item["name"],
+                        value=item["name"],
+                        description=item["code"],
+                    )
+                    for item in sector_candidates[:6]
+                ],
+                "输入更准确的板块名称",
+            )
         if sector:
             sector_intent = route_intent if route_intent in {"sector", "sector_snapshot"} else None
             return await self._sector_response(text, sector, progress, sector_intent)
@@ -1052,7 +1169,19 @@ class ResearchService:
             securities, candidates, _ = await self.market.resolve_securities(reference_query)
             if candidates:
                 choices = "、".join(f"{item['name']}（{item['code']}）" for item in candidates)
-                return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
+                return self._clarification(
+                    f"找到多个可能的股票：{choices}。请选择要分析的股票。",
+                    [
+                        ClarificationOption(
+                            id=item["code"],
+                            label=item["name"],
+                            value=item["code"].split(".")[-1],
+                            description=item["code"],
+                        )
+                        for item in candidates[:6]
+                    ],
+                    "输入股票名称或六位代码",
+                )
             if securities:
                 intent = route_intent if route_intent in {
                     "security_quote", "security_trend", "security_news", "fundamental", "valuation",
@@ -1082,7 +1211,19 @@ class ResearchService:
         )
         if market_context.status == "ambiguous":
             choices = "、".join(f"{item.name}（{item.code}）" for item in market_context.candidates)
-            return self._clarification(f"找到多个可能的股票：{choices}。请提供六位股票代码确认。")
+            return self._clarification(
+                f"找到多个可能的股票：{choices}。请选择要分析的股票。",
+                [
+                    ClarificationOption(
+                        id=item.code,
+                        label=item.name,
+                        value=item.code.split(".")[-1],
+                        description=item.code,
+                    )
+                    for item in market_context.candidates[:6]
+                ],
+                "输入股票名称或六位代码",
+            )
         if market_context.status in {"ok", "unavailable"}:
             return await self._security_response(text, market_context, progress, likely_intent)
 

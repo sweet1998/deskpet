@@ -37,7 +37,10 @@ CONTINUATION_PROMPT = _render(
     marker=COMPLETION_MARKER,
 )
 COMPLETION_VERIFIER_PROMPT = str(PROMPT_CONTRACT["completion"]["verifierPrompt"])
-STOCK_ROUTE_SYSTEM_PROMPT = str(PROMPT_CONTRACT["stockRouter"]["systemPrompt"])
+STOCK_ROUTE_SYSTEM_PROMPT = "\n".join([
+    str(PROMPT_CONTRACT["stockRouter"]["systemPrompt"]),
+    str(PROMPT_CONTRACT["stockClarificationRouting"]),
+])
 
 
 def build_current_date_prompt(date: str) -> str:

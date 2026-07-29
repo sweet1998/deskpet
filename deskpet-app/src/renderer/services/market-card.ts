@@ -19,10 +19,17 @@ function marketItem(value: unknown, fallbackName = '行情'): ChatMarketItem | n
     name,
     price: numberOrNull(item.price ?? item.latest ?? item.close),
     changePercent: numberOrNull(item.changePercent),
+    ...(numberOrNull(item.score) != null ? { score: numberOrNull(item.score)! } : {}),
+    ...(numberOrNull(item.rank) != null ? { rank: numberOrNull(item.rank)! } : {}),
+    ...(numberOrNull(item.coverage) != null ? { coverage: numberOrNull(item.coverage)! } : {}),
+    ...(typeof item.confidence === 'string' ? { confidence: item.confidence } : {}),
   }
 }
 
 function sourceFrom(value: Record<string, any>): string | undefined {
+  if (value.engine === 'multi_factor' || value.kind === 'factor_screen') {
+    return '数据来源：Tushare Pro · 本地 DuckDB'
+  }
   const source = typeof value.source === 'string'
     ? value.source
     : value.dataSources && typeof value.dataSources.snapshot === 'string'
@@ -106,9 +113,35 @@ export function marketCardFromResearch(prepared: ResearchPrepareResult): ChatMar
     }), context)
   }
 
-  if (context.kind === 'stock_screen') {
+  if (context.kind === 'stock_screen' || context.kind === 'factor_screen') {
     const stocks = Array.isArray(context.stocks) ? context.stocks : []
-    return card('个股筛选结果', stocks.map((stock) => marketItem(stock, '候选股票')), context)
+    return card(
+      context.engine === 'multi_factor' || context.kind === 'factor_screen' ? '多因子筛选结果' : '个股筛选结果',
+      stocks.map((stock) => marketItem(stock, '候选股票')),
+      context,
+    )
+  }
+
+  if (context.kind === 'strategy_backtest' && context.status === 'ok') {
+    const result = context.result && typeof context.result === 'object' ? context.result : {}
+    const metric = (label: string, value: unknown, suffix = '') => ({
+      label,
+      value: typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}${suffix}` : '--',
+    })
+    return {
+      title: '多因子策略回测',
+      items: [],
+      asOf: `${context.startDate || ''} 至 ${context.endDate || ''}`,
+      source: '数据来源：本地 DuckDB · Point-in-time',
+      note: String(context.parameters?.signalTiming || '前一交易日生成信号，下一交易日执行'),
+      metrics: [
+        metric('策略收益', result.totalReturn, '%'),
+        metric('基准收益', result.benchmarkReturn, '%'),
+        metric('最大回撤', result.maxDrawdown, '%'),
+        metric('夏普比率', result.sharpe),
+        metric('平均换手', result.averageTurnover, '%'),
+      ],
+    }
   }
 
   if (context.kind === 'sector') {

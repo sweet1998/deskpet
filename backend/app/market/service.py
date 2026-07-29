@@ -3,13 +3,16 @@ from datetime import datetime, time as clock_time, timedelta
 import math
 import re
 from statistics import stdev
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from ..cache import TTLCache
 from ..models import MarketContextResponse, SecurityContext
 from .providers.base import MarketProvider
 from .providers.eastmoney import map_symbol
+
+if TYPE_CHECKING:
+    from ..quant.service import QuantService
 
 
 CODE_PATTERN = re.compile(r"(?<!\d)(\d{6})(?!\d)")
@@ -103,16 +106,30 @@ def technical_summary(bars: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
 
 
 class MarketService:
+    _PROFESSIONAL_CAPABILITY_BY_METHOD = {
+        "daily_bars": "adjusted_daily_kline_from_preclose",
+        "company_profile": "security_master",
+        "financial_snapshot": "financial_history",
+        "financial_history": "financial_history",
+        "trade_calendar": "trade_calendar",
+    }
+
     def __init__(
         self,
         provider: MarketProvider,
         cache: TTLCache,
         fallback_provider: Optional[MarketProvider] = None,
         universe_fallback_provider: Optional[MarketProvider] = None,
+        professional_provider: Optional[MarketProvider] = None,
+        announcement_provider: Optional[MarketProvider] = None,
+        quant_service: Optional["QuantService"] = None,
     ):
         self.provider = provider
         self.fallback_provider = fallback_provider
         self.universe_fallback_provider = universe_fallback_provider
+        self.professional_provider = professional_provider
+        self.announcement_provider = announcement_provider
+        self.quant_service = quant_service
         self.cache = cache
         self._sector_scan_lock = asyncio.Lock()
         self._sector_scan_progress_listeners: List[ProgressCallback] = []
@@ -132,17 +149,32 @@ class MarketService:
         *args: Any,
     ) -> Tuple[Any, str, Optional[str]]:
         errors = []
-        providers = [self.provider]
-        if self.fallback_provider and self.fallback_provider.name != self.provider.name:
-            providers.append(self.fallback_provider)
+        providers: List[MarketProvider] = []
+        preferred = []
+        required_capability = self._PROFESSIONAL_CAPABILITY_BY_METHOD.get(method)
+        professional_capabilities = getattr(self.professional_provider, "capabilities", ())
+        if required_capability and required_capability in professional_capabilities:
+            preferred.append(self.professional_provider)
+        elif method == "company_announcements":
+            preferred.append(self.announcement_provider)
+        preferred.extend((self.provider, self.fallback_provider))
+        for provider in preferred:
+            if provider and all(item.name != provider.name for item in providers):
+                providers.append(provider)
         for index, provider in enumerate(providers):
             try:
                 value = await getattr(provider, method)(*args)
-                if not self._has_data(value):
+                valid_empty_announcement_result = (
+                    method == "company_announcements"
+                    and provider is self.announcement_provider
+                    and isinstance(value, list)
+                )
+                if not self._has_data(value) and not valid_empty_announcement_result:
                     raise RuntimeError("没有返回数据")
                 warning = None
                 if index:
-                    warning = f"{method} 主数据源失败，已使用 {provider.name} 兜底"
+                    label = "优先数据源" if preferred[0] is not self.provider else "主数据源"
+                    warning = f"{method} {label}失败，已使用 {provider.name} 兜底"
                 return value, provider.name, warning
             except Exception as error:
                 errors.append(f"{provider.name}: {error}")
@@ -202,6 +234,27 @@ class MarketService:
                 errors.append(f"{provider.name}: {error}")
         raise RuntimeError("；".join(errors))
 
+    async def quant_instrument_fallback(self) -> List[Dict[str, Any]]:
+        universe, source, _ = await self._cached_fetch(
+            "market:v3:stock-universe-snapshot",
+            300,
+            self._fetch_stock_universe,
+        )
+        ingested_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+        return [{
+            "instrumentId": str(row["code"]),
+            "symbol": str(row["code"]).split(".", 1)[-1],
+            "name": str(row.get("name") or row["code"]),
+            "industry": row.get("industry"),
+            "market": row.get("market"),
+            "listDate": None,
+            "listStatus": "L",
+            "validFrom": None,
+            "validTo": None,
+            "source": source,
+            "ingestedAt": ingested_at,
+        } for row in universe if row.get("code")]
+
     async def _optional_fetch(
         self,
         key: str,
@@ -218,7 +271,7 @@ class MarketService:
             )
         except Exception as error:
             empty_value: Any = [] if method in {
-                "daily_bars", "security_news", "company_announcements",
+                "daily_bars", "financial_history", "security_news", "company_announcements",
             } else {}
             return empty_value, None, f"{label}获取失败：{str(error)[:240]}"
 
@@ -302,7 +355,7 @@ class MarketService:
             lambda: self._fetch("snapshot", code),
         )
         bars_task = self._optional_fetch(
-            f"market:v2:kline:{code}:{daily_count}",
+            f"market:v3:kline:{code}:{daily_count}",
             900,
             "daily_bars",
             "日 K",
@@ -310,18 +363,19 @@ class MarketService:
             daily_count,
         )
         profile_task = self._optional_fetch(
-            f"market:v2:profile:{code}",
+            f"market:v3:profile:{code}",
             86400,
             "company_profile",
             "公司资料",
             code,
         )
-        financial_task = self._optional_fetch(
-            f"market:v2:financial:{code}",
+        financial_history_task = self._optional_fetch(
+            f"market:v3:financial-history:{code}:12",
             21600,
-            "financial_snapshot",
-            "财务指标",
+            "financial_history",
+            "多期财务指标",
             code,
+            12,
         )
         event_tasks = []
         if include_events:
@@ -348,14 +402,26 @@ class MarketService:
             snapshot_task,
             bars_task,
             profile_task,
-            financial_task,
+            financial_history_task,
             *event_tasks,
         )
-        snapshot_result, bars_result, profile_result, financial_result = results[:4]
+        snapshot_result, bars_result, profile_result, financial_history_result = results[:4]
         snapshot, snapshot_source, snapshot_warning = snapshot_result
         bars, bars_source, bars_warning = bars_result
         profile, profile_source, profile_warning = profile_result
-        financial, financial_source, financial_warning = financial_result
+        financial_history, financial_history_source, financial_history_warning = financial_history_result
+        if financial_history:
+            financial = financial_history[0]
+            financial_source = financial_history_source
+            financial_warning = None
+        else:
+            financial, financial_source, financial_warning = await self._optional_fetch(
+                f"market:v3:financial:{code}",
+                21600,
+                "financial_snapshot",
+                "财务指标",
+                code,
+            )
         news, news_source, news_warning = results[4] if include_events else ([], None, None)
         announcements, announcements_source, announcements_warning = (
             results[5] if include_events else ([], None, None)
@@ -372,6 +438,7 @@ class MarketService:
                     bars_warning,
                     profile_warning,
                     financial_warning,
+                    financial_history_warning,
                     news_warning,
                     announcements_warning,
                 ) if warning
@@ -384,6 +451,7 @@ class MarketService:
                 "dailyKline": bars_source,
                 "profile": profile_source,
                 "financial": financial_source,
+                "financialHistory": financial_history_source,
                 "technical": bars_source,
                 "news": news_source,
                 "announcements": announcements_source,
@@ -394,6 +462,7 @@ class MarketService:
             "dailyBars": bars,
             "profile": profile,
             "financial": financial,
+            "financialHistory": financial_history,
             "technical": technical_summary(bars),
             "news": news,
             "announcements": announcements,
@@ -542,6 +611,42 @@ class MarketService:
         safe_style = style if style in {"balanced", "quality", "growth", "value", "momentum"} else "balanced"
         safe_limit = max(1, min(10, limit))
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        quant_warning = None
+        if self.quant_service is not None:
+            await self._report(progress, "正在检查本地 DuckDB 量化仓库并准备全市场因子截面")
+            try:
+                factor_result = await self.quant_service.screen(safe_style, safe_limit)
+                if factor_result.get("status") == "ok" and factor_result.get("stocks"):
+                    stocks = [{
+                        **stock,
+                        "scoreBreakdown": {
+                            key: stock.get(key)
+                            for key in ("quality", "growth", "value", "momentum", "risk")
+                        },
+                    } for stock in factor_result["stocks"]]
+                    await self._report(
+                        progress,
+                        f"量化因子引擎已完成 {factor_result.get('universeCount', 0)} 只合格股票的全市场排名",
+                    )
+                    criteria = dict(factor_result.get("criteria") or {})
+                    criteria.update({
+                        "universeCount": factor_result.get("universeCount", 0),
+                        "eligibleCount": factor_result.get("universeCount", 0),
+                        "enrichedCount": factor_result.get("universeCount", 0),
+                    })
+                    return {
+                        **factor_result,
+                        "kind": "stock_screen",
+                        "engine": "multi_factor",
+                        "stocks": stocks,
+                        "criteria": criteria,
+                    }
+                quant_warning = str(
+                    factor_result.get("error") or "本地量化仓库暂时没有可用因子截面"
+                )
+            except Exception as error:
+                quant_warning = f"量化因子引擎执行失败：{str(error)[:180]}"
+            await self._report(progress, f"{quant_warning}；本次已明确降级到实时快照筛选")
         try:
             universe, source, source_warning = await self._cached_fetch(
                 "market:v3:stock-universe-snapshot",
@@ -621,10 +726,10 @@ class MarketService:
             async with semaphore:
                 financial_result, bars_result = await asyncio.gather(
                     self._optional_fetch(
-                        f"market:v2:financial:{code}", 21600, "financial_snapshot", "财务指标", code,
+                        f"market:v3:financial:{code}", 21600, "financial_snapshot", "财务指标", code,
                     ),
                     self._optional_fetch(
-                        f"market:v2:kline:{code}:120", 900, "daily_bars", "日 K", code, 120,
+                        f"market:v3:kline:{code}:120", 900, "daily_bars", "日 K", code, 120,
                     ),
                 )
             financial, financial_source, financial_warning = financial_result
@@ -679,7 +784,7 @@ class MarketService:
         stocks = ranked[:safe_limit]
         for rank, row in enumerate(stocks, start=1):
             row["rank"] = rank
-        warnings = [source_warning] if source_warning else []
+        warnings = [item for item in (quant_warning, source_warning) if item]
         valuation_failure_count = sum(1 for row in hydrated if row.get("_valuationSource") is None)
         if valuation_failure_count:
             warnings.append(f"{valuation_failure_count} 个预选候选未取得完整估值快照，已排除")
@@ -689,6 +794,7 @@ class MarketService:
             warnings.append("部分候选缺少财务或历史指标，缺失维度按中性分计入")
         return {
             "kind": "stock_screen",
+            "engine": "snapshot_fallback",
             "status": "ok" if stocks else "unavailable",
             "style": safe_style,
             "asOf": now.isoformat(),
@@ -1288,7 +1394,7 @@ class MarketService:
 
         try:
             dates, source, _ = await self._cached_fetch(
-                "market:v2:trade-calendar",
+                "market:v3:trade-calendar",
                 6 * 60 * 60,
                 lambda: self._fetch("trade_calendar"),
             )
@@ -1360,12 +1466,16 @@ class MarketService:
             return True
 
     async def close(self) -> None:
-        await self.provider.close()
-        if self.fallback_provider and self.fallback_provider is not self.provider:
-            await self.fallback_provider.close()
-        if self.universe_fallback_provider and all(
-            self.universe_fallback_provider is not provider
-            for provider in (self.provider, self.fallback_provider)
+        providers = []
+        for provider in (
+            self.provider,
+            self.fallback_provider,
+            self.universe_fallback_provider,
+            self.professional_provider,
+            self.announcement_provider,
         ):
-            await self.universe_fallback_provider.close()
+            if provider and all(item is not provider for item in providers):
+                providers.append(provider)
+        for provider in providers:
+            await provider.close()
         await self.cache.close()

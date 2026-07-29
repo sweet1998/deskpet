@@ -61,11 +61,13 @@ class OpenAICompatibleModel:
         text: str,
         history: List[ChatMessage],
         current_route: Optional[StockRouteHint] = None,
+        clarification_round: int = 0,
     ) -> Optional[StockRouteHint]:
         if not self.configured:
             return None
         route_input = {
             "routingStage": "contextual" if history else "current",
+            "clarificationRound": max(0, min(2, clarification_round)),
             "text": text.strip()[:4000],
             "history": [
                 {"role": item.role, "content": item.content.strip()[:1200]}

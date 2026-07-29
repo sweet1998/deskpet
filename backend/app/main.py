@@ -10,21 +10,34 @@ from .agent.model_client import OpenAICompatibleModel
 from .agent.service import AgentService
 from .cache import TTLCache
 from .config import settings
-from .market.providers import AkshareProvider, EastmoneyProvider, SinaProvider, TencentProvider
+from .market.providers import (
+    AkshareProvider,
+    CninfoProvider,
+    EastmoneyProvider,
+    SinaProvider,
+    TencentProvider,
+    TushareProvider,
+)
 from .market.service import MarketService
 from .mcp import handle_mcp_request
 from .memory import MemoryRepository
 from .models import (
     AgentChatRequest,
+    FactorComparisonRequest,
+    FactorScreenRequest,
     MarketContextRequest,
     MarketContextResponse,
     MemoryInput,
     MemoryRecord,
+    QuantRefreshRequest,
     ResearchPrepareRequest,
     ResearchPrepareResponse,
     SectorScanRequest,
     StockScreenRequest,
+    StrategyBacktestRequest,
 )
+from .quant.repository import QuantRepository
+from .quant.service import QuantService
 from .rate_limit import SlidingWindowRateLimiter
 
 
@@ -48,12 +61,34 @@ def create_services():
         else None
     )
     universe_fallback = SinaProvider(timeout=max(30, settings.market_request_timeout))
+    professional = None
+    if settings.professional_data_provider == "tushare":
+        professional = TushareProvider(
+            token=settings.tushare_token,
+            timeout=max(15, settings.market_request_timeout),
+            financial_enabled=settings.tushare_financial_enabled,
+        )
+    elif settings.professional_data_provider:
+        raise RuntimeError(f"暂不支持专业数据供应商：{settings.professional_data_provider}")
+    announcement_provider = None
+    if settings.official_announcement_provider == "cninfo":
+        announcement_provider = CninfoProvider(timeout=max(15, settings.market_request_timeout))
+    elif settings.official_announcement_provider:
+        raise RuntimeError(f"暂不支持公告供应商：{settings.official_announcement_provider}")
+    quant = None
+    if isinstance(professional, TushareProvider) and settings.quant_db_path:
+        quant = QuantService(QuantRepository(settings.quant_db_path), professional)
     market = MarketService(
         provider,
         cache,
         fallback,
         universe_fallback,
+        professional,
+        announcement_provider,
+        quant,
     )
+    if quant is not None:
+        quant.instrument_fallback = market.quant_instrument_fallback
     model = OpenAICompatibleModel(
         base_url=settings.model_base_url,
         api_key=settings.model_api_key,
@@ -67,7 +102,7 @@ def create_services():
         timeout=settings.router_model_timeout,
         route_extra_body={"enable_thinking": False},
     )
-    return market, AgentService(market, model, intent_model)
+    return market, quant, AgentService(market, model, intent_model, quant)
 
 
 async def maintain_sector_scan_cache(market: MarketService) -> None:
@@ -82,9 +117,12 @@ async def maintain_sector_scan_cache(market: MarketService) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    market, agent = create_services()
+    market, quant, agent = create_services()
     app.state.market = market
+    app.state.quant = quant
     app.state.agent = agent
+    if quant is not None:
+        await quant.start()
     app.state.memories = MemoryRepository(settings.database_url)
     await app.state.memories.start()
     app.state.rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute)
@@ -128,7 +166,7 @@ async def authorize(
 
 
 @app.get("/health")
-async def health() -> dict:
+async def health(request: Request) -> dict:
     return {
         "ok": True,
         "service": "deskpet-backend",
@@ -136,6 +174,13 @@ async def health() -> dict:
         "marketProvider": settings.market_provider,
         "marketFallbackProvider": settings.market_fallback_provider,
         "stockUniverseFallbackProvider": "akshare-sina",
+        "professionalDataProvider": settings.professional_data_provider,
+        "professionalDataConfigured": bool(
+            settings.professional_data_provider == "tushare" and settings.tushare_token
+        ),
+        "tushareFinancialEnabled": settings.tushare_financial_enabled,
+        "officialAnnouncementProvider": settings.official_announcement_provider,
+        "quantConfigured": request.app.state.quant is not None,
         "modelConfigured": bool(settings.model_api_key and settings.model_name),
         "routerModel": settings.router_model_name,
         "routerModelConfigured": bool(settings.router_model_api_key and settings.router_model_name),
@@ -172,6 +217,77 @@ async def stock_screen(
     return await request.app.state.market.screen_stocks(body.style, body.limit)
 
 
+def _quant_service(request: Request) -> QuantService:
+    quant = request.app.state.quant
+    if quant is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="量化服务未配置，请检查 TUSHARE_TOKEN 和 QUANT_DB_PATH",
+        )
+    return quant
+
+
+@app.get("/v1/quant/status")
+async def quant_status(
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await _quant_service(request).status()
+
+
+@app.post("/v1/quant/refresh")
+async def quant_refresh(
+    body: QuantRefreshRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    try:
+        return await _quant_service(request).refresh(
+            body.startDate,
+            body.endDate,
+            body.includeValuation,
+            refresh_instruments=body.refreshInstruments,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+
+@app.post("/v1/quant/factor-screen")
+async def factor_screen(
+    body: FactorScreenRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await _quant_service(request).screen(body.style, body.limit, body.asOf)
+
+
+@app.post("/v1/quant/factor-compare")
+async def factor_compare(
+    body: FactorComparisonRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    return await _quant_service(request).compare(body.codes, body.style, body.asOf)
+
+
+@app.post("/v1/quant/backtest")
+async def strategy_backtest(
+    body: StrategyBacktestRequest,
+    request: Request,
+    _identity: str = Depends(authorize),
+) -> dict:
+    try:
+        return await _quant_service(request).backtest(
+            body.style,
+            body.startDate,
+            body.endDate,
+            body.topN,
+            body.rebalanceDays,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+
 @app.get("/v1/market/security-events")
 async def security_events(
     query: str,
@@ -189,7 +305,7 @@ async def mcp_endpoint(
     request: Request,
     _identity: str = Depends(authorize),
 ) -> dict:
-    return await handle_mcp_request(request.app.state.market, body)
+    return await handle_mcp_request(request.app.state.market, body, request.app.state.quant)
 
 
 @app.get("/v1/market/calendar")

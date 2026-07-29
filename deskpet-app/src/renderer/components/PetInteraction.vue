@@ -94,6 +94,7 @@
             @retry="$emit('retry', $event)"
             @continue-generation="$emit('continue-generation', $event)"
             @continue-question="continueQuestion"
+            @clarify="$emit('clarify', $event)"
           />
         </section>
         <p v-if="currentProfile.riskNotice" class="risk-notice">{{ currentProfile.riskNotice }}</p>
@@ -213,6 +214,7 @@ const emit = defineEmits<{
   interrupt: []
   retry: [requestId: string]
   'continue-generation': [requestId: string]
+  clarify: [payload: { messageId: string; value: string }]
   'capture-screen': []
   'confirm-screenshot': []
   'cancel-screenshot': []

@@ -14,6 +14,8 @@ describe('stock expert research routing', () => {
     expect(source).toContain('await presentReasoning(requestId, roleId, thought)')
     expect(source).toContain("step: '正在组织回答'")
     expect(source).toContain("prepared.scope === 'needs_clarification'")
+    expect(source).toContain('chat.showClarificationCard(requestId, prepared.clarification)')
+    expect(source).toContain('clarificationRound')
     expect(source).toContain('roleSystemPrompt')
     expect(source).toContain('currentDatePrompt')
     expect(source).toContain('tradingCalendarPrompt')

@@ -64,23 +64,35 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     }, REQUEST_TIMEOUT_MS))
   }
 
-  function submitUserText(text: string, replyTo?: ChatReplyReference): void {
+  function submitUserText(text: string, replyTo?: ChatReplyReference, clarificationMessageId?: string): void {
     const value = text.trim()
     if (!value || agent.interruptible || agent.confirmation || !options.requireLegalConsent()) return
+    const pendingClarification = clarificationMessageId
+      ? chat.messages.find((message) => message.type === 'clarification' && message.id === clarificationMessageId)
+      : chat.getPendingClarification()
+    const clarificationRound = pendingClarification?.type === 'clarification'
+      ? pendingClarification.card.round
+      : undefined
     options.cancelSpeech()
     const requestId = createRequestId()
-    chat.addUserMessage(value, requestId, agent.currentRole, [], replyTo)
+    chat.addUserMessage(value, requestId, agent.currentRole, [], replyTo, 'text', clarificationRound)
     agent.beginRequest(requestId, value)
     agent.taskPanelOpen = false
     agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在理解你的请求', interruptible: true })
     agent.chatOpen = true
     startRequestTimer(requestId)
-    if (!transport.sendUserText(value, requestId)) {
+    if (!transport.sendUserText(value, requestId, { clarificationRound })) {
       clearRequestTimer(requestId)
       chat.finishThought(requestId)
       chat.showStatusMessage(requestId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
       agent.applyState({ requestId, state: 'error', error: '尚未连接到 MaiBot' })
+    } else if (pendingClarification?.type === 'clarification') {
+      chat.answerClarification(pendingClarification.id, value)
     }
+  }
+
+  function submitClarification(payload: { messageId: string; value: string }): void {
+    submitUserText(payload.value, undefined, payload.messageId)
   }
 
   function submitUserMessage(payload: { text: string; attachments: File[]; replyTo?: ChatReplyReference }): void {
@@ -155,7 +167,8 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     agent.chatOpen = true
     agent.applyState({ requestId, state: 'thinking', progress: 10, step: '正在重新生成', interruptible: true })
     startRequestTimer(requestId)
-    if (!transport.sendUserText(text, requestId)) {
+    const clarificationRound = chat.getRequestClarificationRound(requestId)
+    if (!transport.sendUserText(text, requestId, { clarificationRound })) {
       clearRequestTimer(requestId)
       chat.showStatusMessage(requestId, 'AI 服务当前不可用，请检查连接设置后重试。', 'network')
       agent.applyState({ requestId, state: 'error', error: 'AI 服务当前不可用', interruptible: false })
@@ -281,6 +294,7 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
   return {
     pendingScreenshot,
     submitUserMessage,
+    submitClarification,
     submitFiles: attachmentWorkflow.submitUserFiles,
     retryRequest,
     continueGeneration,

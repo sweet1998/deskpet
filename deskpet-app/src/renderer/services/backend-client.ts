@@ -20,6 +20,7 @@ export interface BackendChatInput {
   userName: string
   memories: string[]
   history: Array<{ role: 'user' | 'assistant'; content: string }>
+  clarificationRound?: number
   continuation?: boolean
   research?: ResearchPrepareResult
   image?: {

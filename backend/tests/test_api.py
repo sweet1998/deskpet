@@ -81,9 +81,33 @@ def test_mcp_lists_read_only_research_tools_and_calls_lineage():
     assert initialized.json()["result"]["serverInfo"]["name"] == "a-share-research"
     names = {item["name"] for item in listed.json()["result"]["tools"]}
     assert {"get_company_news", "screen_stocks", "scan_sectors", "get_data_lineage"} <= names
+    assert {
+        "get_factor_snapshot", "screen_by_factors", "compare_factor_profiles",
+        "run_strategy_backtest",
+    } <= names
     lineage = called.json()["result"]["structuredContent"]
     assert lineage["policies"]["readOnly"] is True
     assert lineage["policies"]["newsRequiresSourceId"] is True
+
+
+def test_quant_status_endpoint_uses_running_quant_service():
+    with TestClient(app) as client:
+        original = client.app.state.quant
+        quant = AsyncMock()
+        quant.status.return_value = {
+            "kind": "quant_data_status",
+            "status": "ready",
+            "trading_days": 130,
+        }
+        client.app.state.quant = quant
+        try:
+            response = client.get("/v1/quant/status")
+        finally:
+            client.app.state.quant = original
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    quant.status.assert_awaited_once()
 
 
 def test_mcp_calls_sector_scan_tool(monkeypatch):
@@ -216,3 +240,14 @@ def test_research_prepare_stream_endpoint_returns_reasoning_before_result():
     assert response.text.index("event: reasoning") < response.text.index("event: result")
     assert "识别白酒板块" in response.text
     assert fake.prepare_request.text == "今天白酒行情怎么样"
+
+
+def test_research_prepare_rejects_more_than_two_previous_clarification_rounds():
+    with TestClient(app) as client:
+        response = client.post("/v1/research/prepare", json={
+            "roleId": "stock_expert",
+            "text": "还是不确定",
+            "clarificationRound": 3,
+        })
+
+    assert response.status_code == 422

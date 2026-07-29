@@ -14,6 +14,7 @@ StockIntent = Literal[
     "valuation",
     "comparison",
     "stock_screen",
+    "strategy_backtest",
     "decision",
     "sector_snapshot",
     "sector",
@@ -40,6 +41,8 @@ StockResearchData = Literal[
     "constituents",
     "market_breadth",
     "sector_ranking",
+    "factors",
+    "backtest",
     "data_lineage",
 ]
 
@@ -81,6 +84,33 @@ class StockScreenRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=10)
 
 
+class QuantRefreshRequest(BaseModel):
+    startDate: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    endDate: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    includeValuation: bool = False
+    refreshInstruments: bool = False
+
+
+class FactorScreenRequest(BaseModel):
+    style: Literal["balanced", "quality", "growth", "value", "momentum"] = "balanced"
+    limit: int = Field(default=5, ge=1, le=50)
+    asOf: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class FactorComparisonRequest(BaseModel):
+    codes: List[str] = Field(min_length=1, max_length=10)
+    style: Literal["balanced", "quality", "growth", "value", "momentum"] = "balanced"
+    asOf: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class StrategyBacktestRequest(BaseModel):
+    style: Literal["balanced", "quality", "growth", "value", "momentum"] = "balanced"
+    startDate: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    endDate: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    topN: int = Field(default=20, ge=5, le=100)
+    rebalanceDays: int = Field(default=20, ge=5, le=60)
+
+
 class MarketCandidate(BaseModel):
     code: str
     name: str
@@ -106,6 +136,7 @@ class CompanyProfile(BaseModel):
 
 class FinancialSnapshot(BaseModel):
     reportDate: Optional[str] = None
+    announcedAt: Optional[str] = None
     eps: Optional[float] = None
     revenue: Optional[float] = None
     revenueYoY: Optional[float] = None
@@ -116,6 +147,7 @@ class FinancialSnapshot(BaseModel):
     netMargin: Optional[float] = None
     debtRatio: Optional[float] = None
     operatingCashFlowPerShare: Optional[float] = None
+    sourceRecordId: Optional[str] = None
 
 
 class TechnicalSummary(BaseModel):
@@ -155,6 +187,7 @@ class SecurityContext(MarketCandidate):
     dailyBars: List[DailyBar] = Field(default_factory=list)
     profile: CompanyProfile = Field(default_factory=CompanyProfile)
     financial: FinancialSnapshot = Field(default_factory=FinancialSnapshot)
+    financialHistory: List[FinancialSnapshot] = Field(default_factory=list)
     technical: TechnicalSummary = Field(default_factory=TechnicalSummary)
     news: List[SecurityEvent] = Field(default_factory=list)
     announcements: List[SecurityEvent] = Field(default_factory=list)
@@ -191,7 +224,8 @@ class StockRouteHint(BaseModel):
     targetTerms: List[str] = Field(default_factory=list, max_length=3)
     targetSource: StockRouteTargetSource = "none"
     requestedData: List[StockResearchData] = Field(default_factory=list, max_length=10)
-    timeRangeDays: Optional[int] = Field(default=None, ge=1, le=365)
+    timeRangeDays: Optional[int] = Field(default=None, ge=1, le=3650)
+    factorStyle: Optional[Literal["balanced", "quality", "growth", "value", "momentum"]] = None
     requiresResearch: bool = False
     confidence: float = Field(default=0, ge=0, le=1)
 
@@ -214,11 +248,28 @@ class ResearchExecutionPlan(BaseModel):
     timeRangeDays: Optional[int] = None
 
 
+class ClarificationOption(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=80)
+    value: str = Field(min_length=1, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=160)
+
+
+class ClarificationCard(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    options: List[ClarificationOption] = Field(default_factory=list, max_length=6)
+    allowFreeText: bool = True
+    inputPlaceholder: str = Field(default="补充股票、板块、指数或分析条件", max_length=120)
+    round: int = Field(default=1, ge=1, le=2)
+    maxRounds: Literal[2] = 2
+
+
 class ResearchPrepareRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     roleId: RoleId = "stock_expert"
     history: List[ChatMessage] = Field(default_factory=list, max_length=20)
     routeHint: Optional[StockRouteHint] = None
+    clarificationRound: int = Field(default=0, ge=0, le=2)
 
 
 class ResearchPrepareResponse(BaseModel):
@@ -232,6 +283,7 @@ class ResearchPrepareResponse(BaseModel):
     plan: Optional[ResearchExecutionPlan] = None
     context: Optional[Dict[str, Any]] = None
     reply: Optional[str] = None
+    clarification: Optional[ClarificationCard] = None
 
 
 class AgentImageInput(BaseModel):
@@ -261,6 +313,7 @@ class AgentChatRequest(BaseModel):
     history: List[ChatMessage] = Field(default_factory=list, max_length=20)
     image: Optional[AgentImageInput] = None
     continuation: bool = False
+    clarificationRound: int = Field(default=0, ge=0, le=2)
     research: Optional[ResearchPrepareResponse] = None
 
     @field_validator("memories")

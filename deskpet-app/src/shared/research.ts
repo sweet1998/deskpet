@@ -8,6 +8,7 @@ export type StockIntent =
   | 'valuation'
   | 'comparison'
   | 'stock_screen'
+  | 'strategy_backtest'
   | 'decision'
   | 'sector_snapshot'
   | 'sector'
@@ -34,6 +35,8 @@ export type StockResearchData =
   | 'constituents'
   | 'market_breadth'
   | 'sector_ranking'
+  | 'factors'
+  | 'backtest'
   | 'data_lineage'
 
 export interface ResearchHistoryMessage {
@@ -52,6 +55,7 @@ export interface ResearchPrepareInput {
   roleId: RoleId
   history: ResearchHistoryMessage[]
   routeHint?: StockRouteDecision
+  clarificationRound?: number
 }
 
 export interface StockRouteDecision {
@@ -63,6 +67,7 @@ export interface StockRouteDecision {
   targetSource: StockRouteTargetSource
   requestedData: StockResearchData[]
   timeRangeDays?: number | null
+  factorStyle?: 'balanced' | 'quality' | 'growth' | 'value' | 'momentum' | null
   requiresResearch: boolean
   confidence: number
 }
@@ -96,6 +101,23 @@ export interface ResearchPrepareResult {
   }
   context?: Record<string, any>
   reply?: string
+  clarification?: ClarificationCard
+}
+
+export interface ClarificationOption {
+  id: string
+  label: string
+  value: string
+  description?: string
+}
+
+export interface ClarificationCard {
+  question: string
+  options: ClarificationOption[]
+  allowFreeText: boolean
+  inputPlaceholder: string
+  round: 1 | 2
+  maxRounds: 2
 }
 
 export function compactResearchContext(context: Record<string, any>): Record<string, any> {

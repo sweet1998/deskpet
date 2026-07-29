@@ -1,6 +1,7 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { normalizeRoleId, type RoleId } from '../../shared/roles'
+import type { ClarificationCard } from '../../shared/research'
 
 export type ChatStatusCode = 'timeout' | 'network' | 'service' | 'cancelled'
 export type ChatInputKind = 'text' | 'file' | 'screenshot'
@@ -22,6 +23,15 @@ export interface ChatMarketItem {
   name: string
   price: number | null
   changePercent: number | null
+  score?: number
+  rank?: number
+  coverage?: number
+  confidence?: string
+}
+
+export interface ChatMetric {
+  label: string
+  value: string
 }
 
 export interface ChatMarketCard {
@@ -30,6 +40,7 @@ export interface ChatMarketCard {
   asOf?: string
   source?: string
   note?: string
+  metrics?: ChatMetric[]
 }
 
 export type ChatMessage =
@@ -44,6 +55,7 @@ export type ChatMessage =
       replyTo?: ChatReplyReference
       inputKind?: ChatInputKind
       truncated?: boolean
+      clarificationRound?: number
     }
   | {
       id: string
@@ -80,6 +92,16 @@ export type ChatMessage =
       card: ChatMarketCard
       timestamp: number
       type: 'market'
+    }
+  | {
+      id: string
+      requestId: string
+      role: 'assistant'
+      card: ClarificationCard
+      answered: boolean
+      selectedValue?: string
+      timestamp: number
+      type: 'clarification'
     }
 
 export interface ChatConversation {
@@ -170,25 +192,74 @@ function sanitizeMarketCard(value: unknown): ChatMarketCard | null {
         changePercent: typeof market.changePercent === 'number' && Number.isFinite(market.changePercent)
           ? market.changePercent
           : null,
+        ...(typeof market.score === 'number' && Number.isFinite(market.score) ? { score: market.score } : {}),
+        ...(typeof market.rank === 'number' && Number.isFinite(market.rank) ? { rank: market.rank } : {}),
+        ...(typeof market.coverage === 'number' && Number.isFinite(market.coverage) ? { coverage: market.coverage } : {}),
+        ...(typeof market.confidence === 'string' && market.confidence ? { confidence: market.confidence.slice(0, 20) } : {}),
       }]
     }).slice(0, 8)
     : []
-  if (!items.length) return null
+  const metrics = Array.isArray(item.metrics)
+    ? item.metrics.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object') return []
+      const metric = raw as Record<string, unknown>
+      if (typeof metric.label !== 'string' || typeof metric.value !== 'string') return []
+      return [{ label: metric.label.slice(0, 40), value: metric.value.slice(0, 60) }]
+    }).slice(0, 8)
+    : []
+  if (!items.length && !metrics.length) return null
   return {
     title: typeof item.title === 'string' && item.title.trim() ? item.title.slice(0, 80) : '行情快照',
     items,
     ...(typeof item.asOf === 'string' && item.asOf ? { asOf: item.asOf.slice(0, 80) } : {}),
     ...(typeof item.source === 'string' && item.source ? { source: item.source.slice(0, 80) } : {}),
     ...(typeof item.note === 'string' && item.note ? { note: item.note.slice(0, 160) } : {}),
+    ...(metrics.length ? { metrics } : {}),
+  }
+}
+
+function sanitizeClarificationCard(value: unknown): ClarificationCard | null {
+  if (!value || typeof value !== 'object') return null
+  const item = value as Record<string, unknown>
+  if (typeof item.question !== 'string' || !item.question.trim()) return null
+  const options = Array.isArray(item.options)
+    ? item.options.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object') return []
+      const option = raw as Record<string, unknown>
+      if (
+        typeof option.id !== 'string' || !option.id
+        || typeof option.label !== 'string' || !option.label.trim()
+        || typeof option.value !== 'string' || !option.value.trim()
+      ) return []
+      return [{
+        id: option.id.slice(0, 80),
+        label: option.label.trim().slice(0, 80),
+        value: option.value.trim().slice(0, 160),
+        ...(typeof option.description === 'string' && option.description.trim()
+          ? { description: option.description.trim().slice(0, 160) }
+          : {}),
+      }]
+    }).slice(0, 6)
+    : []
+  return {
+    question: item.question.trim().slice(0, 500),
+    options,
+    allowFreeText: item.allowFreeText !== false,
+    inputPlaceholder: typeof item.inputPlaceholder === 'string' && item.inputPlaceholder.trim()
+      ? item.inputPlaceholder.trim().slice(0, 120)
+      : '补充股票、板块、指数或分析条件',
+    round: item.round === 2 ? 2 : 1,
+    maxRounds: 2,
   }
 }
 
 function marketCardIdentity(card: ChatMarketCard): string {
-  return card.items
+  const itemIdentity = card.items
     .map((item) => String(item.code || item.name).trim().toLocaleLowerCase())
     .filter(Boolean)
     .sort()
     .join('|')
+  return itemIdentity || `${card.title}|${card.asOf || ''}`
 }
 
 function dedupeMarketMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -204,6 +275,14 @@ function dedupeMarketMessages(messages: ChatMessage[]): ChatMessage[] {
 
 function hasUserMessage(messages: ChatMessage[]): boolean {
   return messages.some((message) => message.type === 'text' && message.role === 'user')
+}
+
+function historyFromMessage(message: ChatMessage): ChatHistoryMessage[] {
+  if (message.type === 'text') return [{ role: message.role, content: message.text }]
+  if (message.type === 'clarification') {
+    return [{ role: 'assistant', content: message.card.question }]
+  }
+  return []
 }
 
 function sanitizeStoredMessage(value: unknown): ChatMessage | null {
@@ -232,6 +311,9 @@ function sanitizeStoredMessage(value: unknown): ChatMessage | null {
       ...(replyTo ? { replyTo } : {}),
       inputKind,
       ...(item.truncated === true ? { truncated: true } : {}),
+      ...(typeof item.clarificationRound === 'number' && item.clarificationRound >= 1
+        ? { clarificationRound: Math.min(2, Math.floor(item.clarificationRound)) }
+        : {}),
     }
   }
   if (item.type === 'thought' && role === 'assistant' && item.complete === true) {
@@ -265,6 +347,23 @@ function sanitizeStoredMessage(value: unknown): ChatMessage | null {
     const card = sanitizeMarketCard(item.card)
     if (!requestId || !card) return null
     return { id, requestId, role: 'assistant', card, timestamp, type: 'market' }
+  }
+  if (item.type === 'clarification' && role === 'assistant') {
+    const requestId = typeof item.requestId === 'string' ? item.requestId : ''
+    const card = sanitizeClarificationCard(item.card)
+    if (!requestId || !card) return null
+    return {
+      id,
+      requestId,
+      role: 'assistant',
+      card,
+      answered: item.answered === true,
+      ...(typeof item.selectedValue === 'string' && item.selectedValue.trim()
+        ? { selectedValue: item.selectedValue.trim().slice(0, 160) }
+        : {}),
+      timestamp,
+      type: 'clarification',
+    }
   }
   return null
 }
@@ -510,7 +609,7 @@ export const useChatStore = defineStore('chat', () => {
       message.type === 'text' && !message.streaming
     ) || (
       message.type === 'thought' && message.complete
-    ) || message.type === 'market').slice(-MESSAGE_LIMIT)
+    ) || message.type === 'market' || message.type === 'clarification').slice(-MESSAGE_LIMIT)
   }
 
   function persistMessages() {
@@ -778,18 +877,12 @@ export const useChatStore = defineStore('chat', () => {
     const snapshot = requestHistoryById.value[requestId]
     if (snapshot) return snapshot.map((item) => ({ ...item }))
     return roleMessages(requestId).flatMap((message) => (
-      message.type === 'text' && message.id !== `user-${requestId}`
-        ? [{ role: message.role, content: message.text }]
-        : []
+      message.id === `user-${requestId}` ? [] : historyFromMessage(message)
     ))
   }
 
   function getConversationTextHistory(requestId: string): ChatHistoryMessage[] {
-    return roleMessages(requestId).flatMap((message) => (
-      message.type === 'text'
-        ? [{ role: message.role, content: message.text }]
-        : []
-    )).slice(-20)
+    return roleMessages(requestId).flatMap(historyFromMessage).slice(-20)
   }
 
   function getAssistantText(requestId: string): string | undefined {
@@ -806,16 +899,13 @@ export const useChatStore = defineStore('chat', () => {
     attachments: ChatAttachment[] = [],
     replyTo?: ChatReplyReference,
     inputKind: ChatInputKind = 'text',
+    clarificationRound?: number,
   ) {
     const normalizedRole = normalizeRoleId(roleId)
     if (requestId) bindRequest(requestId, normalizedRole)
     const conversation = requestConversation(requestId)
     if (requestId) {
-      const history = conversation.messages.flatMap((message) => (
-        message.type === 'text'
-          ? [{ role: message.role, content: message.text }]
-          : []
-      )).slice(-20)
+      const history = conversation.messages.flatMap(historyFromMessage).slice(-20)
       if (replyTo && !history.some((item) => item.role === 'assistant' && item.content === replyTo.preview)) {
         history.push({ role: 'assistant', content: replyTo.preview })
       }
@@ -831,6 +921,7 @@ export const useChatStore = defineStore('chat', () => {
       ...(attachments.length ? { attachments } : {}),
       ...(replyTo ? { replyTo } : {}),
       inputKind,
+      ...(clarificationRound ? { clarificationRound: Math.min(2, Math.max(1, clarificationRound)) } : {}),
     })
     if (conversation.title === '新对话') conversation.title = titleFromMessages(conversation.messages)
     touchConversation(conversation, true)
@@ -913,6 +1004,50 @@ export const useChatStore = defineStore('chat', () => {
     touchConversation(conversation, true)
   }
 
+  function showClarificationCard(requestId: string, card: ClarificationCard) {
+    if (!requestId) return
+    const normalized = sanitizeClarificationCard(card)
+    if (!normalized) return
+    const conversation = requestConversation(requestId)
+    const messageId = `clarification-${requestId}`
+    const existing = conversation.messages.find((message) => message.id === messageId)
+    if (existing?.type === 'clarification') {
+      existing.card = normalized
+      existing.answered = false
+      delete existing.selectedValue
+    } else {
+      conversation.messages.push({
+        id: messageId,
+        requestId,
+        role: 'assistant',
+        card: normalized,
+        answered: false,
+        timestamp: Date.now(),
+        type: 'clarification',
+      })
+    }
+    touchConversation(conversation, true)
+  }
+
+  function getPendingClarification(): Extract<ChatMessage, { type: 'clarification' }> | undefined {
+    return [...activeConversation.value.messages].reverse().find(
+      (message): message is Extract<ChatMessage, { type: 'clarification' }> => (
+        message.type === 'clarification' && !message.answered
+      ),
+    )
+  }
+
+  function answerClarification(messageId: string, value: string): number | undefined {
+    const normalized = value.trim()
+    if (!normalized) return undefined
+    const message = activeConversation.value.messages.find((item) => item.id === messageId)
+    if (message?.type !== 'clarification' || message.answered) return undefined
+    message.answered = true
+    message.selectedValue = normalized.slice(0, 160)
+    touchConversation(activeConversation.value, true)
+    return message.card.round
+  }
+
   function showStatusMessage(
     requestId: string,
     text: string,
@@ -955,6 +1090,11 @@ export const useChatStore = defineStore('chat', () => {
     const message = roleMessages(requestId).find((item) => item.id === `user-${requestId}`)
     if (message?.type !== 'text') return 'text'
     return message.inputKind ?? (message.text.trim() === '分析当前屏幕' ? 'screenshot' : 'text')
+  }
+
+  function getRequestClarificationRound(requestId: string): number | undefined {
+    const message = roleMessages(requestId).find((item) => item.id === `user-${requestId}`)
+    return message?.type === 'text' ? message.clarificationRound : undefined
   }
 
   function canRetryRequest(requestId: string): boolean {
@@ -1082,6 +1222,10 @@ export const useChatStore = defineStore('chat', () => {
           lines.push(`- ${item.name}${item.code ? `（${item.code}）` : ''}：${price}，${change}`)
         }
         lines.push('')
+      } else if (message.type === 'clarification') {
+        lines.push(`> 澄清 ${message.card.round}/${message.card.maxRounds}：${message.card.question}`)
+        if (message.selectedValue) lines.push(`> 已补充：${message.selectedValue}`)
+        lines.push('')
       }
     }
     return { title: conversation.title, content: lines.join('\n').trim() }
@@ -1125,6 +1269,9 @@ export const useChatStore = defineStore('chat', () => {
     markChatTruncated,
     showChatMessage,
     showMarketCard,
+    showClarificationCard,
+    getPendingClarification,
+    answerClarification,
     hideChatBubble,
     setActiveRole,
     bindRequest,
@@ -1142,6 +1289,7 @@ export const useChatStore = defineStore('chat', () => {
     getRequestText,
     getRequestReplyTo,
     getRequestInputKind,
+    getRequestClarificationRound,
     canRetryRequest,
     resetRequestResponse,
     setDraft,

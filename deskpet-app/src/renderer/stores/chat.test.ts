@@ -63,6 +63,46 @@ describe('chat store roles', () => {
     })
   })
 
+  it('stores and resolves a clarification card as conversation context', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('分析华能', 'req-clarify', 'stock_expert')
+    chat.setActiveRole('stock_expert')
+    chat.showClarificationCard('req-clarify', {
+      question: '请选择要分析的股票。',
+      options: [
+        { id: 'SH.600011', label: '华能国际', value: '600011', description: 'SH.600011' },
+        { id: 'SH.600025', label: '华能水电', value: '600025', description: 'SH.600025' },
+      ],
+      allowFreeText: true,
+      inputPlaceholder: '输入股票名称或六位代码',
+      round: 1,
+      maxRounds: 2,
+    })
+
+    expect(chat.getPendingClarification()).toMatchObject({
+      id: 'clarification-req-clarify',
+      type: 'clarification',
+      answered: false,
+      card: { round: 1, maxRounds: 2 },
+    })
+    expect(chat.answerClarification('clarification-req-clarify', '600011')).toBe(1)
+    expect(chat.getPendingClarification()).toBeUndefined()
+
+    chat.addUserMessage('600011', 'req-clarify-answer', 'stock_expert', [], undefined, 'text', 1)
+    expect(chat.getRequestClarificationRound('req-clarify-answer')).toBe(1)
+    expect(chat.getRequestHistory('req-clarify-answer')).toContainEqual({
+      role: 'assistant',
+      content: '请选择要分析的股票。',
+    })
+
+    setActivePinia(createPinia())
+    const restored = useChatStore()
+    const restoredCard = restored.messagesByRole.stock_expert.find(
+      (message) => message.type === 'clarification',
+    )
+    expect(restoredCard).toMatchObject({ answered: true, selectedValue: '600011' })
+  })
+
   it('restores completed role history and drafts after reloading the store', () => {
     const chat = useChatStore()
     chat.addUserMessage('分析科技板块', 'req-persist', 'stock_expert')

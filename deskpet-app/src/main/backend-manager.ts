@@ -160,6 +160,10 @@ export class BackendManager {
             path.dirname(this.logPath),
             'market-cache.sqlite3',
           ),
+          QUANT_DB_PATH: process.env.QUANT_DB_PATH || path.join(
+            path.dirname(this.logPath),
+            'quant-research.duckdb',
+          ),
           PYTHONUNBUFFERED: '1',
         },
         stdio: ['ignore', log, log],

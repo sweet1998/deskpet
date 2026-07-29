@@ -31,7 +31,10 @@ function render(template: string, values: TemplateValues): string {
 }
 
 export const PROMPT_CONTRACT_VERSION = contract.version
-export const STOCK_ROUTE_SYSTEM_PROMPT = contract.stockRouter.systemPrompt
+export const STOCK_ROUTE_SYSTEM_PROMPT = [
+  contract.stockRouter.systemPrompt,
+  contract.stockClarificationRouting,
+].join('\n')
 export const COMPLETION_MARKER = contract.completion.marker
 export const COMPLETION_INSTRUCTION = render(contract.completion.instructionTemplate, {
   marker: COMPLETION_MARKER,
