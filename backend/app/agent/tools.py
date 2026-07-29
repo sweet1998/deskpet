@@ -58,6 +58,7 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     "default": "balanced",
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                "deepLimit": {"type": "integer", "minimum": 10, "maximum": 50, "default": 20},
             },
             "additionalProperties": False,
         },
@@ -189,6 +190,7 @@ class ResearchTools:
             return await self.market.screen_stocks(
                 str(arguments.get("style") or "balanced"),
                 int(arguments.get("limit", 5)),
+                deep_limit=int(arguments.get("deepLimit", 20)),
             )
         if name == "get_factor_snapshot":
             return await self._quant().compare(

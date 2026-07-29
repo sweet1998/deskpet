@@ -27,7 +27,7 @@ function marketItem(value: unknown, fallbackName = '行情'): ChatMarketItem | n
 }
 
 function sourceFrom(value: Record<string, any>): string | undefined {
-  if (value.engine === 'multi_factor' || value.kind === 'factor_screen') {
+  if (String(value.engine || '').includes('multi_factor') || value.kind === 'factor_screen') {
     return '数据来源：Tushare Pro · 本地 DuckDB'
   }
   const source = typeof value.source === 'string'
@@ -115,11 +115,24 @@ export function marketCardFromResearch(prepared: ResearchPrepareResult): ChatMar
 
   if (context.kind === 'stock_screen' || context.kind === 'factor_screen') {
     const stocks = Array.isArray(context.stocks) ? context.stocks : []
-    return card(
-      context.engine === 'multi_factor' || context.kind === 'factor_screen' ? '多因子筛选结果' : '个股筛选结果',
+    const result = card(
+      String(context.engine || '').includes('multi_factor') || context.kind === 'factor_screen' ? '多因子筛选结果' : '个股筛选结果',
       stocks.map((stock) => marketItem(stock, '候选股票')),
       context,
     )
+    const funnel = context.analysisFunnel && typeof context.analysisFunnel === 'object'
+      ? context.analysisFunnel
+      : null
+    if (result && funnel) {
+      result.metrics = [
+        { label: '全市场', value: String(funnel.universeCount ?? '--') },
+        { label: '因子合格', value: String(funnel.factorEligibleCount ?? '--') },
+        { label: '候选池', value: String(funnel.shortlistCount ?? '--') },
+        { label: '深度分析', value: String(funnel.deepAnalyzedCount ?? '--') },
+        { label: '最终候选', value: String(funnel.finalCount ?? '--') },
+      ]
+    }
+    return result
   }
 
   if (context.kind === 'strategy_backtest' && context.status === 'ok') {

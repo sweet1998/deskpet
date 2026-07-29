@@ -82,6 +82,7 @@ class SectorScanRequest(BaseModel):
 class StockScreenRequest(BaseModel):
     style: Literal["balanced", "quality", "growth", "value", "momentum"] = "balanced"
     limit: int = Field(default=5, ge=1, le=10)
+    deepLimit: int = Field(default=20, ge=10, le=50)
 
 
 class QuantRefreshRequest(BaseModel):

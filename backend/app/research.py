@@ -621,6 +621,20 @@ class ResearchService:
                     f"全市场因子计算后共有 {context.get('universeCount', 0)} 只股票达到覆盖率门槛；"
                     f"Point-in-time={bool(criteria.get('pointInTime'))}，行业中性化={bool(criteria.get('industryNeutralized'))}"
                 )
+            elif context.get("engine") == "layered_multi_factor":
+                funnel = context.get("analysisFunnel") or {}
+                records.append(
+                    f"分层选股已生效：全市场 {funnel.get('universeCount', 0)} 只，"
+                    f"{funnel.get('factorEligibleCount', 0)} 只完成统一因子计算，"
+                    f"前 {funnel.get('shortlistCount', 0)} 只进入候选池，"
+                    f"{funnel.get('deepAnalyzedCount', 0)} 只完成财务与估值补齐，"
+                    f"最终保留 {funnel.get('finalCount', 0)} 只"
+                )
+                records.append(
+                    f"使用本地 DuckDB 的 {context.get('asOf') or '最近'} 数据截面，"
+                    f"因子版本 {context.get('factorVersion') or '未知'}；"
+                    f"模型比较 {len(context.get('deepCandidates') or [])} 只结构化深度候选"
+                )
             else:
                 records.append(
                     f"当前使用实时快照降级链路：全市场 {criteria.get('universeCount', 0)} 只股票中，"

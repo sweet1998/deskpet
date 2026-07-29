@@ -213,7 +213,7 @@ class FactorEngine:
 
     async def screen(self, as_of: str, style: str = "balanced", limit: int = 5) -> Dict[str, Any]:
         rows = await self.calculate(as_of, style)
-        safe_limit = max(1, min(50, limit))
+        safe_limit = max(1, min(200, limit))
         return {
             "kind": "factor_screen",
             "status": "ok" if rows else "unavailable",

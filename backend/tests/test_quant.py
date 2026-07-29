@@ -13,7 +13,24 @@ class UnusedProvider:
 
 
 class ReadyQuant:
+    async def status(self):
+        return {"instruments": 5533, "trading_days": 130}
+
     async def screen(self, style, limit, as_of=None):
+        stocks = [{
+            "rank": index + 1,
+            "code": f"SH.600{index:03d}",
+            "name": f"候选{index + 1}",
+            "price": 10 + index,
+            "score": 90.0 - index / 10,
+            "quality": 90.0 - index / 10,
+            "growth": 70.0,
+            "value": 65.0,
+            "momentum": 80.0,
+            "risk": 75.0,
+            "coverage": 1.0,
+            "confidence": "high",
+        } for index in range(min(limit, 100))]
         return {
             "kind": "factor_screen",
             "status": "ok",
@@ -22,19 +39,7 @@ class ReadyQuant:
             "factorVersion": "test-v1",
             "universeCount": 1200,
             "criteria": {"pointInTime": True, "industryNeutralized": True},
-            "stocks": [{
-                "rank": 1,
-                "code": "SH.600519",
-                "name": "贵州茅台",
-                "score": 82.5,
-                "quality": 90.0,
-                "growth": 70.0,
-                "value": 65.0,
-                "momentum": 80.0,
-                "risk": 75.0,
-                "coverage": 1.0,
-                "confidence": "high",
-            }],
+            "stocks": stocks,
             "warnings": [],
         }
 
@@ -136,7 +141,17 @@ async def test_market_screen_prefers_ready_multi_factor_engine():
     result = await market.screen_stocks("balanced", 5, report)
 
     assert result["kind"] == "stock_screen"
-    assert result["engine"] == "multi_factor"
+    assert result["engine"] == "layered_multi_factor"
     assert result["criteria"]["pointInTime"] is True
     assert result["stocks"][0]["scoreBreakdown"]["quality"] == 90.0
+    assert result["analysisFunnel"] == {
+        "universeCount": 5533,
+        "factorEligibleCount": 1200,
+        "shortlistCount": 100,
+        "deepAnalyzedCount": 20,
+        "finalCount": 5,
+    }
+    assert len(result["deepCandidates"]) == 20
+    assert len(result["stocks"]) == 5
     assert any("量化因子引擎已完成" in item for item in progress)
+    assert any("财务、估值与因子二次评分" in item for item in progress)

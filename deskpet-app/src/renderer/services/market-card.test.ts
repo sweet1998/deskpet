@@ -76,7 +76,11 @@ describe('marketCardFromResearch', () => {
       scope: 'in_scope', intent: 'stock_screen', requiresResearch: true,
       targetKind: 'market', targets: [], thoughts: [],
       context: {
-        kind: 'stock_screen', engine: 'multi_factor', asOf: '2026-07-28',
+        kind: 'stock_screen', engine: 'layered_multi_factor', asOf: '2026-07-28',
+        analysisFunnel: {
+          universeCount: 5533, factorEligibleCount: 5311, shortlistCount: 100,
+          deepAnalyzedCount: 20, finalCount: 5,
+        },
         stocks: [{ code: 'SH.600519', name: '贵州茅台', price: 1500, score: 82, rank: 1, coverage: 0.8, confidence: 'high' }],
       },
     })
@@ -92,6 +96,7 @@ describe('marketCardFromResearch', () => {
 
     expect(factors?.title).toBe('多因子筛选结果')
     expect(factors?.items[0]).toMatchObject({ score: 82, rank: 1, coverage: 0.8, confidence: 'high' })
+    expect(factors?.metrics).toContainEqual({ label: '深度分析', value: '20' })
     expect(backtest?.metrics?.map((item) => item.label)).toContain('最大回撤')
   })
 

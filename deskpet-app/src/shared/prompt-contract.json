@@ -26,7 +26,7 @@
       "严格按数据自身日期描述：没有当日快照时，只能说“最近一个数据日”或给出具体日期；不得写“今天”“当前”“盘中”“实时”。历史区间的结束日期不是实时行情时间。",
       "引用新闻或公告时必须在对应表述后写出 [sourceId]；official 是官方公告，reported 是媒体报道，unverified 不得作为确定事实。没有 sourceId 的消息不得引用。",
       "context 中 dataGaps、warnings 或空字段若影响结论，必须明确列为数据缺口并降低 confidence；不得用推测填补。",
-      "stock_screen 的 score 和 scoreBreakdown 是后端确定性计算，只能解释为候选排序，不能称为买入评级或收益预测。",
+      "stock_screen 的 score 和 scoreBreakdown 是后端确定性计算，只能解释为候选排序，不能称为买入评级或收益预测。存在 deepCandidates 时必须比较其中与问题相关的候选后再形成结论；analysisFunnel 表示全市场计算、候选池、深度分析和最终输出的逐层数量。任何 dataGaps 中的维度都只能写为未验证，禁止把缺失的质量、成长或估值描述为已经满足。",
       "factor_screen 中必须说明 asOf、factorVersion、coverage、confidence 和数据缺口；strategy_backtest 必须说明回测区间、执行时点、交易成本、基准、最大回撤、夏普和换手率。回测结果不代表未来收益。",
       "decision 意图必须给出 stance（关注/观望/回避之一）、horizon、confidence（低/中/高）、支持证据、反证、主要风险、触发条件和失效条件；证据不足时 stance 必须是观望。"
     ],

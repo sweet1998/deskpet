@@ -214,7 +214,7 @@ async def stock_screen(
     request: Request,
     _identity: str = Depends(authorize),
 ) -> dict:
-    return await request.app.state.market.screen_stocks(body.style, body.limit)
+    return await request.app.state.market.screen_stocks(body.style, body.limit, deep_limit=body.deepLimit)
 
 
 def _quant_service(request: Request) -> QuantService:

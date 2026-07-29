@@ -602,44 +602,248 @@ class MarketService:
                 errors.append(f"{provider.name}: {error}")
         raise RuntimeError("；".join(errors))
 
+    async def _deep_enrich_quant_candidates(
+        self,
+        rows: List[Dict[str, Any]],
+        style: str,
+        progress: Optional[ProgressCallback],
+    ) -> List[Dict[str, Any]]:
+        weights = {
+            "balanced": {"quality": .25, "growth": .2, "value": .2, "momentum": .2, "risk": .15},
+            "quality": {"quality": .5, "growth": .15, "value": .15, "momentum": .05, "risk": .15},
+            "growth": {"quality": .15, "growth": .5, "value": .1, "momentum": .15, "risk": .1},
+            "value": {"quality": .2, "growth": .1, "value": .5, "momentum": .05, "risk": .15},
+            "momentum": {"quality": .1, "growth": .1, "value": .05, "momentum": .55, "risk": .2},
+        }[style]
+        semaphore = asyncio.Semaphore(10)
+
+        def average(values: List[Optional[float]]) -> Optional[float]:
+            available = [value for value in values if value is not None]
+            return sum(available) / len(available) if available else None
+
+        async def bounded_fetch(
+            timeout: float,
+            key: str,
+            ttl: int,
+            method: str,
+            label: str,
+            *args: Any,
+        ) -> Tuple[Any, Optional[str], Optional[str]]:
+            try:
+                return await asyncio.wait_for(
+                    self._optional_fetch(key, ttl, method, label, *args),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                empty: Any = [] if method in {"security_news", "company_announcements"} else {}
+                return empty, None, f"{label}超过 {timeout:.0f} 秒未返回，已跳过以保证响应速度"
+
+        async def enrich(row: Dict[str, Any]) -> Dict[str, Any]:
+            code = str(row["code"])
+            async with semaphore:
+                financial_result, valuation_result, news_result, announcements_result = await asyncio.gather(
+                    bounded_fetch(
+                        10,
+                        f"market:v3:financial:{code}", 21600, "financial_snapshot", "财务指标", code,
+                    ),
+                    bounded_fetch(
+                        10,
+                        f"market:v2:screen-snapshot:{code}", 300, "snapshot", "估值快照", code,
+                    ),
+                    bounded_fetch(
+                        6,
+                        f"market:v1:news:{code}:3", 300, "security_news", "个股新闻", code, 3,
+                    ),
+                    bounded_fetch(
+                        6,
+                        f"market:v1:announcements:{code}:7:3",
+                        900,
+                        "company_announcements",
+                        "公司公告",
+                        code,
+                        7,
+                        3,
+                    ),
+                )
+            financial, financial_source, financial_warning = financial_result
+            snapshot, snapshot_source, snapshot_warning = valuation_result
+            news, news_source, news_warning = news_result
+            announcements, announcement_source, announcement_warning = announcements_result
+            quality = average([
+                self._screen_metric(financial.get("roe"), 5, 25),
+                self._screen_metric(financial.get("debtRatio"), 20, 80, True),
+                self._screen_metric(financial.get("operatingCashFlowPerShare"), 0, 5),
+            ])
+            growth = average([
+                self._screen_metric(financial.get("revenueYoY"), -10, 40),
+                self._screen_metric(financial.get("netProfitYoY"), -10, 40),
+            ])
+            value = average([
+                self._screen_metric(snapshot.get("peRatio"), 8, 60, True),
+                self._screen_metric(snapshot.get("pbRatio"), 1, 10, True),
+            ])
+            components = {
+                "quality": quality if quality is not None else row.get("quality"),
+                "growth": growth if growth is not None else row.get("growth"),
+                "value": value if value is not None else row.get("value"),
+                "momentum": row.get("momentum") if isinstance(row.get("momentum"), (int, float)) else None,
+                "risk": row.get("risk") if isinstance(row.get("risk"), (int, float)) else None,
+            }
+            available_weight = sum(weight for key, weight in weights.items() if components[key] is not None)
+            coverage = available_weight / sum(weights.values())
+            raw_score = (
+                sum(float(components[key]) * weight for key, weight in weights.items() if components[key] is not None)
+                / available_weight
+                if available_weight else 0
+            )
+            selection_score = raw_score * (.65 + .35 * coverage)
+            gaps = [key for key, value in components.items() if value is None]
+            return {
+                **row,
+                "factorRank": row.get("rank"),
+                "factorScore": row.get("score"),
+                "factorCoverage": row.get("coverage"),
+                "factorScoreBreakdown": {
+                    key: row.get(key) for key in ("quality", "growth", "value", "momentum", "risk")
+                },
+                "price": snapshot.get("price") if snapshot.get("price") is not None else row.get("price"),
+                "changePercent": (
+                    snapshot.get("changePercent")
+                    if snapshot.get("changePercent") is not None else row.get("changePercent")
+                ),
+                "peRatio": snapshot.get("peRatio"),
+                "pbRatio": snapshot.get("pbRatio"),
+                "marketCap": snapshot.get("marketCap"),
+                "financial": financial,
+                "news": list(news)[:3],
+                "announcements": list(announcements)[:3],
+                "eventSummary": {
+                    "newsCount": len(news),
+                    "announcementCount": len(announcements),
+                    "officialAnnouncementCount": sum(
+                        item.get("verificationStatus") == "official" for item in announcements
+                    ),
+                },
+                "score": round(selection_score, 2),
+                "researchScore": round(raw_score, 2),
+                "coverage": round(coverage, 4),
+                "confidence": "high" if coverage >= .8 else "medium" if coverage >= .55 else "low",
+                "scoreBreakdown": {
+                    key: round(value, 2) if value is not None else None
+                    for key, value in components.items()
+                },
+                "dataSources": {
+                    **dict(row.get("dataSources") or {}),
+                    **({"snapshot": snapshot_source} if snapshot_source else {}),
+                    **({"financial": financial_source} if financial_source else {}),
+                    **({"news": news_source} if news_source else {}),
+                    **({"announcements": announcement_source} if announcement_source else {}),
+                },
+                "dataGaps": gaps,
+                "warnings": [
+                    item for item in (
+                        financial_warning, snapshot_warning, news_warning, announcement_warning,
+                    ) if item
+                ],
+            }
+
+        enriched = await asyncio.gather(*(enrich(row) for row in rows))
+        ranked = sorted(
+            enriched,
+            key=lambda row: (row["score"], row.get("factorScore") or 0),
+            reverse=True,
+        )
+        for rank, row in enumerate(ranked, start=1):
+            row["deepRank"] = rank
+            row["rank"] = rank
+        await self._report(progress, f"已完成 {len(ranked)} 只候选的财务、估值与因子二次评分")
+        return ranked
+
     async def screen_stocks(
         self,
         style: str = "balanced",
         limit: int = 5,
         progress: Optional[ProgressCallback] = None,
+        deep_limit: int = 20,
     ) -> Dict[str, Any]:
         safe_style = style if style in {"balanced", "quality", "growth", "value", "momentum"} else "balanced"
         safe_limit = max(1, min(10, limit))
+        safe_deep_limit = max(10, min(50, deep_limit))
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
         quant_warning = None
         if self.quant_service is not None:
             await self._report(progress, "正在检查本地 DuckDB 量化仓库并准备全市场因子截面")
             try:
-                factor_result = await self.quant_service.screen(safe_style, safe_limit)
+                quant_status = await self.quant_service.status()
+                factor_result = await self.quant_service.screen(safe_style, 100)
+                shortlist_style = safe_style
+                shortlist_warning = None
+                if factor_result.get("status") != "ok" and safe_style != "balanced":
+                    baseline_result = await self.quant_service.screen("balanced", 100)
+                    if baseline_result.get("status") == "ok":
+                        factor_result = baseline_result
+                        shortlist_style = "balanced"
+                        shortlist_warning = (
+                            f"全市场 {safe_style} 因子覆盖不足，前100候选池暂按可用的 balanced 因子建立；"
+                            "请求风格仅用于前20名二次评分"
+                        )
                 if factor_result.get("status") == "ok" and factor_result.get("stocks"):
-                    stocks = [{
-                        **stock,
-                        "scoreBreakdown": {
-                            key: stock.get(key)
-                            for key in ("quality", "growth", "value", "momentum", "risk")
-                        },
-                    } for stock in factor_result["stocks"]]
+                    shortlist = list(factor_result["stocks"][:100])
                     await self._report(
                         progress,
-                        f"量化因子引擎已完成 {factor_result.get('universeCount', 0)} 只合格股票的全市场排名",
+                        f"量化因子引擎已完成 {factor_result.get('universeCount', 0)} 只合格股票的全市场排名，保留前 {len(shortlist)} 名",
                     )
+                    deep_candidates = await self._deep_enrich_quant_candidates(
+                        shortlist[:safe_deep_limit], safe_style, progress,
+                    )
+                    stocks = deep_candidates[:safe_limit]
                     criteria = dict(factor_result.get("criteria") or {})
                     criteria.update({
-                        "universeCount": factor_result.get("universeCount", 0),
+                        "universeCount": quant_status.get("instruments", factor_result.get("universeCount", 0)),
                         "eligibleCount": factor_result.get("universeCount", 0),
-                        "enrichedCount": factor_result.get("universeCount", 0),
+                        "shortlistCount": len(shortlist),
+                        "enrichedCount": len(deep_candidates),
+                        "finalCount": len(stocks),
+                        "scorePolicy": "缺失维度不填中性分；二次评分按实际可用权重计算，并用覆盖率直接降低最终分",
+                        "shortlistData": "全市场仓库中的历史行情、财务、估值和因子字段",
+                        "deepAnalysisData": "财务快照、估值快照、新闻、官方公告、动量与风险因子",
+                        "requestedStyle": safe_style,
+                        "shortlistStyle": shortlist_style,
                     })
+                    warnings = list(factor_result.get("warnings") or [])
+                    if shortlist_warning:
+                        warnings.append(shortlist_warning)
+                    if any(row.get("dataGaps") for row in deep_candidates):
+                        warnings.append("部分深度候选仍缺少财务或估值维度，已降低覆盖率和最终分")
                     return {
                         **factor_result,
                         "kind": "stock_screen",
-                        "engine": "multi_factor",
+                        "engine": "layered_multi_factor",
+                        "style": safe_style,
                         "stocks": stocks,
+                        "deepCandidates": deep_candidates,
+                        "shortlistCandidates": [{
+                            "code": row.get("code"),
+                            "name": row.get("name"),
+                            "factorRank": row.get("rank"),
+                            "factorScore": row.get("score"),
+                            "factorCoverage": row.get("coverage"),
+                            "confidence": row.get("confidence"),
+                            "dataGaps": [
+                                key for key in ("quality", "growth", "value", "momentum", "risk")
+                                if row.get(key) is None
+                            ],
+                        } for row in shortlist],
                         "criteria": criteria,
+                        "analysisFunnel": {
+                            "universeCount": criteria["universeCount"],
+                            "factorEligibleCount": criteria["eligibleCount"],
+                            "shortlistCount": len(shortlist),
+                            "deepAnalyzedCount": len(deep_candidates),
+                            "finalCount": len(stocks),
+                        },
+                        "warnings": list(dict.fromkeys(warnings)),
+                        "dataGaps": sorted({gap for row in deep_candidates for gap in row.get("dataGaps", [])}),
                     }
                 quant_warning = str(
                     factor_result.get("error") or "本地量化仓库暂时没有可用因子截面"
@@ -718,7 +922,7 @@ class MarketService:
             and isinstance(row.get("peRatio"), (int, float)) and 0 < row["peRatio"] <= 100
             and isinstance(row.get("pbRatio"), (int, float)) and 0 < row["pbRatio"] <= 15
         )]
-        candidates = eligible[:max(20, safe_limit * 4)]
+        candidates = eligible[:max(safe_deep_limit, safe_limit * 4)]
         semaphore = asyncio.Semaphore(6)
 
         async def enrich(row: Dict[str, Any]) -> Dict[str, Any]:
