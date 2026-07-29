@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date, timedelta
+import os
 
 import pytest
 
@@ -14,6 +15,22 @@ class FakeFrame:
     def to_dict(self, orient):
         assert orient == "records"
         return self.rows
+
+
+def test_provider_bypasses_system_proxy_for_eastmoney_without_overwriting_existing_hosts(
+    monkeypatch,
+):
+    monkeypatch.setenv("NO_PROXY", "localhost,.internal.test")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+
+    AkshareProvider(timeout=1, ak_module=object())
+
+    assert set(os.environ["NO_PROXY"].split(",")) == {
+        "localhost", ".internal.test", ".eastmoney.com",
+    }
+    assert set(os.environ["no_proxy"].split(",")) == {
+        "127.0.0.1", ".eastmoney.com",
+    }
 
 
 class FakeAkshare:

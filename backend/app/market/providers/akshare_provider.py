@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from functools import partial
 import hashlib
 import math
+import os
 import time
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -13,6 +14,17 @@ from bs4 import BeautifulSoup
 
 from .base import MarketProvider
 from .eastmoney import _market_name, map_symbol
+
+
+_DIRECT_MARKET_HOSTS = (".eastmoney.com",)
+
+
+def _ensure_direct_market_hosts() -> None:
+    for variable in ("NO_PROXY", "no_proxy"):
+        hosts = [item.strip() for item in os.getenv(variable, "").split(",") if item.strip()]
+        normalized = {item.lower() for item in hosts}
+        hosts.extend(host for host in _DIRECT_MARKET_HOSTS if host.lower() not in normalized)
+        os.environ[variable] = ",".join(hosts)
 
 
 def _clean(value: Any) -> Any:
@@ -169,6 +181,7 @@ class AkshareProvider(MarketProvider):
         max_workers: int = 4,
         ak_module: Any = None,
     ):
+        _ensure_direct_market_hosts()
         if ak_module is None:
             import akshare as ak_module
         self.ak = ak_module

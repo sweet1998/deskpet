@@ -136,6 +136,30 @@ class PartialSectorProvider(FakeProvider):
         ]
 
 
+class ThsSectorFallbackProvider(FailingSectorDataProvider):
+    name = "akshare-eastmoney"
+
+    async def sector_catalog(self, category):
+        assert category == "industry"
+        return [{"kind": "industry_ths", "code": "881121", "name": "半导体"}]
+
+    async def sector_snapshot(self, category, code, name):
+        if category == "industry":
+            return await super().sector_snapshot(category, code, name)
+        assert (category, code, name) == ("industry_ths", "881121", "半导体")
+        return {"changePercent": -3.2, "advancers": 12, "decliners": 78}
+
+    async def sector_bars(self, category, name, count):
+        if category == "industry":
+            return await super().sector_bars(category, name, count)
+        return [{"time": "2026-07-29", "close": 15000}]
+
+    async def sector_constituents(self, category, code, name):
+        if category == "industry":
+            return await super().sector_constituents(category, code, name)
+        return [{"code": "SH.688981", "name": "中芯国际", "changePercent": -2.1}]
+
+
 class EventScreenProvider(FakeProvider):
     async def security_news(self, code, limit):
         return [{
@@ -439,6 +463,26 @@ async def test_sector_context_prefers_full_snapshot_breadth_over_partial_ranking
     assert [item["name"] for item in result["advancingConstituents"]] == ["国发股份", "凯普生物"]
     assert result["laggards"] == []
     assert any("不代表完整成分股列表" in warning for warning in result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_sector_context_switches_to_ths_when_eastmoney_details_are_unavailable():
+    service = MarketService(ThsSectorFallbackProvider(), TTLCache())
+
+    result = await service.sector_context("industry", "BK1036", "半导体")
+
+    assert result["status"] == "ok"
+    assert result["category"] == "industry_ths"
+    assert result["code"] == "881121"
+    assert result["snapshot"]["changePercent"] == -3.2
+    assert result["dataSources"] == {
+        "snapshot": "akshare-ths",
+        "dailyKline": "akshare-ths",
+        "constituents": "akshare-ths",
+        "technical": "akshare-ths",
+    }
+    assert any("已自动切换至同花顺" in warning for warning in result["warnings"])
+    assert not any("获取失败" in warning for warning in result["warnings"])
 
 
 @pytest.mark.asyncio

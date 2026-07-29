@@ -1367,38 +1367,66 @@ class MarketService:
         name: str,
         daily_count: int = 120,
     ) -> Dict[str, Any]:
-        snapshot_task = self._optional_fetch(
-            f"market:v2:sector-snapshot:{category}:{code}",
-            30,
-            "sector_snapshot",
-            "板块快照",
-            category,
-            code,
-            name,
-        )
-        bars_task = self._optional_fetch(
-            f"market:v2:sector-kline:{category}:{code}:{daily_count}",
-            900,
-            "sector_bars",
-            "板块日 K",
-            category,
-            name,
-            daily_count,
-        )
-        constituents_task = self._optional_fetch(
-            f"market:v2:sector-constituents:{category}:{code}",
-            60,
-            "sector_constituents",
-            "板块成分股",
-            category,
-            code,
-            name,
-        )
-        snapshot_result, bars_result, constituents_result = await asyncio.gather(
-            snapshot_task,
-            bars_task,
-            constituents_task,
-        )
+        async def fetch_parts(fetch_category: str, fetch_code: str) -> Tuple[Any, Any, Any]:
+            return await asyncio.gather(
+                self._optional_fetch(
+                    f"market:v2:sector-snapshot:{fetch_category}:{fetch_code}",
+                    30,
+                    "sector_snapshot",
+                    "板块快照",
+                    fetch_category,
+                    fetch_code,
+                    name,
+                ),
+                self._optional_fetch(
+                    f"market:v2:sector-kline:{fetch_category}:{fetch_code}:{daily_count}",
+                    900,
+                    "sector_bars",
+                    "板块日 K",
+                    fetch_category,
+                    name,
+                    daily_count,
+                ),
+                self._optional_fetch(
+                    f"market:v2:sector-constituents:{fetch_category}:{fetch_code}",
+                    60,
+                    "sector_constituents",
+                    "板块成分股",
+                    fetch_category,
+                    fetch_code,
+                    name,
+                ),
+            )
+
+        effective_category = category
+        effective_code = code
+        source_fallback_warning = None
+        snapshot_result, bars_result, constituents_result = await fetch_parts(category, code)
+        if (
+            category in {"industry", "concept"}
+            and not any((snapshot_result[0], bars_result[0], constituents_result[0]))
+        ):
+            try:
+                alternate_catalog = await self.provider.sector_catalog(category)
+            except Exception:
+                alternate_catalog = []
+            alternate = next(
+                (
+                    item for item in alternate_catalog
+                    if item.get("kind") == f"{category}_ths" and item.get("name") == name
+                ),
+                None,
+            )
+            if alternate:
+                alternate_results = await fetch_parts(alternate["kind"], alternate["code"])
+                if any(result[0] for result in alternate_results):
+                    snapshot_result, bars_result, constituents_result = alternate_results
+                    effective_category = alternate["kind"]
+                    effective_code = alternate["code"]
+                    source_fallback_warning = (
+                        f"{name}东方财富板块接口不可用，已自动切换至同花顺板块数据"
+                    )
+
         snapshot, snapshot_source, snapshot_warning = snapshot_result
         bars, bars_source, bars_warning = bars_result
         constituents, constituents_source, constituents_warning = constituents_result
@@ -1447,7 +1475,7 @@ class MarketService:
                 )
             else:
                 proxy_warning = f"{name}板块官方快照和代表性成分股行情均不可用"
-        if category.endswith("_ths"):
+        if effective_category.endswith("_ths"):
             snapshot_source = "akshare-ths" if snapshot_source == self.provider.name else snapshot_source
             bars_source = "akshare-ths" if bars_source == self.provider.name else bars_source
             constituents_source = (
@@ -1465,7 +1493,13 @@ class MarketService:
         )
         warnings = [
             warning
-            for warning in (snapshot_warning, bars_warning, constituents_warning, proxy_warning)
+            for warning in (
+                source_fallback_warning,
+                snapshot_warning,
+                bars_warning,
+                constituents_warning,
+                proxy_warning,
+            )
             if warning
         ]
         if not sorted_constituents and snapshot.get("leader"):
@@ -1510,8 +1544,8 @@ class MarketService:
         return {
             "kind": "sector",
             "status": status,
-            "category": category,
-            "code": code,
+            "category": effective_category,
+            "code": effective_code,
             "name": name,
             "asOf": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
             "marketStatus": market_state(datetime.now(ZoneInfo("Asia/Shanghai"))),
