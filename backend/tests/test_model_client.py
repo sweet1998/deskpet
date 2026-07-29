@@ -3,8 +3,13 @@ import json
 import httpx
 import pytest
 
-from app.agent.model_client import COMPLETION_MARKER, DEFAULT_MAX_TOKENS, OpenAICompatibleModel
-from app.models import ChatMessage
+from app.agent.model_client import (
+    COMPLETION_MARKER,
+    DEFAULT_MAX_TOKENS,
+    OpenAICompatibleModel,
+    RouteClassificationError,
+)
+from app.models import ChatMessage, StockRouteHint
 
 
 def sse_response(*events):
@@ -126,6 +131,8 @@ async def test_model_classifies_stock_intent_as_validated_json():
     assert route.intent == "answer_followup"
     assert requests[0]["temperature"] == 0
     assert requests[0]["response_format"] == {"type": "json_object"}
+    route_input = json.loads(requests[0]["messages"][1]["content"])
+    assert route_input["routingStage"] == "contextual"
 
 
 @pytest.mark.asyncio
@@ -155,9 +162,19 @@ async def test_qwen_router_disables_thinking_and_uses_router_model():
         route_extra_body={"enable_thinking": False},
     )
     try:
-        route = await model.classify_stock_intent("它最近怎么样", [
-            ChatMessage(role="user", content="看看白酒板块"),
-        ])
+        route = await model.classify_stock_intent(
+            "它最近怎么样",
+            [ChatMessage(role="user", content="看看白酒板块")],
+            StockRouteHint(
+                scope="needs_clarification",
+                intent="security_trend",
+                relation="followup",
+                targetKind="security",
+                requestedData=["quote", "history"],
+                requiresResearch=True,
+                confidence=0.8,
+            ),
+        )
     finally:
         await client.aclose()
 
@@ -165,6 +182,40 @@ async def test_qwen_router_disables_thinking_and_uses_router_model():
     assert route.intent == "sector"
     assert requests[0]["model"] == "qwen3-8b"
     assert requests[0]["enable_thinking"] is False
+    route_input = json.loads(requests[0]["messages"][1]["content"])
+    assert route_input["currentRoute"]["intent"] == "security_trend"
+
+
+@pytest.mark.asyncio
+async def test_current_stage_preserves_semantic_intent_when_history_is_required():
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({
+                "scope": "needs_clarification",
+                "intent": "security_trend",
+                "relation": "followup",
+                "targetKind": "security",
+                "targetTerms": [],
+                "targetSource": "none",
+                "requestedData": ["quote", "history"],
+                "requiresResearch": True,
+                "confidence": 0.91,
+            })}}],
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3-8b", client=client)
+    try:
+        route = await model.classify_stock_intent("它最近的趋势怎么样", [])
+    finally:
+        await client.aclose()
+
+    assert route is not None
+    assert route.scope == "needs_clarification"
+    assert route.intent == "security_trend"
+    assert route.targetKind == "security"
+    assert route.requestedData == ["quote", "history"]
+    assert route.requiresResearch is True
 
 
 @pytest.mark.asyncio
@@ -193,3 +244,16 @@ async def test_model_normalizes_inconsistent_out_of_scope_intent():
     assert route.intent == "out_of_scope"
     assert route.targetKind == "none"
     assert route.requiresResearch is False
+
+
+@pytest.mark.asyncio
+async def test_router_http_failure_is_not_silently_treated_as_no_route():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(400, json={"error": {"code": "Arrearage"}}),
+    ))
+    model = OpenAICompatibleModel("https://example.test/v1", "secret", "qwen3-8b", client=client)
+    try:
+        with pytest.raises(RouteClassificationError, match="HTTP 400"):
+            await model.classify_stock_intent("分析板块趋势", [])
+    finally:
+        await client.aclose()

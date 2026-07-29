@@ -784,6 +784,21 @@ export const useChatStore = defineStore('chat', () => {
     ))
   }
 
+  function getConversationTextHistory(requestId: string): ChatHistoryMessage[] {
+    return roleMessages(requestId).flatMap((message) => (
+      message.type === 'text'
+        ? [{ role: message.role, content: message.text }]
+        : []
+    )).slice(-20)
+  }
+
+  function getAssistantText(requestId: string): string | undefined {
+    const message = roleMessages(requestId).find((item) => (
+      item.type === 'text' && item.role === 'assistant' && item.id === requestId
+    ))
+    return message?.type === 'text' ? message.text : undefined
+  }
+
   function addUserMessage(
     text: string,
     requestId?: string,
@@ -993,6 +1008,7 @@ export const useChatStore = defineStore('chat', () => {
     const conversation = requestConversation(requestId)
     const message = conversation.messages.find((item) => item.id === requestId)
     if (message?.type !== 'text' || message.role !== 'assistant') return
+    if (truncated) message.streaming = false
     message.truncated = truncated
     touchConversation(conversation, true)
   }
@@ -1116,6 +1132,8 @@ export const useChatStore = defineStore('chat', () => {
     getRequestMessages,
     getRequestConversationId,
     getRequestHistory,
+    getConversationTextHistory,
+    getAssistantText,
     beginThought,
     appendThought,
     finishThought,

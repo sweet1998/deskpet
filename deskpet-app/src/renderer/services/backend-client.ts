@@ -20,6 +20,8 @@ export interface BackendChatInput {
   userName: string
   memories: string[]
   history: Array<{ role: 'user' | 'assistant'; content: string }>
+  continuation?: boolean
+  research?: ResearchPrepareResult
   image?: {
     mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
     base64: string

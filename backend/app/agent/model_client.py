@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -14,6 +15,9 @@ from ..prompts import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 DEFAULT_MAX_TOKENS = 4096
 MAX_AUTO_CONTINUATIONS = 2
 MAX_MESSAGES = 24
@@ -24,6 +28,10 @@ class ModelConfigurationError(RuntimeError):
 
 
 class ModelOutputTruncatedError(RuntimeError):
+    pass
+
+
+class RouteClassificationError(RuntimeError):
     pass
 
 
@@ -52,16 +60,21 @@ class OpenAICompatibleModel:
         self,
         text: str,
         history: List[ChatMessage],
+        current_route: Optional[StockRouteHint] = None,
     ) -> Optional[StockRouteHint]:
         if not self.configured:
             return None
         route_input = {
+            "routingStage": "contextual" if history else "current",
             "text": text.strip()[:4000],
             "history": [
                 {"role": item.role, "content": item.content.strip()[:1200]}
                 for item in history[-6:]
                 if item.content.strip()
             ],
+            **({
+                "currentRoute": current_route.model_dump(exclude_none=True),
+            } if current_route is not None else {}),
         }
         response = await self.client.post(
             f"{self.base_url}/chat/completions",
@@ -84,7 +97,13 @@ class OpenAICompatibleModel:
             timeout=self.client.timeout,
         )
         if response.status_code >= 400:
-            return None
+            detail = response.text.replace("\n", " ").strip()[:300]
+            logger.warning(
+                "stock route request failed with HTTP %s: %s",
+                response.status_code,
+                detail,
+            )
+            raise RouteClassificationError(f"语义路由服务请求失败（HTTP {response.status_code}）")
         try:
             content = response.json()["choices"][0]["message"]["content"]
             content = re.sub(r"<think>[\s\S]*?</think>", "", str(content), flags=re.IGNORECASE)
@@ -96,12 +115,6 @@ class OpenAICompatibleModel:
                     "targetKind": "none",
                     "requiresResearch": False,
                 })
-            if route.scope == "needs_clarification":
-                return route.model_copy(update={
-                    "intent": "clarification",
-                    "targetKind": "none",
-                    "requiresResearch": False,
-                })
             if route.relation == "answer_explanation" or route.intent == "answer_followup":
                 return route.model_copy(update={
                     "intent": "answer_followup",
@@ -109,8 +122,9 @@ class OpenAICompatibleModel:
                     "requiresResearch": False,
                 })
             return route
-        except (KeyError, IndexError, TypeError, ValueError):
-            return None
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.warning("stock route response validation failed: %s", type(error).__name__)
+            raise RouteClassificationError("语义路由服务返回了无效的结构化结果") from error
 
     async def stream(
         self,

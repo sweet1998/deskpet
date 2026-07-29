@@ -8,6 +8,7 @@ import {
 } from '../shared/doubao'
 import type {
   StockIntent,
+  StockResearchData,
   StockRouteDecision,
   StockRouteRequest,
   StockRouteResult,
@@ -60,6 +61,11 @@ const STOCK_INTENTS = new Set<StockIntent>([
 const STOCK_ROUTE_SCOPES = new Set(['in_scope', 'needs_clarification', 'out_of_scope'])
 const STOCK_ROUTE_RELATIONS = new Set(['standalone', 'followup', 'answer_explanation', 'new_topic'])
 const STOCK_ROUTE_TARGET_KINDS = new Set(['security', 'sector', 'index', 'market', 'knowledge', 'none'])
+const STOCK_ROUTE_TARGET_SOURCES = new Set(['current', 'history', 'none'])
+const STOCK_RESEARCH_DATA = new Set<StockResearchData>([
+  'quote', 'history', 'financial', 'valuation', 'news', 'announcements', 'constituents',
+  'market_breadth', 'sector_ranking', 'data_lineage',
+])
 
 function limitedMessages(messages: DoubaoMessage[]): DoubaoMessage[] {
   if (messages.length <= MAX_CONVERSATION_MESSAGES) return messages
@@ -109,21 +115,41 @@ export function parseStockRouteDecision(raw: string, input: StockRouteRequest): 
     const confidence = Number(value.confidence)
     if (!Number.isFinite(confidence)) return undefined
 
-    const material = normalizeRouteText([
-      input.text,
-      ...input.history.flatMap((message) => message.content),
-    ].join('\n'))
-    const targetTerms = Array.isArray(value.targetTerms)
+    const currentMaterial = normalizeRouteText(input.text)
+    const historyMaterial = normalizeRouteText(input.history.map((message) => message.content).join('\n'))
+    const validatedTerms = Array.isArray(value.targetTerms)
       ? [...new Set(value.targetTerms.flatMap((term) => {
         if (typeof term !== 'string') return []
         const trimmed = term.trim().slice(0, 60)
         const normalized = normalizeRouteText(trimmed)
-        return trimmed && normalized && material.includes(normalized) ? [trimmed] : []
+        return trimmed && normalized ? [trimmed] : []
       }))].slice(0, 3)
       : []
 
     const scope = String(value.scope) as StockRouteDecision['scope']
     const relation = String(value.relation) as StockRouteDecision['relation']
+    const rawTargetSource = STOCK_ROUTE_TARGET_SOURCES.has(String(value.targetSource))
+      ? String(value.targetSource) as StockRouteDecision['targetSource']
+      : 'none'
+    const currentTerms = validatedTerms.filter((term) => currentMaterial.includes(normalizeRouteText(term)))
+    const historyTerms = validatedTerms.filter((term) => historyMaterial.includes(normalizeRouteText(term)))
+    const canInheritHistory = relation === 'followup' || relation === 'answer_explanation'
+    const targetTerms = currentTerms.length ? currentTerms : canInheritHistory ? historyTerms : []
+    const targetSource: StockRouteDecision['targetSource'] = currentTerms.length
+      ? 'current'
+      : canInheritHistory && historyTerms.length
+        ? 'history'
+        : canInheritHistory && rawTargetSource === 'history' && input.history.length
+          ? 'history'
+        : ['standalone', 'new_topic'].includes(relation) && rawTargetSource === 'current'
+          ? 'current'
+          : 'none'
+    const requestedData = Array.isArray(value.requestedData)
+      ? [...new Set(value.requestedData.filter((item): item is StockResearchData => (
+          typeof item === 'string' && STOCK_RESEARCH_DATA.has(item as StockResearchData)
+        )))].slice(0, 10)
+      : []
+    const timeRangeDays = Number(value.timeRangeDays)
     let intent = String(value.intent) as StockIntent
     let targetKind = String(value.targetKind) as StockRouteDecision['targetKind']
     let requiresResearch = value.requiresResearch === true
@@ -146,6 +172,11 @@ export function parseStockRouteDecision(raw: string, input: StockRouteRequest): 
       relation,
       targetKind,
       targetTerms,
+      targetSource,
+      requestedData,
+      ...(Number.isInteger(timeRangeDays) && timeRangeDays >= 1 && timeRangeDays <= 365
+        ? { timeRangeDays }
+        : {}),
       requiresResearch,
       confidence: Math.max(0, Math.min(1, confidence)),
     }
@@ -160,6 +191,7 @@ export async function classifyStockIntent(
   options: { signal?: AbortSignal; fetchImpl?: typeof fetch; baseUrl?: string } = {},
 ): Promise<StockRouteResult> {
   const routeInput = {
+    routingStage: input.history.length ? 'contextual' : 'current',
     text: input.text.trim().slice(0, 4000),
     history: compactRouteHistory(input),
   }

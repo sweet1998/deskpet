@@ -25,3 +25,10 @@ export function selectConversationContext(
   }
   return history.slice(start).slice(-limit)
 }
+
+export function mergeContinuationText(prefix: string, continuation: string, streamed = ''): string {
+  const leadingWhitespace = streamed.match(/^\s+/)?.[0] || ''
+  if (leadingWhitespace) return `${prefix}${leadingWhitespace}${continuation}`
+  const separator = /(?:[。！？.!?：:；;]|\*\*)$/.test(prefix.trimEnd()) ? '\n\n' : ''
+  return `${prefix}${separator}${continuation}`
+}

@@ -352,6 +352,7 @@ describe('chat store roles', () => {
     chat.markChatTruncated('req-truncated')
     expect(chat.messages.find((message) => message.id === 'req-truncated')).toMatchObject({
       type: 'text',
+      streaming: false,
       truncated: true,
     })
 
@@ -360,6 +361,19 @@ describe('chat store roles', () => {
       type: 'text',
       truncated: false,
     })
+  })
+
+  it('provides the original question and partial answer for in-place continuation', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('对比宁德时代和贵州茅台', 'req-continue', 'stock_expert')
+    chat.appendChatText('财务：成长 vs 稳健', 'req-continue')
+    chat.markChatTruncated('req-continue')
+
+    expect(chat.getAssistantText('req-continue')).toBe('财务：成长 vs 稳健')
+    expect(chat.getConversationTextHistory('req-continue')).toEqual([
+      { role: 'user', content: '对比宁德时代和贵州茅台' },
+      { role: 'assistant', content: '财务：成长 vs 稳健' },
+    ])
   })
 
   it('uses an isolated non-persistent conversation in privacy mode', () => {

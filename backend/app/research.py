@@ -3,6 +3,7 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .agent.skills import skills_for_intent
+from .agent.tools import ResearchTools
 from .market.service import CODE_PATTERN, MarketService, search_terms
 from .models import (
     ResearchPrepareRequest,
@@ -408,6 +409,7 @@ def _warning_note(value: Any) -> str:
 class ResearchService:
     def __init__(self, market: MarketService):
         self.market = market
+        self.tools = ResearchTools(market)
 
     @staticmethod
     async def _report(progress: Optional[ProgressCallback], text: str) -> None:
@@ -955,9 +957,10 @@ class ResearchService:
             _is_sector_scan_query(reference_query)
             and not contextual_constituent_followup
         ):
+            window_days = 20 if route and route.timeRangeDays and route.timeRangeDays <= 30 else 60
             await self._report(progress, "正在读取全市场行业快照")
             context = compact_research_context(
-                await self.market.scan_sectors(limit=5, window_days=60, progress=progress),
+                await self.tools.scan_sectors(limit=5, window_days=window_days, progress=progress),
             )
             targets = [
                 ResearchTarget(kind="sector", name=item.get("name") or "行业板块", code=item.get("code"))

@@ -80,10 +80,34 @@ def test_mcp_lists_read_only_research_tools_and_calls_lineage():
 
     assert initialized.json()["result"]["serverInfo"]["name"] == "a-share-research"
     names = {item["name"] for item in listed.json()["result"]["tools"]}
-    assert {"get_company_news", "screen_stocks", "get_data_lineage"} <= names
+    assert {"get_company_news", "screen_stocks", "scan_sectors", "get_data_lineage"} <= names
     lineage = called.json()["result"]["structuredContent"]
     assert lineage["policies"]["readOnly"] is True
     assert lineage["policies"]["newsRequiresSourceId"] is True
+
+
+def test_mcp_calls_sector_scan_tool(monkeypatch):
+    with TestClient(app) as client:
+        scan = AsyncMock(return_value={
+            "kind": "sector_scan",
+            "status": "ok",
+            "sectors": [{"code": "BK0001", "name": "测试行业"}],
+        })
+        monkeypatch.setattr(client.app.state.market, "scan_sectors", scan)
+        response = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "scan_sectors",
+                "arguments": {"windowDays": 20, "limit": 3},
+            },
+        })
+
+    assert response.status_code == 200
+    result = response.json()["result"]["structuredContent"]
+    assert result["kind"] == "sector_scan"
+    scan.assert_awaited_once_with(3, 20, progress=None)
 
 
 def test_market_health_reports_degraded_cached_data(monkeypatch):

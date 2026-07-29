@@ -71,6 +71,14 @@ describe('DeskpetStage model-only shell', () => {
     )
     expect(requestWorkflow).toContain('watch(() => agent.activityVersion')
     expect(requestWorkflow).toContain('startRequestTimer(agent.activeRequestId)')
+    expect(requestWorkflow).toContain('chat.markChatTruncated(requestId)')
+    const continuationWorkflow = requestWorkflow.match(
+      /function continueGeneration[\s\S]*?\n  }/,
+    )?.[0] ?? ''
+    expect(continuationWorkflow).toContain('transport.sendContinuation(sourceRequestId)')
+    expect(continuationWorkflow).toContain("agent.beginRequest(sourceRequestId, '继续生成')")
+    expect(continuationWorkflow).not.toContain('createRequestId()')
+    expect(continuationWorkflow).not.toContain("sendUserText('继续'")
     expect(shape.scriptSetup).toContain('agent.chatOpen = true')
     expect(shape.scriptSetup).not.toContain('interactionOpen')
     expect(shape.scriptSetup).not.toContain('conversationOpen')

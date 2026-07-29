@@ -144,6 +144,7 @@ describe('doubao client', () => {
       ok: true,
       decision: { intent: 'sector', relation: 'followup', targetTerms: ['白酒'], confidence: 0.96 },
     })
+    expect(result.decision?.targetSource).toBe('history')
     const body = JSON.parse(String(fetchImpl.mock.calls[0][1].body))
     expect(body).toMatchObject({
       temperature: 0,
@@ -151,6 +152,8 @@ describe('doubao client', () => {
       stream: false,
       response_format: { type: 'json_object' },
     })
+    const routeMessage = JSON.parse(body.messages[1].content)
+    expect(routeMessage.routingStage).toBe('contextual')
   })
 
   it('rejects malformed stock routing output', async () => {

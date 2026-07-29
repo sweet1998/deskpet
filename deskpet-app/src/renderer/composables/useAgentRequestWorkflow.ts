@@ -167,25 +167,28 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     const roleId = chat.getRequestRole(sourceRequestId) ?? agent.currentRole
     if (roleId !== agent.currentRole) return
     options.cancelSpeech()
-    const requestId = createRequestId()
-    chat.bindRequest(requestId, roleId)
     chat.markChatTruncated(sourceRequestId, false)
-    agent.beginRequest(requestId, '继续生成')
+    agent.beginRequest(sourceRequestId, '继续生成')
     agent.taskPanelOpen = false
     agent.chatOpen = true
     agent.applyState({
-      requestId,
+      requestId: sourceRequestId,
       state: 'thinking',
       progress: 10,
       step: '正在继续回答',
       interruptible: true,
     })
-    startRequestTimer(requestId)
-    if (!transport.sendUserText('继续', requestId)) {
-      clearRequestTimer(requestId)
+    startRequestTimer(sourceRequestId)
+    if (!transport.sendContinuation(sourceRequestId)) {
+      clearRequestTimer(sourceRequestId)
       chat.markChatTruncated(sourceRequestId)
-      chat.showStatusMessage(requestId, 'AI 服务当前不可用，请检查连接设置后重试。', 'network')
-      agent.applyState({ requestId, state: 'error', error: 'AI 服务当前不可用', interruptible: false })
+      chat.showStatusMessage(sourceRequestId, 'AI 服务当前不可用，请检查连接设置后重试。', 'network')
+      agent.applyState({
+        requestId: sourceRequestId,
+        state: 'error',
+        error: 'AI 服务当前不可用',
+        interruptible: false,
+      })
     }
   }
 
@@ -234,6 +237,7 @@ export function useAgentRequestWorkflow(options: RequestWorkflowOptions) {
     transport.sendInterrupt(requestId)
     clearRequestTimer(requestId)
     chat.finishThought(requestId)
+    chat.markChatTruncated(requestId)
     agent.applyState({ requestId, state: 'interrupted', progress: 0, step: '已停止', interruptible: false })
   }
 

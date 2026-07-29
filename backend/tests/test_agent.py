@@ -3,7 +3,7 @@ import base64
 import pytest
 
 from app.agent.service import AgentService
-from app.agent.model_client import ModelOutputTruncatedError
+from app.agent.model_client import ModelOutputTruncatedError, RouteClassificationError
 from app.models import AgentChatRequest, ChatMessage, MarketContextResponse, ResearchPrepareRequest, ResearchPrepareResponse, SecurityContext, StockRouteHint
 
 
@@ -66,7 +66,7 @@ class RoutingFakeModel(FakeModel):
         super().__init__()
         self.route_inputs = []
 
-    async def classify_stock_intent(self, text, history):
+    async def classify_stock_intent(self, text, history, current_route=None):
         self.route_inputs.append((text, history))
         return StockRouteHint(
             scope="in_scope",
@@ -80,7 +80,7 @@ class RoutingFakeModel(FakeModel):
 class OutOfScopeRoutingModel(FakeModel):
     configured = True
 
-    async def classify_stock_intent(self, text, history):
+    async def classify_stock_intent(self, text, history, current_route=None):
         return StockRouteHint(
             scope="out_of_scope",
             intent="out_of_scope",
@@ -88,6 +88,95 @@ class OutOfScopeRoutingModel(FakeModel):
             targetKind="none",
             confidence=0.98,
         )
+
+
+class TwoStageSectorRoutingModel(FakeModel):
+    configured = True
+
+    def __init__(self):
+        super().__init__()
+        self.route_inputs = []
+
+    async def classify_stock_intent(self, text, history, current_route=None):
+        self.route_inputs.append((text, history))
+        if not history:
+            return StockRouteHint(
+                scope="in_scope",
+                intent="sector_scan",
+                relation="standalone",
+                targetKind="sector",
+                targetSource="current",
+                requestedData=["sector_ranking", "history"],
+                requiresResearch=True,
+                confidence=0.97,
+            )
+        return StockRouteHint(
+            scope="in_scope",
+            intent="comparison",
+            relation="followup",
+            targetKind="security",
+            targetTerms=["宁德时代", "贵州茅台"],
+            targetSource="history",
+            requiresResearch=True,
+            confidence=0.98,
+        )
+
+
+class ContextualSectorRoutingModel(FakeModel):
+    configured = True
+
+    def __init__(self):
+        super().__init__()
+        self.route_inputs = []
+
+    async def classify_stock_intent(self, text, history, current_route=None):
+        self.route_inputs.append((text, history))
+        if not history:
+            return StockRouteHint(
+                scope="needs_clarification",
+                intent="sector",
+                relation="followup",
+                targetKind="sector",
+                targetSource="none",
+                requestedData=["quote", "history", "constituents"],
+                requiresResearch=True,
+                confidence=0.9,
+            )
+        return StockRouteHint(
+            scope="in_scope",
+            intent="sector",
+            relation="followup",
+            targetKind="sector",
+            targetTerms=["白酒"],
+            targetSource="history",
+            requiresResearch=True,
+            confidence=0.96,
+        )
+
+
+class FailingRoutingModel(FakeModel):
+    configured = True
+
+    async def classify_stock_intent(self, text, history, current_route=None):
+        raise RouteClassificationError("router unavailable")
+
+
+class FailingContextualRoutingModel(FakeModel):
+    configured = True
+
+    async def classify_stock_intent(self, text, history, current_route=None):
+        if not history:
+            return StockRouteHint(
+                scope="needs_clarification",
+                intent="security_trend",
+                relation="followup",
+                targetKind="security",
+                targetSource="none",
+                requestedData=["quote", "history"],
+                requiresResearch=True,
+                confidence=0.91,
+            )
+        raise RouteClassificationError("context router unavailable")
 
 
 @pytest.mark.asyncio
@@ -135,6 +224,40 @@ async def test_simple_stock_quote_uses_compact_output_budget():
 
     assert any("event: done" in event for event in events)
     assert model.max_tokens == 2048
+
+
+@pytest.mark.asyncio
+async def test_continuation_skips_research_and_uses_existing_answer_history():
+    model = FakeModel()
+    service = AgentService(FakeMarket(), model)
+    events = [event async for event in service.stream(AgentChatRequest(
+        requestId="req-continuation",
+        roleId="stock_expert",
+        text="请从断点直接续写，不要重复已有内容。",
+        continuation=True,
+        research=ResearchPrepareResponse(
+            scope="in_scope",
+            intent="comparison",
+            requiresResearch=True,
+            targetKind="security",
+            context={"kind": "security", "source": "original-research-context"},
+        ),
+        history=[
+            ChatMessage(role="user", content="对比宁德时代和贵州茅台"),
+            ChatMessage(role="assistant", content="财务：成长 vs 稳健"),
+        ],
+    ))]
+
+    event_names = [event.splitlines()[0].removeprefix("event: ") for event in events]
+    assert event_names == ["state", "delta", "done"]
+    assert model.messages[1:3] == [
+        {"role": "user", "content": "对比宁德时代和贵州茅台"},
+        {"role": "assistant", "content": "财务：成长 vs 稳健"},
+    ]
+    assert model.messages[-1]["content"] == "请从断点直接续写，不要重复已有内容。"
+    assert "original-research-context" in model.messages[0]["content"]
+    assert "test-provider" not in model.messages[0]["content"]
+    assert model.max_tokens == 4096
 
 
 @pytest.mark.asyncio
@@ -214,8 +337,8 @@ async def test_backend_mode_uses_semantic_route_for_natural_market_question():
 
 
 @pytest.mark.asyncio
-async def test_backend_mode_skips_model_route_for_constituent_followup():
-    model = RoutingFakeModel()
+async def test_backend_mode_uses_history_only_after_current_route_needs_context():
+    model = ContextualSectorRoutingModel()
     service = AgentService(FakeMarket(), model)
     request = ResearchPrepareRequest(
         roleId="stock_expert",
@@ -225,8 +348,62 @@ async def test_backend_mode_skips_model_route_for_constituent_followup():
 
     routed = await service._with_model_route(request)
 
-    assert routed.routeHint is None
-    assert model.route_inputs == []
+    assert routed.routeHint is not None
+    assert routed.routeHint.intent == "sector"
+    assert routed.routeHint.targetTerms == ["白酒"]
+    assert routed.routeHint.targetSource == "history"
+    assert model.route_inputs[0][1] == []
+    assert model.route_inputs[1][1][0].content == "今天白酒板块怎么样"
+
+
+@pytest.mark.asyncio
+async def test_current_complete_task_cannot_be_overwritten_by_history_route():
+    model = TwoStageSectorRoutingModel()
+    service = AgentService(FakeMarket(), FakeModel(), model)
+    routed = await service._with_model_route(ResearchPrepareRequest(
+        roleId="stock_expert",
+        text="从最近半个月来看，近期什么板块是上涨趋势",
+        history=[
+            ChatMessage(role="user", content="详细对比宁德时代和贵州茅台"),
+            ChatMessage(role="assistant", content="两只股票的对比结论。"),
+        ],
+    ))
+
+    assert routed.routeHint is not None
+    assert routed.routeHint.intent == "sector_scan"
+    assert routed.routeHint.targetSource == "current"
+    assert len(model.route_inputs) == 2
+    assert model.route_inputs[0][1] == []
+    assert model.route_inputs[1][1][0].content == "详细对比宁德时代和贵州茅台"
+
+
+@pytest.mark.asyncio
+async def test_router_failure_does_not_silently_fall_back_to_keyword_research():
+    service = AgentService(FakeMarket(), FakeModel(), FailingRoutingModel())
+
+    result = await service.prepare_research(ResearchPrepareRequest(
+        roleId="stock_expert",
+        text="分析近期板块趋势",
+    ))
+
+    assert result.scope == "needs_clarification"
+    assert result.intent == "clarification"
+    assert "语义路由服务当前不可用" in str(result.reply)
+
+
+@pytest.mark.asyncio
+async def test_required_context_router_failure_is_not_silently_ignored():
+    service = AgentService(FakeMarket(), FakeModel(), FailingContextualRoutingModel())
+
+    result = await service.prepare_research(ResearchPrepareRequest(
+        roleId="stock_expert",
+        text="它最近的趋势怎么样",
+        history=[ChatMessage(role="user", content="分析贵州茅台")],
+    ))
+
+    assert result.scope == "needs_clarification"
+    assert result.intent == "clarification"
+    assert "语义路由服务当前不可用" in str(result.reply)
 
 
 @pytest.mark.asyncio

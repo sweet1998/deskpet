@@ -667,6 +667,27 @@ async def test_sector_scan_reports_progress_before_returning_result():
 
 
 @pytest.mark.asyncio
+async def test_sector_scan_uses_structured_time_range_for_tool_window():
+    result, market = await prepare(
+        "分析这个时间范围内的板块趋势",
+        route=StockRouteHint(
+            scope="in_scope",
+            intent="sector_scan",
+            relation="standalone",
+            targetKind="sector",
+            targetSource="current",
+            requestedData=["sector_ranking", "history"],
+            timeRangeDays=15,
+            requiresResearch=True,
+            confidence=0.97,
+        ),
+    )
+
+    assert result.intent == "sector_scan"
+    assert ("sector-scan", "5:20") in market.calls
+
+
+@pytest.mark.asyncio
 async def test_clarification_does_not_emit_research_progress():
     market = FakeResearchMarket()
     progress = []

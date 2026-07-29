@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from ..market.service import MarketService
 
@@ -60,6 +60,18 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "scan_sectors",
+        "description": "扫描全市场行业板块，按统一趋势规则返回排名、广度、区间收益和回撤；只读。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "windowDays": {"type": "integer", "enum": [20, 60], "default": 60},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "get_market_overview",
         "description": "获取 A 股主要指数、涨跌家数、成交额和市场宽度；只读。",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -75,6 +87,20 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
 class ResearchTools:
     def __init__(self, market: MarketService):
         self.market = market
+
+    async def scan_sectors(
+        self,
+        limit: int = 5,
+        window_days: int = 60,
+        progress: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> Dict[str, Any]:
+        if window_days not in {20, 60}:
+            raise ValueError("windowDays 只能是 20 或 60")
+        return await self.market.scan_sectors(
+            max(1, min(10, int(limit))),
+            window_days,
+            progress=progress,
+        )
 
     async def call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         if name == "resolve_security":
@@ -97,6 +123,11 @@ class ResearchTools:
             return await self.market.screen_stocks(
                 str(arguments.get("style") or "balanced"),
                 int(arguments.get("limit", 5)),
+            )
+        if name == "scan_sectors":
+            return await self.scan_sectors(
+                int(arguments.get("limit", 5)),
+                int(arguments.get("windowDays", 60)),
             )
         if name == "get_market_overview":
             return await self.market.market_overview()

@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
-from ..market.service import CODE_PATTERN, MarketService
+from ..market.service import MarketService
 from ..models import AgentChatRequest, ResearchPrepareRequest, ResearchPrepareResponse
 from ..prompts import (
     build_current_date_prompt,
@@ -12,14 +12,21 @@ from ..prompts import (
     build_trading_calendar_prompt,
 )
 from ..research import (
-    CONSTITUENT_FOLLOWUP_PATTERN,
     ResearchService,
     compact_research_context,
     research_context_unavailable,
     starts_new_topic,
 )
 from ..roles import get_role
-from .model_client import ModelOutputTruncatedError, OpenAICompatibleModel
+from .model_client import ModelOutputTruncatedError, OpenAICompatibleModel, RouteClassificationError
+from .route_policy import (
+    build_execution_plan,
+    normalize_route,
+    prefer_current_route,
+    reconcile_routes,
+    route_needs_history,
+    validate_research_result,
+)
 
 
 def sse(event: str, data: Dict) -> str:
@@ -55,7 +62,7 @@ class AgentService:
     def messages(
         self,
         request: AgentChatRequest,
-        prepared: ResearchPrepareResponse,
+        prepared: Optional[ResearchPrepareResponse],
         date_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         profile = get_role(request.roleId)
@@ -64,7 +71,7 @@ class AgentService:
             date_context or _current_date_context(),
             request.userName,
             request.memories,
-            research_prompt(prepared) if request.roleId == "stock_expert" else None,
+            research_prompt(prepared) if request.roleId == "stock_expert" and prepared else None,
         )
         messages = [{"role": "system", "content": system_prompt}]
         history = [] if starts_new_topic(request.text) else request.history[-20:]
@@ -104,7 +111,11 @@ class AgentService:
         self,
         request: ResearchPrepareRequest,
     ) -> AsyncIterator[Tuple[str, Union[str, ResearchPrepareResponse]]]:
-        request = await self._with_model_route(request)
+        try:
+            request = await self._with_model_route(request)
+        except RouteClassificationError:
+            yield "result", self._route_unavailable_response()
+            return
         queue: asyncio.Queue[str] = asyncio.Queue()
         task = asyncio.create_task(self.research.prepare(request, queue.put))
         try:
@@ -117,32 +128,90 @@ class AgentService:
                 except asyncio.TimeoutError:
                     continue
                 yield "reasoning", text
-            yield "result", await task
+            prepared = await task
+            route = request.routeHint
+            validation_error = validate_research_result(route, prepared)
+            if validation_error:
+                prepared = ResearchPrepareResponse(
+                    scope="needs_clarification",
+                    intent="clarification",
+                    targetKind="none",
+                    reply=f"研究计划与工具结果不一致（{validation_error}），请重新描述当前要分析的对象。",
+                )
+            else:
+                prepared = prepared.model_copy(update={"plan": build_execution_plan(route)})
+            yield "result", prepared
         finally:
             if not task.done():
                 task.cancel()
 
     async def _with_model_route(self, request: ResearchPrepareRequest) -> ResearchPrepareRequest:
-        explicit_code = bool(CODE_PATTERN.search(request.text))
-        contextual_constituent_followup = bool(
-            request.history and CONSTITUENT_FOLLOWUP_PATTERN.search(request.text)
-        )
         if (
             request.roleId != "stock_expert"
-            or request.routeHint is not None
-            or contextual_constituent_followup
-            or explicit_code
             or not getattr(self.intent_model, "configured", False)
         ):
-            return request
+            if request.routeHint is None:
+                return request
+            return request.model_copy(update={
+                "routeHint": normalize_route(request.routeHint, request.text, request.history[-20:]),
+            })
+
         try:
-            route = await self.intent_model.classify_stock_intent(request.text, request.history[-20:])
-        except Exception:
-            route = None
+            current_route = await self.intent_model.classify_stock_intent(request.text, [])
+        except RouteClassificationError:
+            raise
+        except Exception as error:
+            raise RouteClassificationError("语义路由服务暂时不可用") from error
+        if current_route is not None:
+            current_route = normalize_route(current_route, request.text, [])
+
+        if not request.history:
+            return request.model_copy(update={"routeHint": current_route}) if current_route else request
+
+        try:
+            contextual_route = await self.intent_model.classify_stock_intent(
+                request.text,
+                request.history[-20:],
+                current_route,
+            )
+        except Exception as error:
+            if route_needs_history(current_route, has_history=True):
+                raise RouteClassificationError("上下文语义路由服务暂时不可用") from error
+            contextual_route = None
+        if contextual_route is not None:
+            contextual_route = normalize_route(contextual_route, request.text, request.history[-20:])
+            if contextual_route.relation in {"standalone", "new_topic"} and prefer_current_route(
+                contextual_route,
+            ):
+                return request.model_copy(update={"routeHint": contextual_route})
+
+        route = reconcile_routes(current_route, contextual_route)
         return request.model_copy(update={"routeHint": route}) if route else request
 
+    @staticmethod
+    def _route_unavailable_response() -> ResearchPrepareResponse:
+        return ResearchPrepareResponse(
+            scope="needs_clarification",
+            intent="clarification",
+            targetKind="none",
+            reply="语义路由服务当前不可用，无法可靠判断这是新问题还是历史追问。请检查路由模型账户状态后重试。",
+        )
+
     async def prepare_research(self, request: ResearchPrepareRequest) -> ResearchPrepareResponse:
-        return await self.research.prepare(await self._with_model_route(request))
+        try:
+            routed = await self._with_model_route(request)
+        except RouteClassificationError:
+            return self._route_unavailable_response()
+        prepared = await self.research.prepare(routed)
+        validation_error = validate_research_result(routed.routeHint, prepared)
+        if validation_error:
+            return ResearchPrepareResponse(
+                scope="needs_clarification",
+                intent="clarification",
+                targetKind="none",
+                reply=f"研究计划与工具结果不一致（{validation_error}），请重新描述当前要分析的对象。",
+            )
+        return prepared.model_copy(update={"plan": build_execution_plan(routed.routeHint)})
 
     async def stream_prepare(self, request: ResearchPrepareRequest) -> AsyncIterator[str]:
         try:
@@ -157,6 +226,32 @@ class AgentService:
             yield sse("error", {"message": str(error)[:500]})
 
     async def stream(self, request: AgentChatRequest) -> AsyncIterator[str]:
+        if request.continuation:
+            yield sse("state", {
+                "requestId": request.requestId,
+                "state": "speaking",
+                "progress": 75,
+                "step": "正在继续回答",
+                "interruptible": True,
+            })
+            try:
+                date_context = await self._date_context(request.roleId)
+                async for delta in self.model.stream(
+                    self.messages(request, request.research, date_context),
+                    max_tokens=4096,
+                ):
+                    yield sse("delta", {"requestId": request.requestId, "text": delta})
+                yield sse("done", {"requestId": request.requestId})
+            except ModelOutputTruncatedError:
+                yield sse("truncated", {"requestId": request.requestId})
+                yield sse("done", {"requestId": request.requestId})
+            except Exception as error:
+                yield sse("error", {
+                    "requestId": request.requestId,
+                    "message": str(error)[:500],
+                })
+            return
+
         yield sse("state", {
             "requestId": request.requestId,
             "state": "thinking",

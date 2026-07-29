@@ -7,6 +7,7 @@ import type { DoubaoMessage } from '../../../shared/doubao'
 import type { RoleId } from '../../../shared/roles'
 import type { MarketContextResult, TradingCalendar } from '../../../shared/market'
 import {
+  CONTINUATION_PROMPT,
   currentDatePrompt,
   roleSystemPrompt,
   tradingCalendarPrompt,
@@ -27,13 +28,25 @@ import { marketCardFromResearch } from '@/services/market-card'
 import { researchContextUnavailable } from '@/services/stock-local-router'
 import { hasLegalConsent } from '../../../shared/legal'
 import { createNativeToolTransport } from '@/services/native-tool-transport'
-import { selectConversationContext } from '@/services/conversation-context'
+import { mergeContinuationText, selectConversationContext } from '@/services/conversation-context'
+
+const MAIBOT_CONTINUATION_PROMPT = '请从上一条回答的中断处直接续写，只输出接续内容，不要重复已有内容，也不要重新分析。'
 
 export function useChimeraTransport(): DeskpetTransport {
   const { connect, disconnect, send, stopOutput } = useWebSocket()
   const agent = useAgentStore()
   const chat = useChatStore()
   const backendRequests = new Map<string, AbortController>()
+  const preparedByRequest = new Map<string, ResearchPrepareResult>()
+
+  function rememberPrepared(requestId: string, prepared: ResearchPrepareResult): void {
+    preparedByRequest.delete(requestId)
+    preparedByRequest.set(requestId, prepared)
+    if (preparedByRequest.size > 30) {
+      const oldest = preparedByRequest.keys().next().value
+      if (oldest) preparedByRequest.delete(oldest)
+    }
+  }
 
   async function presentReasoning(requestId: string, roleId: RoleId, text: string): Promise<void> {
     const normalized = text.trim()
@@ -85,6 +98,7 @@ export function useChimeraTransport(): DeskpetTransport {
       await presentReasoning(requestId, roleId, String(data.text || ''))
     } else if (event.event === 'research') {
       const prepared = data as unknown as ResearchPrepareResult
+      rememberPrepared(requestId, prepared)
       const marketCard = marketCardFromResearch(prepared)
       if (marketCard) chat.showMarketCard(requestId, marketCard)
     } else if (event.event === 'delta' || event.event === 'result') {
@@ -108,11 +122,16 @@ export function useChimeraTransport(): DeskpetTransport {
     requestId: string,
     roleId: RoleId,
     image?: { mimeType: 'image/png' | 'image/jpeg' | 'image/webp'; base64: string },
+    options?: {
+      continuation?: boolean
+      history?: Array<{ role: 'user' | 'assistant'; content: string }>
+      research?: ResearchPrepareResult
+    },
   ): Promise<void> {
     const controller = new AbortController()
     backendRequests.get(requestId)?.abort()
     backendRequests.set(requestId, controller)
-    const history = roleHistory(requestId, text)
+    const history = options?.history ?? roleHistory(requestId, text)
     try {
       await streamBackendChat({
         requestId,
@@ -122,6 +141,8 @@ export function useChimeraTransport(): DeskpetTransport {
         userName: agent.userName,
         memories: agent.memories,
         history,
+        ...(options?.continuation ? { continuation: true } : {}),
+        ...(options?.research ? { research: options.research } : {}),
         ...(image ? { image } : {}),
       }, (event) => handleBackendEvent(event, requestId, roleId), controller.signal)
     } catch (error) {
@@ -171,6 +192,7 @@ export function useChimeraTransport(): DeskpetTransport {
     userContent: DoubaoMessage['content'],
     prepared?: ResearchPrepareResult,
     dateContext?: string,
+    historyOverride?: Array<{ role: 'user' | 'assistant'; content: string }>,
   ): DoubaoMessage[] {
     const research = roleId === 'stock_expert' && prepared
       ? {
@@ -186,10 +208,10 @@ export function useChimeraTransport(): DeskpetTransport {
       memories: agent.memories,
       ...(research ? { research } : {}),
     })
-    const history = roleHistory(
+    const history = (historyOverride ?? roleHistory(
       requestId,
       typeof userContent === 'string' ? userContent : '',
-    ) as DoubaoMessage[]
+    )) as DoubaoMessage[]
     return [{ role: 'system', content: identity }, ...history, { role: 'user', content: userContent }]
   }
 
@@ -198,11 +220,17 @@ export function useChimeraTransport(): DeskpetTransport {
     roleId: RoleId,
     userContent: DoubaoMessage['content'],
     prepared?: ResearchPrepareResult,
+    options?: {
+      continuationPrefix?: string
+      history?: Array<{ role: 'user' | 'assistant'; content: string }>
+    },
   ): Promise<void> {
     let receivedDelta = false
+    let streamedText = ''
     const unsubscribe = window.electronAPI?.onDoubaoChatDelta(({ requestId: eventRequestId, delta }) => {
       if (eventRequestId !== requestId || !delta) return
       receivedDelta = true
+      streamedText += delta
       finishReasoning(requestId)
       chat.appendChatText(delta, requestId)
       if (agent.currentRole === roleId) {
@@ -225,7 +253,14 @@ export function useChimeraTransport(): DeskpetTransport {
         : undefined
       const result = await window.electronAPI?.doubaoChat({
         requestId,
-        messages: buildDoubaoMessages(roleId, requestId, userContent, prepared, dateContext),
+        messages: buildDoubaoMessages(
+          roleId,
+          requestId,
+          userContent,
+          prepared,
+          dateContext,
+          options?.history,
+        ),
         maxTokens: prepared?.requiresResearch ? 4096 : 2048,
         // Research reasoning is already prepared and displayed separately. Keep the answer
         // budget for visible text instead of letting hidden thinking consume it.
@@ -263,7 +298,12 @@ export function useChimeraTransport(): DeskpetTransport {
       finishReasoning(requestId)
       // IPC invoke can resolve before the renderer processes the final queued delta events.
       // The invoke result is canonical, so reconcile the streamed draft before unsubscribing.
-      chat.showChatMessage(result.text, requestId)
+      chat.showChatMessage(
+        options?.continuationPrefix === undefined
+          ? result.text
+          : mergeContinuationText(options.continuationPrefix, result.text, streamedText),
+        requestId,
+      )
       chat.finishChatStream(requestId)
       if (result.truncated) chat.markChatTruncated(requestId)
       if (agent.currentRole === roleId) {
@@ -295,6 +335,38 @@ export function useChimeraTransport(): DeskpetTransport {
 
   function roleHistory(requestId: string, text: string) {
     return selectConversationContext(chat.getRequestHistory(requestId), text)
+  }
+
+  async function continueRoleText(requestId: string, roleId: RoleId): Promise<void> {
+    const continuationPrefix = chat.getAssistantText(requestId)
+    if (!continuationPrefix) {
+      showRequestError(requestId, roleId, '没有找到可以继续的回答。', 'service', false)
+      return
+    }
+    const history = chat.getConversationTextHistory(requestId)
+    const prepared = preparedByRequest.get(requestId)
+    if (getAiProvider() === 'backend') {
+      await requestBackend(CONTINUATION_PROMPT, requestId, roleId, undefined, {
+        continuation: true,
+        history,
+        research: prepared,
+      })
+      return
+    }
+    if (getAiProvider() === 'maibot') {
+      const sent = send('input:text', {
+        text: MAIBOT_CONTINUATION_PROMPT,
+        requestId,
+        roleId,
+        continuation: true,
+      })
+      if (!sent) showRequestError(requestId, roleId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
+      return
+    }
+    await requestDoubao(requestId, roleId, CONTINUATION_PROMPT, prepared, {
+      continuationPrefix,
+      history,
+    })
   }
 
   function completeLocalReply(requestId: string, roleId: RoleId, text: string): void {
@@ -369,6 +441,7 @@ export function useChimeraTransport(): DeskpetTransport {
           }
         }
       }
+      rememberPrepared(requestId, prepared)
       const marketCard = marketCardFromResearch(prepared)
       if (marketCard) chat.showMarketCard(requestId, marketCard)
       if (researchContextUnavailable(prepared)) {
@@ -435,6 +508,11 @@ export function useChimeraTransport(): DeskpetTransport {
       const roleId = agent.currentRole
       chat.bindRequest(requestId, roleId)
       void sendRoleText(text, requestId, roleId)
+      return true
+    },
+    sendContinuation: (requestId: string) => {
+      const roleId = chat.getRequestRole(requestId) ?? agent.currentRole
+      void continueRoleText(requestId, roleId)
       return true
     },
     sendFile: (file) => getAiProvider() === 'maibot'

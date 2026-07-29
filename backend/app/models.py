@@ -29,6 +29,19 @@ StockIntent = Literal[
 ]
 StockRouteRelation = Literal["standalone", "followup", "answer_explanation", "new_topic"]
 StockRouteTargetKind = Literal["security", "sector", "index", "market", "knowledge", "none"]
+StockRouteTargetSource = Literal["current", "history", "none"]
+StockResearchData = Literal[
+    "quote",
+    "history",
+    "financial",
+    "valuation",
+    "news",
+    "announcements",
+    "constituents",
+    "market_breadth",
+    "sector_ranking",
+    "data_lineage",
+]
 
 
 class MarketContextRequest(BaseModel):
@@ -176,6 +189,9 @@ class StockRouteHint(BaseModel):
     relation: StockRouteRelation = "standalone"
     targetKind: StockRouteTargetKind = "none"
     targetTerms: List[str] = Field(default_factory=list, max_length=3)
+    targetSource: StockRouteTargetSource = "none"
+    requestedData: List[StockResearchData] = Field(default_factory=list, max_length=10)
+    timeRangeDays: Optional[int] = Field(default=None, ge=1, le=365)
     requiresResearch: bool = False
     confidence: float = Field(default=0, ge=0, le=1)
 
@@ -183,6 +199,19 @@ class StockRouteHint(BaseModel):
     @classmethod
     def validate_target_terms(cls, values: List[str]) -> List[str]:
         return list(dict.fromkeys(value.strip()[:60] for value in values if value.strip()))[:3]
+
+    @field_validator("requestedData")
+    @classmethod
+    def validate_requested_data(cls, values: List[StockResearchData]) -> List[StockResearchData]:
+        return list(dict.fromkeys(values))[:10]
+
+
+class ResearchExecutionPlan(BaseModel):
+    relation: StockRouteRelation
+    targetSource: StockRouteTargetSource
+    requestedData: List[StockResearchData] = Field(default_factory=list)
+    plannedTools: List[str] = Field(default_factory=list)
+    timeRangeDays: Optional[int] = None
 
 
 class ResearchPrepareRequest(BaseModel):
@@ -200,6 +229,7 @@ class ResearchPrepareResponse(BaseModel):
     targets: List[ResearchTarget] = Field(default_factory=list)
     thoughts: List[str] = Field(default_factory=list)
     skills: List[str] = Field(default_factory=list)
+    plan: Optional[ResearchExecutionPlan] = None
     context: Optional[Dict[str, Any]] = None
     reply: Optional[str] = None
 
@@ -230,6 +260,8 @@ class AgentChatRequest(BaseModel):
     memories: List[str] = Field(default_factory=list, max_length=30)
     history: List[ChatMessage] = Field(default_factory=list, max_length=20)
     image: Optional[AgentImageInput] = None
+    continuation: bool = False
+    research: Optional[ResearchPrepareResponse] = None
 
     @field_validator("memories")
     @classmethod

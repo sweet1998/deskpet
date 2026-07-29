@@ -32,6 +32,11 @@ SKILLS: Dict[str, ResearchSkill] = {
         "全市场个股筛选",
         ("screen_stocks",),
     ),
+    "sector-trend-scan": ResearchSkill(
+        "sector-trend-scan",
+        "全市场板块趋势扫描",
+        ("scan_sectors",),
+    ),
     "stock-comparison": ResearchSkill(
         "stock-comparison",
         "个股横向比较",
@@ -67,7 +72,7 @@ INTENT_SKILLS: Dict[str, Tuple[str, ...]] = {
     ),
     "sector_snapshot": ("market-snapshot",),
     "sector": ("market-snapshot",),
-    "sector_scan": ("market-snapshot",),
+    "sector_scan": ("sector-trend-scan",),
     "index": ("market-snapshot",),
     "market_snapshot": ("market-snapshot",),
     "market": ("market-snapshot",),
@@ -79,3 +84,12 @@ def skills_for_intent(intent: StockIntent, requires_research: bool) -> list[str]
     if requires_research and "fact-verifier" not in selected:
         selected.append("fact-verifier")
     return selected
+
+
+def tools_for_intent(intent: StockIntent, requires_research: bool) -> list[str]:
+    tools = []
+    for skill_id in skills_for_intent(intent, requires_research):
+        for tool in SKILLS[skill_id].required_tools:
+            if tool not in tools:
+                tools.append(tool)
+    return tools

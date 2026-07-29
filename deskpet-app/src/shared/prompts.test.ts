@@ -36,6 +36,7 @@ describe('shared prompt contract', () => {
     expect(prompt).toContain('用户明确要求记住：偏好短回答')
     expect(prompt).toContain('本次问题意图：sector。')
     expect(prompt).toContain('market-snapshot, fact-verifier')
+    expect(prompt).toContain('禁止声称没有执行工具')
     expect(prompt).toContain('{"sector":"白酒"}')
   })
 

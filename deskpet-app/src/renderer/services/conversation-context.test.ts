@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { selectConversationContext, startsNewConversationTopic } from './conversation-context'
+import {
+  mergeContinuationText,
+  selectConversationContext,
+  startsNewConversationTopic,
+} from './conversation-context'
 
 describe('conversation context', () => {
   it('keeps previous turns for an implicit follow-up', () => {
@@ -37,5 +41,15 @@ describe('conversation context', () => {
     }))
     expect(selectConversationContext(history, '继续分析')).toHaveLength(20)
     expect(selectConversationContext(history, '继续分析')[0].content).toBe('4')
+  })
+
+  it('merges a continuation into the original answer without creating a second answer', () => {
+    expect(mergeContinuationText('这句话还没说', '完。')).toBe('这句话还没说完。')
+    expect(mergeContinuationText('**财务：成长 vs 稳健**', '宁德时代增速更高。')).toBe(
+      '**财务：成长 vs 稳健**\n\n宁德时代增速更高。',
+    )
+    expect(mergeContinuationText('第一段。', '第二段。', '\n\n第二段。')).toBe(
+      '第一段。\n\n第二段。',
+    )
   })
 })

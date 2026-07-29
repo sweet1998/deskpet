@@ -23,6 +23,18 @@ export type StockIntent =
 
 export type StockRouteRelation = 'standalone' | 'followup' | 'answer_explanation' | 'new_topic'
 export type StockRouteTargetKind = 'security' | 'sector' | 'index' | 'market' | 'knowledge' | 'none'
+export type StockRouteTargetSource = 'current' | 'history' | 'none'
+export type StockResearchData =
+  | 'quote'
+  | 'history'
+  | 'financial'
+  | 'valuation'
+  | 'news'
+  | 'announcements'
+  | 'constituents'
+  | 'market_breadth'
+  | 'sector_ranking'
+  | 'data_lineage'
 
 export interface ResearchHistoryMessage {
   role: 'user' | 'assistant'
@@ -48,6 +60,9 @@ export interface StockRouteDecision {
   relation: StockRouteRelation
   targetKind: StockRouteTargetKind
   targetTerms: string[]
+  targetSource: StockRouteTargetSource
+  requestedData: StockResearchData[]
+  timeRangeDays?: number | null
   requiresResearch: boolean
   confidence: number
 }
@@ -72,6 +87,13 @@ export interface ResearchPrepareResult {
   targets: ResearchTarget[]
   thoughts: string[]
   skills?: string[]
+  plan?: {
+    relation: StockRouteRelation
+    targetSource: StockRouteTargetSource
+    requestedData: StockResearchData[]
+    plannedTools: string[]
+    timeRangeDays?: number | null
+  }
   context?: Record<string, any>
   reply?: string
 }

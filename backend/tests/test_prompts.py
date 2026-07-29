@@ -11,8 +11,10 @@ from app.roles import get_role
 
 
 def test_shared_contract_supplies_router_and_completion_prompts():
-    assert PROMPT_CONTRACT["version"] == 3
+    assert PROMPT_CONTRACT["version"] == 4
     assert STOCK_ROUTE_SYSTEM_PROMPT == PROMPT_CONTRACT["stockRouter"]["systemPrompt"]
+    assert "routingStage=current" in STOCK_ROUTE_SYSTEM_PROMPT
+    assert "targetSource" in STOCK_ROUTE_SYSTEM_PROMPT
     assert COMPLETION_MARKER in COMPLETION_INSTRUCTION
     assert "回答必须完整表述" in COMPLETION_INSTRUCTION
     assert "所有观点说完后再结束输出" in COMPLETION_INSTRUCTION
@@ -33,6 +35,7 @@ def test_role_system_prompt_combines_shared_sections():
     assert "用户明确要求记住：偏好短回答" in prompt
     assert "本次问题意图：sector。" in prompt
     assert "market-snapshot, fact-verifier" in prompt
+    assert "禁止声称没有执行工具" in prompt
     assert '{"sector":"白酒"}' in prompt
 
 
