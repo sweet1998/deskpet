@@ -19,7 +19,10 @@ if TYPE_CHECKING:
     from .quant.service import QuantService
 
 
-CLARIFY_MESSAGE = "请补充具体的六位股票代码、股票名称、板块或指数名称。"
+CLARIFY_MESSAGE = (
+    "我还没有理解你想分析的对象或问题。"
+    "请补充具体的六位股票代码、股票名称、板块、指数或分析需求。"
+)
 ProgressCallback = Callable[[str], Awaitable[None]]
 ROUTE_HINT_CONFIDENCE = 0.72
 
@@ -853,7 +856,10 @@ class ResearchService:
             )
 
         text = request.text.strip()
-        route = request.routeHint if request.routeHint and request.routeHint.confidence >= ROUTE_HINT_CONFIDENCE else None
+        route = request.routeHint if request.routeHint and (
+            request.routeHint.scope == "needs_clarification"
+            or request.routeHint.confidence >= ROUTE_HINT_CONFIDENCE
+        ) else None
         if route is None and ROLE_CAPABILITY_PATTERN.search(text):
             return ResearchPrepareResponse(
                 scope="in_scope",
@@ -1241,6 +1247,4 @@ class ResearchService:
         if market_context.status in {"ok", "unavailable"}:
             return await self._security_response(text, market_context, progress, likely_intent)
 
-        if has_stock_signal or route and route.scope == "in_scope":
-            return self._clarification()
-        return self._out_of_scope(text)
+        return self._clarification()

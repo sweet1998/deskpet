@@ -5,7 +5,96 @@ from app.agent.route_policy import (
     route_needs_history,
     validate_research_result,
 )
+from app.agent.route_confidence import (
+    apply_route_confidence_policy,
+    route_execution_threshold,
+)
 from app.models import ChatMessage, ResearchPrepareResponse, StockRouteHint
+
+
+def test_route_confidence_policy_uses_risk_specific_thresholds():
+    ordinary = StockRouteHint(
+        scope="in_scope", intent="security_trend", confidence=0.8,
+    )
+    decision = StockRouteHint(
+        scope="in_scope", intent="decision", confidence=0.89,
+    )
+    rejected = StockRouteHint(
+        scope="out_of_scope", intent="out_of_scope", confidence=0.89,
+    )
+
+    assert route_execution_threshold(ordinary) == 0.8
+    assert route_execution_threshold(decision) == 0.9
+    assert route_execution_threshold(rejected) == 0.9
+    assert apply_route_confidence_policy(ordinary).scope == "in_scope"
+    assert apply_route_confidence_policy(decision).scope == "needs_clarification"
+    assert apply_route_confidence_policy(rejected).scope == "needs_clarification"
+
+
+def test_native_clarification_route_is_never_blocked_by_confidence_policy():
+    route = StockRouteHint(
+        scope="needs_clarification",
+        intent="security_trend",
+        relation="followup",
+        targetKind="security",
+        confidence=0.2,
+    )
+
+    assert apply_route_confidence_policy(route) == route
+
+
+def test_route_normalization_enforces_structural_intent_contracts():
+    sector_scan = normalize_route(StockRouteHint(
+        scope="in_scope",
+        intent="sector_scan",
+        targetKind="sector",
+        requiresResearch=True,
+        confidence=.95,
+    ), "全市场板块排名", [])
+    sector_followup = normalize_route(StockRouteHint(
+        scope="in_scope",
+        intent="security_trend",
+        relation="followup",
+        targetKind="sector",
+        targetTerms=["半导体"],
+        targetSource="history",
+        requiresResearch=True,
+        confidence=.9,
+    ), "它为什么跌", [ChatMessage(role="user", content="看看半导体板块")])
+    answer_followup = normalize_route(StockRouteHint(
+        scope="in_scope",
+        intent="answer_followup",
+        relation="answer_explanation",
+        targetKind="security",
+        targetTerms=["贵州茅台"],
+        targetSource="history",
+        requestedData=["quote", "history"],
+        confidence=.9,
+    ), "为什么这么判断", [ChatMessage(role="user", content="分析贵州茅台")])
+
+    assert sector_scan.targetKind == "market"
+    assert sector_followup.intent == "sector"
+    assert answer_followup.targetKind == "knowledge"
+    assert answer_followup.targetTerms == []
+    assert answer_followup.requestedData == []
+
+
+def test_route_normalization_clarifies_ambiguous_history_targets():
+    route = normalize_route(StockRouteHint(
+        scope="in_scope",
+        intent="valuation",
+        relation="followup",
+        targetKind="security",
+        targetTerms=["宁德时代", "比亚迪"],
+        targetSource="history",
+        requiresResearch=True,
+        confidence=.95,
+    ), "它估值贵吗", [ChatMessage(role="user", content="对比宁德时代和比亚迪")])
+
+    assert route.scope == "needs_clarification"
+    assert route.intent == "clarification"
+    assert route.targetSource == "history"
+    assert route.targetTerms == []
 
 
 def test_standalone_route_drops_targets_found_only_in_history():

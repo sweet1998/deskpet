@@ -78,6 +78,22 @@ def normalize_route(
     history_material = "\n".join(item.content for item in history)
     history_terms = _terms_in_material(route.targetTerms, history_material)
 
+    ambiguous_history_targets = bool(
+        not current_terms
+        and len(history_terms) > 1
+        and route.relation in {"followup", "answer_explanation"}
+        and route.intent != "comparison"
+    )
+    if ambiguous_history_targets:
+        return route.model_copy(update={
+            "scope": "needs_clarification",
+            "intent": "clarification",
+            "targetKind": "none",
+            "targetTerms": [],
+            "targetSource": "history",
+            "requestedData": [],
+            "requiresResearch": False,
+        })
     if current_terms:
         target_terms = current_terms
         target_source = "current"
@@ -95,8 +111,23 @@ def normalize_route(
         target_terms = []
         target_source = "current" if route.relation in {"standalone", "new_topic"} else "none"
 
-    requested_data = route.requestedData or list(_DEFAULT_DATA_BY_INTENT.get(route.intent, ()))
+    intent = route.intent
+    target_kind = route.targetKind
+    if intent in {"stock_screen", "strategy_backtest", "sector_scan"}:
+        target_kind = "market"
+    elif intent in {"education", "role_capability", "answer_followup"}:
+        target_kind = "knowledge"
+    if target_kind == "sector" and intent == "security_trend":
+        intent = "sector"
+    elif target_kind == "index" and intent == "security_trend":
+        intent = "index"
+    requested_data = route.requestedData or list(_DEFAULT_DATA_BY_INTENT.get(intent, ()))
+    if intent == "answer_followup":
+        target_terms = []
+        requested_data = []
     return route.model_copy(update={
+        "intent": intent,
+        "targetKind": target_kind,
         "targetTerms": target_terms,
         "targetSource": target_source,
         "requestedData": requested_data,

@@ -13,6 +13,7 @@ __pycache__/
 .venv-*/
 backend/.env
 *.log
+backend/evals/reports/*.json
 MaiBot/
 airi-main/
 *.7z

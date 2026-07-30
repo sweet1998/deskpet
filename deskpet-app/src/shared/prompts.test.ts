@@ -17,6 +17,8 @@ describe('shared prompt contract', () => {
       contract.stockRouter.systemPrompt,
       contract.stockClarificationRouting,
     ].join('\n'))
+    expect(STOCK_ROUTE_SYSTEM_PROMPT).toContain('不得用低 confidence 的 out_of_scope 表示不确定')
+    expect(STOCK_ROUTE_SYSTEM_PROMPT).toContain('存在多个可能目标')
     expect(COMPLETION_MARKER).toBe(contract.completion.marker)
     expect(COMPLETION_INSTRUCTION).toContain(COMPLETION_MARKER)
     expect(COMPLETION_INSTRUCTION).toContain('回答必须完整表述')

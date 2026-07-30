@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "expectedCaseCount": 200,
+  "groups": [
+    {
+      "id": "dev-quote-moutai", "split": "development", "tags": ["security", "quote"],
+      "expected": {"scope": "in_scope", "intent": "security_quote", "relation": "standalone", "targetKind": "security", "targetTerms": ["贵州茅台"], "targetSource": "current", "requestedData": ["quote"], "requiresResearch": true},
+      "cases": ["贵州茅台现在多少钱", "贵州茅台最新股价是多少", "查一下贵州茅台的价格", "贵州茅台今天报价", "我想看贵州茅台现价", "贵州茅台当前价格怎么样", "给我贵州茅台的行情快照", "贵州茅台现在涨跌多少"]
+    },
+    {
+      "id": "dev-trend-ningde", "split": "development", "tags": ["security", "trend"],
+      "expected": {"scope": "in_scope", "intent": "security_trend", "relation": "standalone", "targetKind": "security", "targetTerms": ["宁德时代"], "targetSource": "current", "requestedData": ["quote", "history", "news"], "requiresResearch": true},
+      "cases": ["分析宁德时代最近走势", "宁德时代近期趋势怎么样", "看看宁德时代最近一个月表现", "宁德时代这段时间为什么走弱", "研究一下宁德时代的技术走势", "宁德时代最近涨跌情况如何", "宁德时代当前趋势还能持续吗", "结合历史行情分析宁德时代"]
+    },
+    {
+      "id": "dev-news-smic", "split": "development", "tags": ["security", "news"],
+      "expected": {"scope": "in_scope", "intent": "security_news", "relation": "standalone", "targetKind": "security", "targetTerms": ["中芯国际"], "targetSource": "current", "requestedData": ["news", "announcements", "quote"], "requiresResearch": true},
+      "cases": ["中芯国际最近有什么新闻", "查一下中芯国际最新公告", "中芯国际这几天有什么消息", "中芯国际有没有新的利好利空", "汇总中芯国际近期事件", "看看中芯国际最新新闻和公告"]
+    },
+    {
+      "id": "dev-fundamental-byd", "split": "development", "tags": ["security", "fundamental"],
+      "expected": {"scope": "in_scope", "intent": "fundamental", "relation": "standalone", "targetKind": "security", "targetTerms": ["比亚迪"], "targetSource": "current", "requestedData": ["financial", "news"], "requiresResearch": true},
+      "cases": ["分析比亚迪基本面", "比亚迪最近财务表现如何", "看看比亚迪营收和利润", "比亚迪现金流质量怎么样", "研究比亚迪的盈利能力", "比亚迪最新财报有什么变化"]
+    },
+    {
+      "id": "dev-valuation-cmb", "split": "development", "tags": ["security", "valuation"],
+      "expected": {"scope": "in_scope", "intent": "valuation", "relation": "standalone", "targetKind": "security", "targetTerms": ["招商银行"], "targetSource": "current", "requestedData": ["valuation", "financial", "quote"], "requiresResearch": true},
+      "cases": ["招商银行现在估值高吗", "分析招商银行市盈率和市净率", "招商银行目前贵不贵", "看看招商银行估值水平", "招商银行当前价格便宜吗"]
+    },
+    {
+      "id": "dev-decision-longi", "split": "development", "tags": ["security", "decision", "high-risk"],
+      "expected": {"scope": "in_scope", "intent": "decision", "relation": "standalone", "targetKind": "security", "targetTerms": ["隆基绿能"], "targetSource": "current", "requestedData": ["quote", "history", "financial", "valuation", "news", "data_lineage"], "requiresResearch": true},
+      "cases": ["隆基绿能现在能买吗", "隆基绿能要不要继续持有", "隆基绿能应该止损吗", "给我隆基绿能的买入观察条件", "隆基绿能现在适合加仓吗", "分析隆基绿能的买卖风险"]
+    },
+    {
+      "id": "dev-comparison", "split": "development", "tags": ["security", "comparison"],
+      "expected": {"scope": "in_scope", "intent": "comparison", "relation": "standalone", "targetKind": "security", "targetTerms": ["宁德时代", "比亚迪"], "targetSource": "current", "requestedData": ["quote", "history", "financial", "valuation"], "requiresResearch": true},
+      "cases": ["对比宁德时代和比亚迪", "宁德时代和比亚迪哪个基本面更好", "比较宁德时代与比亚迪的估值", "宁德时代和比亚迪近期走势对比", "分析宁德时代、比亚迪的优劣"]
+    },
+    {
+      "id": "dev-sector-snapshot", "split": "development", "tags": ["sector", "snapshot"],
+      "expected": {"scope": "in_scope", "intent": "sector_snapshot", "relation": "standalone", "targetKind": "sector", "targetTerms": ["半导体"], "targetSource": "current", "requestedData": ["quote", "constituents"], "requiresResearch": true},
+      "cases": ["半导体板块今天怎么样", "看看半导体板块行情", "半导体板块现在涨跌多少", "半导体板块当前强不强", "给我半导体板块快照", "半导体板块有哪些领涨股"]
+    },
+    {
+      "id": "dev-sector-research", "split": "development", "tags": ["sector", "trend"],
+      "expected": {"scope": "in_scope", "intent": "sector", "relation": "standalone", "targetKind": "sector", "targetTerms": ["白酒"], "targetSource": "current", "requestedData": ["quote", "history", "constituents"], "requiresResearch": true},
+      "cases": ["白酒板块最近走势如何", "白酒板块为什么跌这么多", "分析白酒板块近一个月趋势", "白酒板块后续强弱怎么看", "研究一下白酒板块的持续性", "白酒板块最近有哪些变化", "结合成分股分析白酒板块", "白酒板块近期表现为什么偏弱"]
+    },
+    {
+      "id": "dev-sector-scan", "split": "development", "tags": ["sector", "scan"],
+      "expected": {"scope": "in_scope", "intent": "sector_scan", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["sector_ranking", "history", "market_breadth", "data_lineage"], "requiresResearch": true},
+      "cases": ["全市场哪些板块最强", "扫描今天的领涨板块", "筛选近期走强的行业", "做一个全市场板块排名", "现在有哪些值得关注的板块", "从全部行业中找强势方向", "比较全市场板块强弱", "筛选资金和趋势都较强的板块"]
+    },
+    {
+      "id": "dev-index", "split": "development", "tags": ["index"],
+      "expected": {"scope": "in_scope", "intent": "index", "relation": "standalone", "targetKind": "index", "targetTerms": ["沪深300"], "targetSource": "current", "requestedData": ["quote", "history"], "requiresResearch": true},
+      "cases": ["沪深300今天怎么样", "分析沪深300近期走势", "沪深300最近为什么下跌", "看看沪深300指数行情", "沪深300当前趋势如何", "研究沪深300近一个月表现"]
+    },
+    {
+      "id": "dev-market-snapshot", "split": "development", "tags": ["market", "snapshot"],
+      "expected": {"scope": "in_scope", "intent": "market_snapshot", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["market_breadth"], "requiresResearch": true},
+      "cases": ["今天A股行情怎么样", "看看现在大盘", "两市今天涨跌如何", "当前市场赚钱效应怎么样", "今天市场上涨下跌家数", "给我一个A股盘面快照", "现在大盘强不强"]
+    },
+    {
+      "id": "dev-market-trend", "split": "development", "tags": ["market", "trend"],
+      "expected": {"scope": "in_scope", "intent": "market", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["market_breadth", "history"], "requiresResearch": true},
+      "cases": ["分析A股近期市场趋势", "大盘最近为什么持续走弱", "最近一个月市场风格怎么变了", "研究当前A股中期走势", "近期整个市场表现如何"]
+    },
+    {
+      "id": "dev-stock-screen", "split": "development", "tags": ["screen", "high-risk"],
+      "expected": {"scope": "in_scope", "intent": "stock_screen", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["quote", "financial", "valuation", "history", "data_lineage"], "requiresResearch": true, "factorStyle": "balanced"},
+      "cases": ["从全市场筛选优质股票", "帮我做一次A股综合选股", "筛选基本面和估值都不错的股票", "全市场找一批值得研究的候选股", "按质量成长估值动量综合选股", "扫描A股优质公司", "从所有A股中筛选候选标的"]
+    },
+    {
+      "id": "dev-backtest", "split": "development", "tags": ["backtest", "high-risk"],
+      "expected": {"scope": "in_scope", "intent": "strategy_backtest", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["history", "factors", "backtest", "data_lineage"], "requiresResearch": true, "factorStyle": "balanced"},
+      "cases": ["回测综合选股策略", "验证这个多因子策略历史表现", "做一次全市场因子回测", "看看质量成长估值策略过去收益", "回测选股规则并给出最大回撤"]
+    },
+    {
+      "id": "dev-education", "split": "development", "tags": ["education"],
+      "expected": {"scope": "in_scope", "intent": "education", "relation": "standalone", "targetKind": "knowledge", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["什么是市盈率", "股票复权是什么意思", "解释一下量价关系", "怎么看自由现金流", "什么叫最大回撤", "股票里的Alpha是什么"]
+    },
+    {
+      "id": "dev-role", "split": "development", "tags": ["role-capability"],
+      "expected": {"scope": "in_scope", "intent": "role_capability", "relation": "standalone", "targetKind": "knowledge", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["你是谁", "你能帮我做什么", "你擅长分析什么", "你有哪些炒股能力", "你可以做全市场选股吗"]
+    },
+    {
+      "id": "dev-unclear", "split": "development", "tags": ["clarification", "unintelligible"],
+      "expected": {"scope": "needs_clarification", "intent": "clarification", "relation": "standalone", "targetKind": "none", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["ndsgra", "asdfgh", "这个那个", "看看吧", "然后呢", "额嗯", "123abcxyz", "我想问一个"]
+    },
+    {
+      "id": "dev-oos", "split": "development", "tags": ["out-of-scope", "explicit"],
+      "expected": {"scope": "out_of_scope", "intent": "out_of_scope", "relation": "standalone", "targetKind": "none", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["今天天气怎么样", "帮我写一首诗", "怎么做红烧肉", "推荐北京旅游路线", "帮我写Python程序", "比特币现在能买吗", "分析一下美股苹果", "给我翻译这段英文"]
+    },
+
+    {
+      "id": "cal-quote", "split": "calibration", "tags": ["security", "quote"],
+      "expected": {"scope": "in_scope", "intent": "security_quote", "relation": "standalone", "targetKind": "security", "targetTerms": ["中国平安"], "targetSource": "current", "requestedData": ["quote"], "requiresResearch": true},
+      "cases": ["中国平安最新价", "中国平安现在涨多少", "查中国平安当前价格", "给我中国平安行情"]
+    },
+    {
+      "id": "cal-trend", "split": "calibration", "tags": ["security", "trend"],
+      "expected": {"scope": "in_scope", "intent": "security_trend", "relation": "standalone", "targetKind": "security", "targetTerms": ["紫金矿业"], "targetSource": "current", "requestedData": ["quote", "history", "news"], "requiresResearch": true},
+      "cases": ["紫金矿业近期走势", "分析紫金矿业最近表现", "紫金矿业趋势为什么变弱", "研究紫金矿业近20日行情"]
+    },
+    {
+      "id": "cal-sector", "split": "calibration", "tags": ["sector", "trend"],
+      "expected": {"scope": "in_scope", "intent": "sector", "relation": "standalone", "targetKind": "sector", "targetTerms": ["银行"], "targetSource": "current", "requestedData": ["quote", "history", "constituents"], "requiresResearch": true},
+      "cases": ["银行板块近期走势", "银行板块为什么上涨", "分析银行板块持续性", "研究银行板块最近表现"]
+    },
+    {
+      "id": "cal-sector-scan", "split": "calibration", "tags": ["sector", "scan"],
+      "expected": {"scope": "in_scope", "intent": "sector_scan", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["sector_ranking", "history", "market_breadth", "data_lineage"], "requiresResearch": true},
+      "cases": ["找出最近最强行业", "全市场扫描板块机会", "哪些板块资金趋势最好", "给所有行业做强弱排名"]
+    },
+    {
+      "id": "cal-screen", "split": "calibration", "tags": ["screen", "high-risk"],
+      "expected": {"scope": "in_scope", "intent": "stock_screen", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["quote", "financial", "valuation", "history", "data_lineage"], "requiresResearch": true, "factorStyle": "quality"},
+      "cases": ["全市场筛选高质量股票", "按ROE和现金流选股", "找基本面质量最好的A股", "筛选盈利质量高的公司"]
+    },
+    {
+      "id": "cal-backtest", "split": "calibration", "tags": ["backtest", "high-risk"],
+      "expected": {"scope": "in_scope", "intent": "strategy_backtest", "relation": "standalone", "targetKind": "market", "targetTerms": [], "targetSource": "current", "requestedData": ["history", "factors", "backtest", "data_lineage"], "requiresResearch": true, "factorStyle": "value"},
+      "cases": ["回测价值选股策略", "验证低估值策略历史收益", "测试市盈率市净率因子", "看看价值因子过去表现"]
+    },
+    {
+      "id": "cal-unclear", "split": "calibration", "tags": ["clarification", "unintelligible"],
+      "expected": {"scope": "needs_clarification", "intent": "clarification", "relation": "standalone", "targetKind": "none", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["qwerpoi", "就那个", "帮忙看看", "嗯继续", "有点问题", "股票那个"]
+    },
+    {
+      "id": "cal-oos", "split": "calibration", "tags": ["out-of-scope", "explicit"],
+      "expected": {"scope": "out_of_scope", "intent": "out_of_scope", "relation": "standalone", "targetKind": "none", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["明天会下雨吗", "帮我订酒店", "写一段Vue代码", "分析欧元汇率"]
+    },
+    {
+      "id": "cal-followup", "split": "calibration", "tags": ["context", "followup"],
+      "history": [{"role": "user", "content": "分析贵州茅台最近走势"}, {"role": "assistant", "content": "贵州茅台近期处于震荡区间。"}],
+      "expected": {"scope": "in_scope", "intent": "security_news", "relation": "followup", "targetKind": "security", "targetTerms": ["贵州茅台"], "targetSource": "history", "requestedData": ["news", "announcements", "quote"], "requiresResearch": true},
+      "cases": ["那它最近有什么消息", "它有新公告吗", "再看看它的新闻", "它最近有没有利空", "补充一下它的事件", "它这几天有什么新情况"]
+    },
+
+    {
+      "id": "test-followup", "split": "test", "tags": ["context", "followup"],
+      "history": [{"role": "user", "content": "看看半导体板块"}, {"role": "assistant", "content": "半导体板块今天有所调整。"}],
+      "expected": {"scope": "in_scope", "intent": "sector", "relation": "followup", "targetKind": "sector", "targetTerms": ["半导体"], "targetSource": "history", "requestedData": ["quote", "history", "constituents"], "requiresResearch": true},
+      "cases": ["那它最近趋势呢", "它为什么跌", "再看一下它近20日表现", "这个板块后续强弱如何", "它的成分股表现怎么样", "继续分析它的持续性", "它最近回撤多大", "结合历史再分析它"]
+    },
+    {
+      "id": "test-answer-explanation", "split": "test", "tags": ["context", "answer-explanation"],
+      "history": [{"role": "user", "content": "贵州茅台能买吗"}, {"role": "assistant", "content": "需要等待趋势和估值条件同时改善。"}],
+      "expected": {"scope": "in_scope", "intent": "answer_followup", "relation": "answer_explanation", "targetKind": "knowledge", "targetTerms": [], "targetSource": "history", "requestedData": [], "requiresResearch": false},
+      "cases": ["为什么这么判断", "你的依据是什么", "解释一下刚才的结论", "为什么要等这些条件", "刚才这句话是什么意思"]
+    },
+    {
+      "id": "test-new-topic", "split": "test", "tags": ["context", "new-topic"],
+      "history": [{"role": "user", "content": "分析贵州茅台"}, {"role": "assistant", "content": "贵州茅台近期震荡。"}],
+      "expected": {"scope": "in_scope", "intent": "sector", "relation": "new_topic", "targetKind": "sector", "targetTerms": ["新能源"], "targetSource": "current", "requestedData": ["quote", "history", "constituents"], "requiresResearch": true},
+      "cases": ["换个问题，分析新能源板块", "不看贵州茅台了，研究新能源板块", "另外看看新能源板块走势", "新问题：新能源板块最近如何", "再单独分析新能源板块"]
+    },
+    {
+      "id": "test-ambiguous-context", "split": "test", "tags": ["context", "clarification", "ambiguous"],
+      "history": [{"role": "user", "content": "对比宁德时代和比亚迪"}, {"role": "assistant", "content": "两家公司各有优势。"}],
+      "expected": {"scope": "needs_clarification", "intent": "clarification", "relation": "followup", "targetKind": "none", "targetTerms": [], "targetSource": "history", "requestedData": [], "requiresResearch": false},
+      "cases": ["它能买吗", "那只股票怎么样", "继续分析它", "它最近有新闻吗", "它的估值贵吗", "它风险大不大"]
+    },
+    {
+      "id": "test-subtle-oos", "split": "test", "tags": ["out-of-scope", "semantic"],
+      "expected": {"scope": "out_of_scope", "intent": "out_of_scope", "relation": "standalone", "targetKind": "none", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": ["帮我规划一周健身计划", "推荐几本历史小说", "评价这段Java代码", "教我怎么做简历"]
+    },
+    {
+      "id": "test-knowledge-role", "split": "test", "tags": ["education", "role-capability"],
+      "expected": {"scope": "in_scope", "intent": "education", "relation": "standalone", "targetKind": "knowledge", "targetTerms": [], "targetSource": "current", "requestedData": [], "requiresResearch": false},
+      "cases": [
+        "如何理解股息率",
+        "什么是换手率",
+        {"text": "你能分析哪些市场", "expected": {"intent": "role_capability"}},
+        {"text": "你能不能做策略回测", "expected": {"intent": "role_capability"}}
+      ]
+    },
+    {
+      "id": "test-mixed", "split": "test", "tags": ["mixed-expression"],
+      "expected": {"scope": "in_scope", "intent": "security_trend", "relation": "standalone", "targetKind": "security", "targetTerms": ["贵州茅台"], "targetSource": "current", "requestedData": ["quote", "history", "news"], "requiresResearch": true},
+      "cases": ["贵州茅台trend怎么样", "贵州茅台最近move大吗", "看下贵州茅台20day走势", "贵州茅台近期price action如何", "帮我review贵州茅台最近行情"]
+    }
+  ]
+}

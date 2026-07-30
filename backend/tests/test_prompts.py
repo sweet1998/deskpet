@@ -11,11 +11,14 @@ from app.roles import get_role
 
 
 def test_shared_contract_supplies_router_and_completion_prompts():
-    assert PROMPT_CONTRACT["version"] == 6
+    assert PROMPT_CONTRACT["version"] == 8
     assert "strategy_backtest" in STOCK_ROUTE_SYSTEM_PROMPT
     assert "factors、backtest" in STOCK_ROUTE_SYSTEM_PROMPT
     assert STOCK_ROUTE_SYSTEM_PROMPT.endswith(PROMPT_CONTRACT["stockClarificationRouting"])
     assert "不得擅自降级为简单报价" in STOCK_ROUTE_SYSTEM_PROMPT
+    assert "不得用低 confidence 的 out_of_scope 表示不确定" in STOCK_ROUTE_SYSTEM_PROMPT
+    assert "存在多个可能目标" in STOCK_ROUTE_SYSTEM_PROMPT
+    assert "sector_snapshot 只表示当前板块快照" in STOCK_ROUTE_SYSTEM_PROMPT
     assert "routingStage=current" in STOCK_ROUTE_SYSTEM_PROMPT
     assert "targetSource" in STOCK_ROUTE_SYSTEM_PROMPT
     assert COMPLETION_MARKER in COMPLETION_INSTRUCTION

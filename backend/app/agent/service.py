@@ -20,6 +20,7 @@ from ..research import (
 from ..quant.service import QuantService
 from ..roles import get_role
 from .model_client import ModelOutputTruncatedError, OpenAICompatibleModel, RouteClassificationError
+from .route_confidence import apply_route_confidence_policy
 from .route_policy import (
     build_execution_plan,
     normalize_route,
@@ -153,15 +154,23 @@ class AgentService:
             if not task.done():
                 task.cancel()
 
-    async def _with_model_route(self, request: ResearchPrepareRequest) -> ResearchPrepareRequest:
+    async def _with_model_route(
+        self,
+        request: ResearchPrepareRequest,
+        apply_confidence: bool = True,
+    ) -> ResearchPrepareRequest:
+        def finalize(route):
+            return apply_route_confidence_policy(route) if apply_confidence else route
+
         if (
             request.roleId != "stock_expert"
             or not getattr(self.intent_model, "configured", False)
         ):
             if request.routeHint is None:
                 return request
+            route = normalize_route(request.routeHint, request.text, request.history[-20:])
             return request.model_copy(update={
-                "routeHint": normalize_route(request.routeHint, request.text, request.history[-20:]),
+                "routeHint": finalize(route),
             })
 
         try:
@@ -178,7 +187,9 @@ class AgentService:
             current_route = normalize_route(current_route, request.text, [])
 
         if not request.history:
-            return request.model_copy(update={"routeHint": current_route}) if current_route else request
+            return request.model_copy(update={
+                "routeHint": finalize(current_route),
+            }) if current_route else request
 
         try:
             contextual_route = await self.intent_model.classify_stock_intent(
@@ -196,10 +207,14 @@ class AgentService:
             if contextual_route.relation in {"standalone", "new_topic"} and prefer_current_route(
                 contextual_route,
             ):
-                return request.model_copy(update={"routeHint": contextual_route})
+                return request.model_copy(update={
+                    "routeHint": finalize(contextual_route),
+                })
 
         route = reconcile_routes(current_route, contextual_route)
-        return request.model_copy(update={"routeHint": route}) if route else request
+        return request.model_copy(update={
+            "routeHint": finalize(route),
+        }) if route else request
 
     @staticmethod
     def _route_unavailable_response() -> ResearchPrepareResponse:

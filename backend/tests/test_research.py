@@ -275,6 +275,27 @@ async def test_low_confidence_model_route_falls_back_to_deterministic_router():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", [
+    None,
+    StockRouteHint(
+        scope="out_of_scope",
+        intent="out_of_scope",
+        relation="standalone",
+        targetKind="none",
+        requiresResearch=False,
+        confidence=0.1,
+    ),
+])
+async def test_unintelligible_input_asks_for_clarification(route):
+    result, _ = await prepare("ndsgra", route=route)
+
+    assert result.scope == "needs_clarification"
+    assert result.intent == "clarification"
+    assert result.clarification is not None
+    assert "还没有理解" in result.clarification.question
+
+
+@pytest.mark.asyncio
 async def test_explicit_security_code_takes_priority_over_model_out_of_scope_hint():
     result, _ = await prepare("600519 现在多少钱", route=StockRouteHint(
         scope="out_of_scope",
