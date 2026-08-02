@@ -1,7 +1,8 @@
 import pytest
 
+from app.agent.service import AgentService
 from app.models import ChatMessage, MarketContextResponse, ResearchPrepareRequest, SecurityContext, SecurityEvent, StockRouteHint
-from app.research import ResearchService
+from app.research import ResearchService, compact_prompt_context
 
 
 def security(code, name):
@@ -191,6 +192,32 @@ async def prepare(text, history=None, route=None):
         routeHint=route,
     ))
     return result, market
+
+
+@pytest.mark.asyncio
+async def test_sector_decision_route_does_not_trigger_plan_mismatch_clarification():
+    market = FakeResearchMarket()
+    service = AgentService(market, object())
+    result = await service.prepare_research(ResearchPrepareRequest(
+        text="分析一下白酒板块值得入手吗",
+        routeHint=StockRouteHint(
+            scope="in_scope",
+            intent="decision",
+            relation="standalone",
+            targetKind="sector",
+            targetTerms=["白酒"],
+            targetSource="current",
+            requestedData=["quote", "history", "constituents"],
+            requiresResearch=True,
+            confidence=0.97,
+        ),
+    ))
+
+    assert result.scope == "in_scope"
+    assert result.intent == "sector"
+    assert result.targetKind == "sector"
+    assert result.clarification is None
+    assert result.context is not None and result.context["kind"] == "sector"
 
 
 @pytest.mark.asyncio
@@ -463,8 +490,18 @@ async def test_stock_research_intents_have_distinct_thoughts():
     assert any("近20日 3.20%" in item for item in trend.thoughts)
     assert any("营收同比 8.10%" in item for item in fundamental.thoughts)
     assert any("PE 20.00" in item for item in valuation.thoughts)
-    assert all("dailyBars" not in str(item.context) for item in (trend, fundamental, valuation, comparison))
+    assert all(
+        "dailyBars" not in str(compact_prompt_context(item.context))
+        for item in (trend, fundamental, valuation, comparison)
+    )
+    assert trend.context["market"]["securities"][0]["dailyBars"] == [
+        {"time": "2026-07-16", "close": 98},
+        {"time": "2026-07-17", "close": 100},
+    ]
     assert trend.context["market"]["securities"][0]["history"]["points"] == 2
+    assert compact_prompt_context(
+        trend.context,
+    )["market"]["securities"][0]["history"]["points"] == 2
 
 
 @pytest.mark.asyncio
@@ -483,7 +520,8 @@ async def test_sector_and_index_complexity_routing():
     assert sector.intent == "sector"
     assert sector.requiresResearch is True
     assert any("8 家上涨、4 家下跌" in thought for thought in sector.thoughts)
-    assert "dailyBars" not in str(sector.context)
+    assert "dailyBars" not in str(compact_prompt_context(sector.context))
+    assert sector.context["dailyBars"] == [{"time": "2026-07-17", "close": 100}]
     assert index_quote.intent == "index"
     assert index_quote.requiresResearch is False
     assert index_quote.thoughts == []

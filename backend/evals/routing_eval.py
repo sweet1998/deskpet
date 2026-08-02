@@ -81,6 +81,7 @@ async def run(args: argparse.Namespace) -> Dict[str, Any]:
         settings.router_model_api_key,
         settings.router_model_name,
         max(args.timeout, settings.router_model_timeout),
+        route_extra_body={"enable_thinking": False},
     )
     if not model.configured:
         raise RuntimeError("ROUTER_MODEL_API_KEY 或 ROUTER_MODEL_NAME 未配置")

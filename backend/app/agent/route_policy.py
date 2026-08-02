@@ -59,6 +59,8 @@ _EXPECTED_CONTEXT_KINDS: Dict[str, set[str]] = {
     "market": {"market"},
 }
 
+_ACTION_INTENTS = {"decision"}
+
 
 def _normalize(value: str) -> str:
     return re.sub(r"[\s，。！？、,.!?：:；;（）()\[\]【】\"'“”‘’]+", "", value).casefold()
@@ -111,6 +113,16 @@ def normalize_route(
         target_terms = []
         target_source = "current" if route.relation in {"standalone", "new_topic"} else "none"
 
+    if route.scope == "needs_clarification":
+        return route.model_copy(update={
+            "intent": "clarification",
+            "targetKind": "none",
+            "targetTerms": [],
+            "targetSource": target_source,
+            "requestedData": [],
+            "requiresResearch": False,
+        })
+
     intent = route.intent
     target_kind = route.targetKind
     if intent in {"stock_screen", "strategy_backtest", "sector_scan"}:
@@ -121,10 +133,12 @@ def normalize_route(
         intent = "sector"
     elif target_kind == "index" and intent == "security_trend":
         intent = "index"
-    requested_data = route.requestedData or list(_DEFAULT_DATA_BY_INTENT.get(intent, ()))
+    requested_data = list(_DEFAULT_DATA_BY_INTENT.get(intent, ()))
     if intent == "answer_followup":
         target_terms = []
         requested_data = []
+        if history:
+            target_source = "history"
     return route.model_copy(update={
         "intent": intent,
         "targetKind": target_kind,
@@ -209,9 +223,14 @@ def validate_research_result(
         return None
     if route.targetSource == "history" and route.relation not in {"followup", "answer_explanation"}:
         return "历史目标只能用于明确追问"
-    if route.intent != prepared.intent:
+    if route.intent != prepared.intent and route.intent not in _ACTION_INTENTS:
         return f"计划意图为 {route.intent}，实际研究意图为 {prepared.intent}"
-    expected = _EXPECTED_CONTEXT_KINDS.get(route.intent)
+    if route.targetKind != prepared.targetKind:
+        return f"计划目标为 {route.targetKind}，实际研究目标为 {prepared.targetKind}"
+    research_intent = prepared.intent if route.intent in _ACTION_INTENTS else route.intent
+    expected = _EXPECTED_CONTEXT_KINDS.get(research_intent)
+    if route.intent in _ACTION_INTENTS and not expected:
+        return f"决策动作返回了不支持的研究意图 {prepared.intent}"
     if not expected:
         return None
     context_kind = str((prepared.context or {}).get("kind") or "")

@@ -366,23 +366,52 @@ def _history_summary(bars: Any) -> Dict[str, Any]:
     return {key: value for key, value in summary.items() if value not in (None, "")}
 
 
-def compact_research_context(value: Dict[str, Any]) -> Dict[str, Any]:
-    def compact(item: Any) -> Any:
+CHART_BAR_LIMIT = 60
+_BAR_FIELDS = ("time", "open", "high", "low", "close", "volume")
+_UNTRUNCATED_LIST_KEYS = frozenset({"curve"})
+
+
+def _chart_bars(bars: Any) -> List[Dict[str, Any]]:
+    rows = [row for row in bars if isinstance(row, dict)] if isinstance(bars, list) else []
+    return [
+        {field: row.get(field) for field in _BAR_FIELDS if field in row}
+        for row in rows[-CHART_BAR_LIMIT:]
+    ]
+
+
+def _compact(value: Dict[str, Any], keep_bars: bool) -> Dict[str, Any]:
+    def walk(item: Any, key_hint: Optional[str] = None) -> Any:
         if isinstance(item, dict):
-            output = {}
+            output: Dict[str, Any] = {}
             for key, child in item.items():
                 if key == "dailyBars":
-                    output["history"] = _history_summary(child)
+                    # A stored context already carries the summary built from the full
+                    # series; recomputing it here would report the trimmed bar count.
+                    if "history" not in item:
+                        output["history"] = _history_summary(child)
+                    if keep_bars:
+                        output["dailyBars"] = _chart_bars(child)
                 elif key == "warnings" and isinstance(child, list):
                     output[key] = [str(warning)[:180] for warning in child[:5]]
                 else:
-                    output[key] = compact(child)
+                    output[key] = walk(child, key)
             return output
         if isinstance(item, list):
-            return [compact(child) for child in item[:20]]
+            rows = item if key_hint in _UNTRUNCATED_LIST_KEYS else item[:20]
+            return [walk(child) for child in rows]
         return item
 
-    return compact(value)
+    return walk(value)
+
+
+def compact_research_context(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Context stored on the response and streamed to the UI: keeps chart-ready bars."""
+    return _compact(value, keep_bars=True)
+
+
+def compact_prompt_context(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Context handed to the model: bars are replaced by their summary to save tokens."""
+    return _compact(value, keep_bars=False)
 
 
 def research_context_unavailable(prepared: ResearchPrepareResponse) -> bool:

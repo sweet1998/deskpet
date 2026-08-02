@@ -234,3 +234,51 @@ def test_result_validator_rejects_tool_context_for_another_target_kind():
     )
 
     assert error == "计划意图为 sector_scan，实际研究意图为 comparison"
+
+
+def test_result_validator_accepts_decision_action_over_sector_research():
+    error = validate_research_result(
+        StockRouteHint(
+            scope="in_scope",
+            intent="decision",
+            relation="standalone",
+            targetKind="sector",
+            targetTerms=["银行"],
+            targetSource="current",
+            requiresResearch=True,
+            confidence=0.97,
+        ),
+        ResearchPrepareResponse(
+            scope="in_scope",
+            intent="sector",
+            requiresResearch=True,
+            targetKind="sector",
+            context={"kind": "sector"},
+        ),
+    )
+
+    assert error is None
+
+
+def test_result_validator_still_rejects_decision_data_for_another_target_kind():
+    error = validate_research_result(
+        StockRouteHint(
+            scope="in_scope",
+            intent="decision",
+            relation="standalone",
+            targetKind="sector",
+            targetTerms=["银行"],
+            targetSource="current",
+            requiresResearch=True,
+            confidence=0.97,
+        ),
+        ResearchPrepareResponse(
+            scope="in_scope",
+            intent="decision",
+            requiresResearch=True,
+            targetKind="security",
+            context={"kind": "security"},
+        ),
+    )
+
+    assert error == "计划目标为 sector，实际研究目标为 security"

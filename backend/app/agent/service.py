@@ -13,7 +13,7 @@ from ..prompts import (
 )
 from ..research import (
     ResearchService,
-    compact_research_context,
+    compact_prompt_context,
     research_context_unavailable,
     starts_new_topic,
 )
@@ -45,7 +45,7 @@ def _current_date_context() -> str:
 
 
 def research_prompt(prepared: ResearchPrepareResponse) -> str:
-    context = compact_research_context(prepared.context) if prepared.context else None
+    context = compact_prompt_context(prepared.context) if prepared.context else None
     return build_research_prompt(prepared.intent, context, prepared.skills)
 
 
