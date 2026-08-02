@@ -104,6 +104,14 @@
           <span v-if="message.card.source">{{ message.card.source }}</span>
           <span v-if="message.card.note">{{ message.card.note }}</span>
         </div>
+        <template v-if="seriesFor(message.requestId)">
+          <StockChart :series="seriesFor(message.requestId)!" />
+          <button
+            class="chart-expand"
+            type="button"
+            @click="$emit('expand-chart', message.requestId)"
+          >放大查看</button>
+        </template>
       </template>
       <template v-else>
         <div v-if="message.replyTo" class="sent-reply-reference">
@@ -195,6 +203,8 @@ import {
 import { useAgentStore } from '@/stores/agent'
 import { useChatStore, type ChatReplyReference } from '@/stores/chat'
 import { renderSafeMarkdown, streamingDisplayText } from '@/services/markdown'
+import StockChart from '@/components/StockChart.vue'
+import { chartSeriesFor, chartSeriesVersion } from '@/services/chart/series-store'
 
 defineProps<{
   followUpTarget?: ChatReplyReference
@@ -206,7 +216,14 @@ const emit = defineEmits<{
   'continue-generation': [requestId: string]
   'continue-question': [reference: ChatReplyReference]
   clarify: [payload: { messageId: string; value: string }]
+  'expand-chart': [requestId: string]
 }>()
+
+function seriesFor(requestId: string) {
+  // Touch the version ref so a newly stored series re-renders the card.
+  void chartSeriesVersion.value
+  return chartSeriesFor(requestId)
+}
 
 const agent = useAgentStore()
 const chat = useChatStore()
@@ -409,6 +426,8 @@ defineExpose({ isNearBottom, scrollToBottom })
 .market-change.flat { color: #7c8796; }
 .market-meta { padding-top: 5px; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid #e4e7ec; color: #7f8998; font-size: 11px; line-height: 1.4; }
 .quant-metrics { margin-top: 7px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border: 1px solid #dfe4eb; background: #dfe4eb; }
+.chart-expand { margin-top: 5px; padding: 3px 8px; align-self: flex-start; border: 1px solid #cfd7e2; border-radius: 5px; color: #5577a7; background: #f8f9fb; cursor: pointer; font-size: 11px; }
+.chart-expand:hover { background: #eef1f5; }
 .quant-metrics > div { min-width: 0; padding: 7px; display: flex; flex-direction: column; gap: 2px; background: #f8f9fb; }
 .quant-metrics small { color: #7c8797; font-size: 9px; }
 .quant-metrics strong { overflow: hidden; color: #34445b; font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }

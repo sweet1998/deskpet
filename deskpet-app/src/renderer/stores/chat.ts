@@ -259,7 +259,11 @@ function marketCardIdentity(card: ChatMarketCard): string {
     .filter(Boolean)
     .sort()
     .join('|')
-  return itemIdentity || `${card.title}|${card.asOf || ''}`
+  if (itemIdentity) return itemIdentity
+  const metricIdentity = (card.metrics || [])
+    .map((metric) => `${metric.label}=${metric.value}`)
+    .join('|')
+  return `${card.title}|${card.asOf || ''}|${metricIdentity}`
 }
 
 function dedupeMarketMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -981,7 +985,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function showMarketCard(requestId: string, card: ChatMarketCard) {
-    if (!requestId || !card.items.length) return
+    if (!requestId || (!card.items.length && !card.metrics?.length)) return
     const conversation = requestConversation(requestId)
     const existing = conversation.messages.find((message) => message.id === `market-${requestId}`)
     if (existing?.type === 'market') {

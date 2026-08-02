@@ -34,12 +34,12 @@
     "mammoth": "^1.12.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@pixi/app": "^6.5.10",
     "@pixi/core": "^6.5.10",
     "@pixi/display": "^6.5.10",
     "@pixi/extensions": "^6.5.10",
     "@pixi/ticker": "^6.5.10",
-    "@electron/notarize": "^2.5.0",
     "@vitejs/plugin-vue": "^6.0.8",
     "animejs": "^4.3.6",
     "dompurify": "^3.4.12",
@@ -49,6 +49,7 @@
     "highlight.js": "^11.11.1",
     "jsdom": "25.0.1",
     "jszip": "^3.10.1",
+    "lightweight-charts": "5.2.0",
     "lucide-vue-next": "^0.468.0",
     "marked": "^15.0.12",
     "pinia": "^2.3.0",

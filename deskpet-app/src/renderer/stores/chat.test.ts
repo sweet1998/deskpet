@@ -238,6 +238,41 @@ describe('chat store roles', () => {
     expect(cards[0]).toMatchObject({ requestId: 'req-market-first' })
   })
 
+  it('shows a metrics-only card such as a strategy backtest', () => {
+    const chat = useChatStore()
+    chat.addUserMessage('回测价值选股策略', 'req-backtest', 'stock_expert')
+    chat.showMarketCard('req-backtest', {
+      title: '多因子策略回测',
+      items: [],
+      asOf: '2025-07-30 至 2026-07-30',
+      metrics: [{ label: '策略收益', value: '12.50%' }],
+    })
+
+    const cards = chat.messagesByRole.stock_expert.filter((message) => message.type === 'market')
+    expect(cards).toHaveLength(1)
+  })
+
+  it('keeps two metrics-only backtests that share a date range', () => {
+    const chat = useChatStore()
+    const asOf = '2025-07-30 至 2026-07-30'
+    chat.addUserMessage('回测价值策略', 'req-value', 'stock_expert')
+    chat.showMarketCard('req-value', {
+      title: '多因子策略回测',
+      items: [],
+      asOf,
+      metrics: [{ label: '策略收益', value: '12.50%' }],
+    })
+    chat.addUserMessage('回测动量策略', 'req-momentum', 'stock_expert')
+    chat.showMarketCard('req-momentum', {
+      title: '多因子策略回测',
+      items: [],
+      asOf,
+      metrics: [{ label: '策略收益', value: '8.10%' }],
+    })
+
+    expect(chat.messagesByRole.stock_expert.filter((message) => message.type === 'market')).toHaveLength(2)
+  })
+
   it('still shows a market card for a different target', () => {
     const chat = useChatStore()
     chat.addUserMessage('创新药行情怎么样', 'req-sector', 'stock_expert')

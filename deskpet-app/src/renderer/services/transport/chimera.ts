@@ -13,6 +13,7 @@ import {
   tradingCalendarPrompt,
 } from '../../../shared/prompts'
 import {
+  compactPromptContext,
   compactResearchContext,
   type ResearchPrepareResult,
 } from '../../../shared/research'
@@ -25,6 +26,8 @@ import {
 } from '@/services/backend-client'
 import { isAgentState } from '@/services/agent-protocol'
 import { marketCardFromResearch } from '@/services/market-card'
+import { chartSeriesFromResearch } from '@/services/chart/from-research'
+import { rememberChartSeries } from '@/services/chart/series-store'
 import { researchContextUnavailable } from '@/services/stock-local-router'
 import { hasLegalConsent } from '../../../shared/legal'
 import { createNativeToolTransport } from '@/services/native-tool-transport'
@@ -206,7 +209,7 @@ export function useChimeraTransport(): DeskpetTransport {
       ? {
           intent: prepared.intent,
           ...(prepared.skills?.length ? { skills: prepared.skills } : {}),
-          ...(prepared.context ? { context: compactResearchContext(prepared.context) } : {}),
+          ...(prepared.context ? { context: compactPromptContext(prepared.context) } : {}),
         }
       : undefined
     const identity = roleSystemPrompt({
@@ -480,6 +483,7 @@ export function useChimeraTransport(): DeskpetTransport {
         }
       }
       rememberPrepared(requestId, prepared)
+      rememberChartSeries(requestId, chartSeriesFromResearch(prepared))
       const marketCard = marketCardFromResearch(prepared)
       if (marketCard) chat.showMarketCard(requestId, marketCard)
       if (researchContextUnavailable(prepared)) {
@@ -493,7 +497,10 @@ export function useChimeraTransport(): DeskpetTransport {
     }
     if (agent.currentRole !== roleId || chat.getRequestRole(requestId) !== roleId) return
     if (getAiProvider() === 'maibot') {
-      const sent = send('input:text', { text, requestId, roleId, research: prepared })
+      const research = prepared?.context
+        ? { ...prepared, context: compactPromptContext(prepared.context) }
+        : prepared
+      const sent = send('input:text', { text, requestId, roleId, research })
       if (!sent && agent.currentRole === roleId) {
         showRequestError(requestId, roleId, '尚未连接到 MaiBot，请检查连接设置后重试。', 'network')
       }

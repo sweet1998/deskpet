@@ -44,6 +44,7 @@ export default defineConfig({
             if (/node_modules\/(vue|@vue|pinia)\//.test(id)) return 'framework'
             if (/node_modules\/(@pixi|pixi-live2d-display|animejs)\//.test(id)) return 'live2d'
             if (/node_modules\/(marked|dompurify|highlight\.js)\//.test(id)) return 'markdown'
+            if (/node_modules\/(lightweight-charts|fancy-canvas)\//.test(id)) return 'charts'
             if (id.includes('node_modules/lucide-vue-next/')) return 'icons'
             return undefined
           }

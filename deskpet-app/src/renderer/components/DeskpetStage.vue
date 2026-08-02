@@ -28,6 +28,7 @@
       @retry="retryRequest"
       @continue-generation="continueGeneration"
       @clarify="submitClarification"
+      @expand-chart="openChart"
       @capture-screen="captureCurrentScreen"
       @confirm-screenshot="confirmScreenshot"
       @cancel-screenshot="pendingScreenshot = ''"
@@ -44,6 +45,12 @@
     <div v-if="fileDragActive" class="file-drop-hint" data-pet-ui>
       松开交给麦麦
     </div>
+
+    <StockChartOverlay
+      v-if="expandedChart"
+      :series="expandedChart"
+      @close="expandedChart = null"
+    />
 
     <SettingsPanel
       :open="settingsPanelOpen"
@@ -74,6 +81,8 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import SettingsPanel from './SettingsPanel.vue'
+import StockChartOverlay from './StockChartOverlay.vue'
+import { chartSeriesFor, type ChartSeries } from '@/services/chart/series-store'
 import PetInteraction from './PetInteraction.vue'
 import AgentTaskPanel from './AgentTaskPanel.vue'
 import { useDeskpetStore } from '@/stores/deskpet'
@@ -158,8 +167,18 @@ const {
   respondToConfirmation,
   saveTaskResult,
 } = requestWorkflow
+const expandedChart = ref<ChartSeries | null>(null)
+
+function openChart(requestId: string): void {
+  const series = chartSeriesFor(requestId)
+  if (series) expandedChart.value = series
+}
+
+// The overlay must keep the window expanded; otherwise collapsing the chat shrinks
+// the window back to the pet and clips the chart.
 const expandedUiOpen = computed(() => Boolean(
-  showSettings.value || chatLayoutOpen.value || agent.workspaceOpen || chat.chatBubble.visible,
+  showSettings.value || chatLayoutOpen.value || agent.workspaceOpen || chat.chatBubble.visible
+  || expandedChart.value,
 ))
 
 let animFrameId = 0

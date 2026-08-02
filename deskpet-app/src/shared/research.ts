@@ -120,27 +120,59 @@ export interface ClarificationCard {
   maxRounds: 2
 }
 
-export function compactResearchContext(context: Record<string, any>): Record<string, any> {
-  function compact(value: any): any {
-    if (Array.isArray(value)) return value.slice(0, 20).map(compact)
+export const CHART_BAR_LIMIT = 60
+const BAR_FIELDS = ['time', 'open', 'high', 'low', 'close', 'volume'] as const
+const UNTRUNCATED_LIST_KEYS = new Set(['curve'])
+
+function historySummary(rows: any[]): Record<string, any> {
+  return {
+    points: rows.length,
+    ...(rows.length ? { from: rows[0].time, to: rows.at(-1).time } : {}),
+  }
+}
+
+function chartBars(rows: any[]): Array<Record<string, any>> {
+  return rows.slice(-CHART_BAR_LIMIT).map((row) => {
+    const bar: Record<string, any> = {}
+    for (const field of BAR_FIELDS) if (field in row) bar[field] = row[field]
+    return bar
+  })
+}
+
+function compactContext(context: Record<string, any>, keepBars: boolean): Record<string, any> {
+  function compact(value: any, keyHint?: string): any {
+    if (Array.isArray(value)) {
+      const rows = keyHint && UNTRUNCATED_LIST_KEYS.has(keyHint) ? value : value.slice(0, 20)
+      return rows.map((item) => compact(item))
+    }
     if (!value || typeof value !== 'object') return value
 
     const output: Record<string, any> = {}
     for (const [key, child] of Object.entries(value)) {
       if (key === 'dailyBars' && Array.isArray(child)) {
         const rows = child.filter((item) => item && typeof item === 'object')
-        output.history = {
-          points: rows.length,
-          ...(rows.length ? { from: rows[0].time, to: rows.at(-1).time } : {}),
-        }
+        // A stored context already carries the summary built from the full series;
+        // recomputing it here would report the trimmed bar count.
+        if (!('history' in value)) output.history = historySummary(rows)
+        if (keepBars) output.dailyBars = chartBars(rows)
       } else if (key === 'warnings' && Array.isArray(child)) {
         output[key] = child.slice(0, 5).map((warning) => String(warning).slice(0, 180))
       } else {
-        output[key] = compact(child)
+        output[key] = compact(child, key)
       }
     }
     return output
   }
 
   return compact(context)
+}
+
+/** Context stored on the response and rendered by the UI: keeps chart-ready bars. */
+export function compactResearchContext(context: Record<string, any>): Record<string, any> {
+  return compactContext(context, true)
+}
+
+/** Context handed to a model: bars are replaced by their summary to save tokens. */
+export function compactPromptContext(context: Record<string, any>): Record<string, any> {
+  return compactContext(context, false)
 }
